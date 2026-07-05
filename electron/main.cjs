@@ -21,6 +21,15 @@ const DEFAULT_BEGIN = {
 
 const REMOTE_APP_URL = 'https://nhtqgm.github.io/111/';
 
+const QUOTE_SOURCES = [
+  { name: '腾讯不复权', provider: 'tencent', adjust: 'bfq' },
+  { name: '腾讯前复权', provider: 'tencent', adjust: 'qfq' },
+  { name: '腾讯后复权', provider: 'tencent', adjust: 'hfq' },
+  { name: '东方财富不复权', provider: 'eastmoney', adjust: 'bfq' },
+  { name: '东方财富前复权', provider: 'eastmoney', adjust: 'qfq' },
+  { name: '东方财富后复权', provider: 'eastmoney', adjust: 'hfq' },
+];
+
 function getMarketId(code) {
   return code.startsWith('6') || code.startsWith('9') ? 1 : 0;
 }
@@ -167,13 +176,21 @@ function parseTencentKLine(row, previousClose) {
 }
 
 function parseTencentPayload(payload, code, period) {
+  return parseTencentPayloadWithSource(payload, code, period, {
+    name: '腾讯前复权',
+    adjust: 'qfq',
+  });
+}
+
+function parseTencentPayloadWithSource(payload, code, period, source) {
   if (payload.code !== 0) {
     throw new Error(`Tencent quote request failed: ${payload.msg || payload.code}`);
   }
 
   const symbol = getTencentSymbol(code);
   const stock = payload.data?.[symbol];
-  const rows = stock?.[`qfq${TENCENT_PERIOD[period]}`] || stock?.[TENCENT_PERIOD[period]];
+  const key = source.adjust === 'bfq' ? TENCENT_PERIOD[period] : `${source.adjust}${TENCENT_PERIOD[period]}`;
+  const rows = stock?.[key] || stock?.[TENCENT_PERIOD[period]];
   if (!Array.isArray(rows) || rows.length === 0) {
     throw new Error('Tencent returned no valid K-line data.');
   }
@@ -182,13 +199,14 @@ function parseTencentPayload(payload, code, period) {
     code,
     name: stock?.qt?.[symbol]?.[1] || code,
     market: symbol.startsWith('sh') ? 1 : 0,
+    sourceName: source.name,
     points: rows.map((row, index) => parseTencentKLine(row, rows[index - 1]?.[2])),
   };
 }
 
-async function fetchTencentKLines(code, period) {
+async function fetchTencentKLines(code, period, source = { name: '腾讯前复权', adjust: 'qfq' }) {
   const symbol = getTencentSymbol(code);
-  const params = `${symbol},${TENCENT_PERIOD[period]},,,800,qfq`;
+  const params = `${symbol},${TENCENT_PERIOD[period]},,,800,${source.adjust}`;
   const payload = await getJson(
     `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${encodeURIComponent(params)}&_=${Date.now()}`,
     {
@@ -199,7 +217,37 @@ async function fetchTencentKLines(code, period) {
     },
   );
 
-  return parseTencentPayload(payload, code, period);
+  return parseTencentPayloadWithSource(payload, code, period, source);
+}
+
+async function fetchEastmoneyKLines(code, period, source) {
+  const fqt = source.adjust === 'bfq' ? '0' : source.adjust === 'qfq' ? '1' : '2';
+  const market = getMarketId(code);
+  const params = new URLSearchParams({
+    secid: `${market}.${code}`,
+    fields1: 'f1,f2,f3,f4,f5,f6',
+    fields2: 'f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61',
+    klt: String(KLT[period]),
+    fqt,
+    beg: DEFAULT_BEGIN[period],
+    end: '20500101',
+    _: String(Date.now()),
+  });
+
+  const payload = await getJson(
+    `https://push2his.eastmoney.com/api/qt/stock/kline/get?${params.toString()}`,
+    {
+      Referer: 'https://quote.eastmoney.com/',
+      Accept: 'application/json,text/plain,*/*',
+      'User-Agent':
+        'Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 Chrome/108.0 Safari/537.36',
+    },
+  );
+  const parsed = parseEastmoneyPayload(payload);
+  return {
+    ...parsed,
+    sourceName: source.name,
+  };
 }
 
 async function fetchKLines(_event, rawCode, period) {
@@ -212,41 +260,19 @@ async function fetchKLines(_event, rawCode, period) {
     throw new Error('Unsupported K-line period.');
   }
 
-  try {
-    return await fetchTencentKLines(code, period);
-  } catch (tencentError) {
-    const market = getMarketId(code);
-    const params = new URLSearchParams({
-      secid: `${market}.${code}`,
-      fields1: 'f1,f2,f3,f4,f5,f6',
-      fields2: 'f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61',
-      klt: String(KLT[period]),
-      fqt: '1',
-      beg: DEFAULT_BEGIN[period],
-      end: '20500101',
-      _: String(Date.now()),
-    });
-
+  const errors = [];
+  for (const source of QUOTE_SOURCES) {
     try {
-      const payload = await getJson(
-        `https://push2his.eastmoney.com/api/qt/stock/kline/get?${params.toString()}`,
-        {
-          Referer: 'https://quote.eastmoney.com/',
-          Accept: 'application/json,text/plain,*/*',
-          'User-Agent':
-            'Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 Chrome/108.0 Safari/537.36',
-        },
-      );
-
-      return parseEastmoneyPayload(payload);
-    } catch (eastmoneyError) {
-      throw new Error(
-        `Quote data request failed. Tencent: ${
-          tencentError instanceof Error ? tencentError.message : String(tencentError)
-        }; Eastmoney: ${eastmoneyError instanceof Error ? eastmoneyError.message : String(eastmoneyError)}`,
-      );
+      if (source.provider === 'tencent') {
+        return await fetchTencentKLines(code, period, source);
+      }
+      return await fetchEastmoneyKLines(code, period, source);
+    } catch (error) {
+      errors.push(`${source.name}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
+
+  throw new Error(`Quote data request failed after ${QUOTE_SOURCES.length} sources: ${errors.join('; ')}`);
 }
 
 function createWindow() {

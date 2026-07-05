@@ -18,6 +18,7 @@ export interface StockKLineResponse {
   code: string;
   name: string;
   market: number;
+  sourceName?: string;
   points: KLinePoint[];
 }
 

@@ -314,7 +314,7 @@ h2 {
 
 .market-strip {
   display: grid;
-  grid-template-columns: repeat(8, minmax(108px, 1fr));
+  grid-template-columns: repeat(10, minmax(96px, 1fr));
   border: 2px solid #2d342e;
   border-radius: 8px;
   overflow: hidden;

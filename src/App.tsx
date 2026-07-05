@@ -3,7 +3,7 @@ import KLineChart, { type ChartLineSeries } from './components/KLineChart';
 import { fetchKLines } from './services/eastmoney';
 import type { PeriodType, PredictionPoint, StockKLineResponse } from './types';
 import { compareProjectionRows, formatNumber, summarizeComparisons } from './utils/metrics';
-import { buildMa40Projection, MA40_WINDOW } from './utils/movingAverage';
+import { buildMa40Projection, calculateMovingAverage, MA40_WINDOW } from './utils/movingAverage';
 import {
   generatePredictionRows,
   loadPredictionRows,
@@ -148,6 +148,10 @@ export default function App() {
   );
   const summary = useMemo(() => summarizeComparisons(predictionComparisons), [predictionComparisons]);
   const latest = data?.points.at(-1);
+  const latestActualMa40 = useMemo(
+    () => (data ? calculateMovingAverage(data.points).at(-1)?.value ?? null : null),
+    [data],
+  );
   const unit = periods.find((item) => item.value === period)?.unit ?? '';
   const filledCount = predictions.filter((row) => row.predictedMa40.trim() !== '').length;
   const lineSeries = useMemo<ChartLineSeries[]>(
@@ -327,8 +331,10 @@ export default function App() {
 
       <section className="market-strip">
         <Metric label="股票" value={data ? `${data.name} ${data.code}` : '申万宏源 000166'} />
+        <Metric label="数据源" value={data?.sourceName ?? '--'} />
         <Metric label="最新周期" value={latest?.date ?? '--'} />
         <Metric label="最新收盘" value={latest ? latest.close.toFixed(2) : '--'} />
+        <Metric label="最新MA40" value={formatNumber(latestActualMa40)} />
         <Metric label="预测窗口" value={`${MA40_WINDOW}${unit}`} />
         <Metric label="已填写" value={`${filledCount}/${predictions.length || forecastRowCount}`} />
         <Metric label="可对比" value={`${summary.compared}`} />
