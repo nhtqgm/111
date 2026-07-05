@@ -22,6 +22,7 @@ interface KLineChartProps {
   lineSeries: ChartLineSeries[];
   baseDate: string;
   period: PeriodType;
+  showCloseLine?: boolean;
 }
 
 const periodName: Record<PeriodType, string> = {
@@ -30,7 +31,13 @@ const periodName: Record<PeriodType, string> = {
   month: '月K',
 };
 
-export default function KLineChart({ points, lineSeries, baseDate, period }: KLineChartProps) {
+export default function KLineChart({
+  points,
+  lineSeries,
+  baseDate,
+  period,
+  showCloseLine = true,
+}: KLineChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -72,7 +79,11 @@ export default function KLineChart({ points, lineSeries, baseDate, period }: KLi
         itemWidth: 14,
         itemHeight: 8,
         textStyle: { color: '#3d453f' },
-        data: ['真实K线', '真实收盘', ...lineSeries.map((series) => series.label)],
+        data: [
+          '真实K线',
+          ...(showCloseLine ? ['真实收盘'] : []),
+          ...lineSeries.map((series) => series.label),
+        ],
       },
       xAxis: [
         {
@@ -94,7 +105,7 @@ export default function KLineChart({ points, lineSeries, baseDate, period }: KLi
         {
           scale: true,
           splitLine: { lineStyle: { color: '#dfd8ca' } },
-          axisLabel: { color: '#6f6a60' },
+          axisLabel: { color: '#6f6a60', formatter: (value: number) => value.toFixed(2) },
         },
         {
           scale: true,
@@ -116,7 +127,14 @@ export default function KLineChart({ points, lineSeries, baseDate, period }: KLi
           type: 'candlestick',
           data: xAxis.map((date) => {
             const point = pointByDate.get(date);
-            return point ? [point.open, point.close, point.low, point.high] : ['-', '-', '-', '-'];
+            return point
+              ? [
+                  roundPrice(point.open),
+                  roundPrice(point.close),
+                  roundPrice(point.low),
+                  roundPrice(point.high),
+                ]
+              : ['-', '-', '-', '-'];
           }),
           itemStyle: {
             color: '#b43d31',
@@ -133,18 +151,28 @@ export default function KLineChart({ points, lineSeries, baseDate, period }: KLi
               }
             : undefined,
         },
-        {
-          name: '真实收盘',
-          type: 'line',
-          data: xAxis.map((date) => pointByDate.get(date)?.close ?? null),
-          showSymbol: false,
-          smooth: false,
-          lineStyle: { color: '#212529', width: 1.8 },
-        },
+        ...(showCloseLine
+          ? [
+              {
+                name: '真实收盘',
+                type: 'line',
+                data: xAxis.map((date) => {
+                  const close = pointByDate.get(date)?.close;
+                  return close === undefined ? null : roundPrice(close);
+                }),
+                showSymbol: false,
+                smooth: false,
+                lineStyle: { color: '#212529', width: 1.8 },
+              },
+            ]
+          : []),
         ...lineMaps.map((series) => ({
           name: series.label,
           type: 'line',
-          data: xAxis.map((date) => series.values.get(date) ?? null),
+          data: xAxis.map((date) => {
+            const value = series.values.get(date);
+            return value === undefined ? null : roundPrice(value);
+          }),
           connectNulls: false,
           showSymbol: series.showSymbol ?? true,
           symbol: series.symbol,
@@ -191,11 +219,15 @@ export default function KLineChart({ points, lineSeries, baseDate, period }: KLi
       window.removeEventListener('resize', resize);
       chart.dispose();
     };
-  }, [baseDate, lineSeries, period, points]);
+  }, [baseDate, lineSeries, period, points, showCloseLine]);
 
   return <div className="chart-surface" ref={containerRef} />;
 }
 
 function mergeDates(actualDates: string[], predictedDates: string[]) {
   return Array.from(new Set([...actualDates, ...predictedDates])).sort();
+}
+
+function roundPrice(value: number) {
+  return Number(value.toFixed(2));
 }

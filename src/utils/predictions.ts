@@ -1,26 +1,16 @@
-import type { Horizon, KLinePoint, PeriodType, PredictionPoint } from '../types';
+import type { KLinePoint, PeriodType, PredictionPoint } from '../types';
 
 export interface WorkspaceCache {
   stockCode: string;
   period: PeriodType;
-  horizon?: Horizon;
   baseDate: string;
   updatedAt: string;
 }
 
-const WORKSPACE_CACHE_KEY = 'prediction:last-workspace';
-
-export function storageKey(
-  stockCode: string,
-  period: PeriodType,
-  baseDate: string,
-  horizon: Horizon,
-) {
-  return `prediction:${stockCode}:${period}:${baseDate}:${horizon}`;
-}
+const WORKSPACE_CACHE_KEY = 'prediction-ma40:last-workspace';
 
 export function predictionPlanKey(stockCode: string, period: PeriodType, baseDate: string) {
-  return `prediction-plan:${stockCode}:${period}:${baseDate}:v3`;
+  return `prediction-ma40:${stockCode}:${period}:${baseDate}:v1`;
 }
 
 export function loadPredictions(key: string): PredictionPoint[] | null {
@@ -29,7 +19,7 @@ export function loadPredictions(key: string): PredictionPoint[] | null {
 
   try {
     const parsed = JSON.parse(raw) as PredictionPoint[];
-    return Array.isArray(parsed) ? parsed : null;
+    return Array.isArray(parsed) ? parsed.map(normalizePredictionPoint) : null;
   } catch {
     return null;
   }
@@ -44,40 +34,25 @@ export function loadPredictionRows(
   period: PeriodType,
   baseDate: string,
   points: KLinePoint[],
-  horizon: Horizon,
-  legacyHorizons: Horizon[],
+  rowCount: number,
 ): PredictionPoint[] {
-  const rows = generatePredictionRows(points, period, baseDate, horizon);
+  const rows = generatePredictionRows(points, period, baseDate, rowCount);
   const currentRows = loadPredictions(predictionPlanKey(stockCode, period, baseDate)) ?? [];
-  const legacyRows = legacyHorizons.flatMap(
-    (candidateHorizon) =>
-      loadPredictions(storageKey(stockCode, period, baseDate, candidateHorizon)) ?? [],
-  );
 
   return rows.map((row) => {
-    let merged = { ...row };
-    for (const candidate of legacyRows.filter((item) => item.targetDate === row.targetDate)) {
-      merged = fillEmptyPredictionFields(merged, candidate);
-    }
-
     const currentMatch = currentRows.find((item) => item.targetDate === row.targetDate);
-    if (currentMatch) {
-      merged = fillEmptyPredictionFields(merged, currentMatch);
-    }
+    if (!currentMatch) return row;
 
-    return merged;
+    const normalized = normalizePredictionPoint(currentMatch);
+    return {
+      ...row,
+      predictedMa40:
+        row.predictedMa40.trim() === '' && normalized.predictedMa40.trim() !== ''
+          ? normalized.predictedMa40
+          : row.predictedMa40,
+      note: row.note.trim() === '' && normalized.note.trim() !== '' ? normalized.note : row.note,
+    };
   });
-}
-
-function fillEmptyPredictionFields(base: PredictionPoint, candidate: PredictionPoint) {
-  return {
-    ...base,
-    predictedClose:
-      base.predictedClose.trim() === '' && candidate.predictedClose.trim() !== ''
-        ? candidate.predictedClose
-        : base.predictedClose,
-    note: base.note.trim() === '' && candidate.note.trim() !== '' ? candidate.note : base.note,
-  };
 }
 
 export function loadWorkspaceCache(): WorkspaceCache | null {
@@ -108,32 +83,40 @@ export function generatePredictionRows(
   points: KLinePoint[],
   period: PeriodType,
   baseDate: string,
-  horizon: Horizon,
+  rowCount: number,
 ): PredictionPoint[] {
-  const targetDates = getTargetDates(points, period, baseDate, horizon);
+  const targetDates = getTargetDates(points, period, baseDate, rowCount);
   return targetDates.map((targetDate) => ({
     targetDate,
-    predictedClose: '',
+    predictedMa40: '',
     note: '',
   }));
+}
+
+export function normalizePredictionPoint(value: any): PredictionPoint {
+  return {
+    targetDate: String(value?.targetDate ?? ''),
+    predictedMa40: String(value?.predictedMa40 ?? ''),
+    note: String(value?.note ?? ''),
+  };
 }
 
 function getTargetDates(
   points: KLinePoint[],
   period: PeriodType,
   baseDate: string,
-  horizon: Horizon,
+  rowCount: number,
 ) {
   const dates = points.map((point) => point.date);
   const baseIndex = dates.indexOf(baseDate);
-  const knownFuture = baseIndex >= 0 ? dates.slice(baseIndex, baseIndex + horizon) : [baseDate];
+  const knownFuture = baseIndex >= 0 ? dates.slice(baseIndex, baseIndex + rowCount) : [baseDate];
 
-  if (knownFuture.length === horizon) {
+  if (knownFuture.length === rowCount) {
     return knownFuture;
   }
 
   const seed = knownFuture.at(-1) ?? baseDate;
-  const generated = generateFutureDates(period, seed, horizon - knownFuture.length);
+  const generated = generateFutureDates(period, seed, rowCount - knownFuture.length);
   return [...knownFuture, ...generated];
 }
 

@@ -1,18 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import KLineChart, { type ChartLineSeries } from './components/KLineChart';
 import { fetchKLines } from './services/eastmoney';
-import type { Horizon, PeriodType, PredictionPoint, StockKLineResponse } from './types';
-import { comparePredictions, formatNumber, summarizeComparisons } from './utils/metrics';
-import {
-  buildProjectedAverageRows,
-  calculateActualMovingAverage,
-  calculateProjectedMovingAverages,
-  predictionCloseLine,
-} from './utils/movingAverage';
+import type { PeriodType, PredictionPoint, StockKLineResponse } from './types';
+import { compareProjectionRows, formatNumber, summarizeComparisons } from './utils/metrics';
+import { buildMa40Projection, MA40_WINDOW } from './utils/movingAverage';
 import {
   generatePredictionRows,
   loadPredictionRows,
   loadWorkspaceCache,
+  normalizePredictionPoint,
   predictionPlanKey,
   savePredictions,
   saveWorkspaceCache,
@@ -24,78 +20,18 @@ const periods: Array<{ value: PeriodType; label: string; unit: string }> = [
   { value: 'month', label: '月K', unit: '月' },
 ];
 
-const horizons: Horizon[] = [5, 10, 20];
-const maxHorizon: Horizon = 20;
+const forecastRowCount = 40;
 const todayDate = formatDate(new Date());
 const initialWorkspace = loadWorkspaceCache();
-const emptyLineMap: Record<Horizon, []> = { 5: [], 10: [], 20: [] };
-const horizonStyles: Record<
-  Horizon,
-  {
-    label: string;
-    color: string;
-    className: string;
-    lineWidth: number;
-    lineType: 'solid' | 'dashed' | 'dotted';
-    symbol: string;
-    symbolSize: number;
-    symbolOffset: [number, number];
-    z: number;
-  }
-> = {
-  5: {
-    label: '短线',
-    color: '#2f7893',
-    className: 'horizon-5',
-    lineWidth: 2.2,
-    lineType: 'solid',
-    symbol: 'circle',
-    symbolSize: 6,
-    symbolOffset: [0, -7],
-    z: 8,
-  },
-  10: {
-    label: '中线',
-    color: '#a87935',
-    className: 'horizon-10',
-    lineWidth: 2.8,
-    lineType: 'dashed',
-    symbol: 'circle',
-    symbolSize: 6,
-    symbolOffset: [0, 0],
-    z: 7,
-  },
-  20: {
-    label: '长线',
-    color: '#5f7d5d',
-    className: 'horizon-20',
-    lineWidth: 3.6,
-    lineType: 'dotted',
-    symbol: 'roundRect',
-    symbolSize: 7,
-    symbolOffset: [0, 7],
-    z: 6,
-  },
-};
 
-interface PredictionFileV3 {
-  schema: 'gupiao-manual-predictions/v3';
+interface PredictionFileV5 {
+  schema: 'gupiao-ma40-predictions/v1';
   exportedAt: string;
   stockCode: string;
   stockName?: string;
   period: PeriodType;
   baseDate: string;
   predictions: PredictionPoint[];
-}
-
-interface LegacyPredictionFileV2 {
-  schema: 'gupiao-manual-predictions/v2';
-  exportedAt: string;
-  stockCode: string;
-  stockName?: string;
-  period: PeriodType;
-  baseDate: string;
-  predictionsByHorizon: Record<Horizon, PredictionPoint[]>;
 }
 
 export default function App() {
@@ -105,11 +41,6 @@ export default function App() {
   const [data, setData] = useState<StockKLineResponse | null>(null);
   const [baseDate, setBaseDate] = useState(initialWorkspace?.baseDate ?? todayDate);
   const [predictions, setPredictions] = useState<PredictionPoint[]>([]);
-  const [visibleHorizons, setVisibleHorizons] = useState<Record<Horizon, boolean>>({
-    5: true,
-    10: true,
-    20: true,
-  });
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
   const [fileStatus, setFileStatus] = useState('');
@@ -117,7 +48,7 @@ export default function App() {
     initialWorkspace ? `已恢复上次缓存：${initialWorkspace.stockCode}` : '本机自动缓存已开启',
   );
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const importedPlanRef = useRef<PredictionFileV3 | null>(null);
+  const importedPlanRef = useRef<PredictionFileV5 | null>(null);
   const initialWorkspaceRef = useRef(initialWorkspace);
 
   useEffect(() => {
@@ -149,7 +80,7 @@ export default function App() {
             return cachedWorkspace.baseDate;
           }
 
-          return todayDate;
+          return result.points.at(-1)?.date ?? todayDate;
         });
       })
       .catch((err: Error) => {
@@ -183,7 +114,7 @@ export default function App() {
       return;
     }
 
-    setPredictions(loadPredictionRows(data.code, period, baseDate, data.points, maxHorizon, horizons));
+    setPredictions(loadPredictionRows(data.code, period, baseDate, data.points, forecastRowCount));
   }, [baseDate, data, period]);
 
   useEffect(() => {
@@ -193,107 +124,78 @@ export default function App() {
     saveWorkspaceCache({
       stockCode: data.code,
       period,
-      horizon: maxHorizon,
       baseDate,
       updatedAt: new Date().toISOString(),
     });
     setCacheStatus(`已自动保存：${new Date().toLocaleTimeString()}`);
   }, [baseDate, data, period, predictions]);
 
-  const predictionComparisons = useMemo(
-    () => comparePredictions(predictions, data?.points ?? []),
-    [data?.points, predictions],
-  );
-  const summary = useMemo(() => summarizeComparisons(predictionComparisons), [predictionComparisons]);
-  const projectedAverageRows = useMemo(
-    () => (data ? buildProjectedAverageRows(data.points, predictions, horizons) : []),
-    [data, predictions],
-  );
-  const actualMovingAverages = useMemo(
+  const projection = useMemo(
     () =>
       data
-        ? ({
-            5: calculateActualMovingAverage(data.points, 5),
-            10: calculateActualMovingAverage(data.points, 10),
-            20: calculateActualMovingAverage(data.points, 20),
-          } satisfies Record<Horizon, ReturnType<typeof calculateActualMovingAverage>>)
-        : emptyLineMap,
-    [data],
+        ? buildMa40Projection(data.points, predictions, baseDate)
+        : {
+            rows: [],
+            actualLine: [],
+            predictedLine: [],
+            closeByDate: new Map<string, number>(),
+          },
+    [baseDate, data, predictions],
   );
-  const projectedMovingAverages = useMemo(
-    () => (data ? calculateProjectedMovingAverages(data.points, predictions, horizons) : emptyLineMap),
-    [data, predictions],
+  const predictionComparisons = useMemo(
+    () => compareProjectionRows(projection.rows),
+    [projection.rows],
   );
-
+  const summary = useMemo(() => summarizeComparisons(predictionComparisons), [predictionComparisons]);
   const latest = data?.points.at(-1);
   const unit = periods.find((item) => item.value === period)?.unit ?? '';
-  const visibleHorizonList = horizons.filter((item) => visibleHorizons[item]);
-  const filledCount = countFilled(predictions);
-  const lineSeries = useMemo<ChartLineSeries[]>(() => {
-    const predictionClose: ChartLineSeries = {
-      label: '预测收盘',
-      color: '#4a3f31',
-      rows: predictionCloseLine(predictions),
-      lineWidth: 1.8,
-      lineType: 'solid',
-      symbol: 'circle',
-      symbolSize: 6,
-      symbolOffset: [0, -12],
-      z: 10,
-    };
-    const averageLines = visibleHorizonList.flatMap((item) => {
-      const style = horizonStyles[item];
-      return [
-        {
-          label: `真实MA${item}`,
-          color: style.color,
-          rows: actualMovingAverages[item],
-          lineWidth: 1.6,
-          lineType: 'solid',
-          symbol: 'none',
-          symbolSize: 0,
-          symbolOffset: [0, 0] as [number, number],
-          opacity: 0.62,
-          showSymbol: false,
-          z: 2,
-        },
-        {
-          label: `预测MA${item}`,
-          color: style.color,
-          rows: projectedMovingAverages[item],
-          lineWidth: style.lineWidth,
-          lineType: style.lineType,
-          symbol: style.symbol,
-          symbolSize: style.symbolSize,
-          symbolOffset: style.symbolOffset,
-          opacity: 0.78,
-          z: style.z,
-        },
-      ] satisfies ChartLineSeries[];
-    });
-
-    return [predictionClose, ...averageLines];
-  }, [actualMovingAverages, predictions, projectedMovingAverages, visibleHorizonList]);
-
-  function toggleHorizon(item: Horizon) {
-    setVisibleHorizons((current) => {
-      const activeCount = horizons.filter((candidate) => current[candidate]).length;
-      if (current[item] && activeCount === 1) return current;
-      return { ...current, [item]: !current[item] };
-    });
-  }
+  const filledCount = predictions.filter((row) => row.predictedMa40.trim() !== '').length;
+  const lineSeries = useMemo<ChartLineSeries[]>(
+    () => [
+      {
+        label: '真实MA40',
+        color: '#2f7893',
+        rows: projection.actualLine,
+        lineWidth: 2.2,
+        lineType: 'solid',
+        symbol: 'none',
+        symbolSize: 0,
+        symbolOffset: [0, 0],
+        opacity: 0.78,
+        showSymbol: false,
+        z: 4,
+      },
+      {
+        label: '预测MA40',
+        color: '#a87935',
+        rows: projection.predictedLine,
+        lineWidth: 3,
+        lineType: 'dashed',
+        symbol: 'circle',
+        symbolSize: 7,
+        symbolOffset: [0, 0],
+        opacity: 0.94,
+        z: 8,
+      },
+    ],
+    [projection.actualLine, projection.predictedLine],
+  );
 
   function updatePrediction(targetDate: string, value: string) {
+    const normalizedValue = normalizeDecimalInput(value);
     setPredictions((current) =>
       current.map((row) =>
-        row.targetDate === targetDate
-          ? {
-              ...row,
-              predictedClose: value,
-            }
-          : row,
+        row.targetDate === targetDate ? { ...row, predictedMa40: normalizedValue } : row,
       ),
     );
+  }
+
+  function formatPredictionInput(targetDate: string) {
+    const row = predictions.find((item) => item.targetDate === targetDate);
+    const formatted = formatDecimalInput(row?.predictedMa40 ?? '');
+    if (formatted !== row?.predictedMa40) {
+      updatePrediction(targetDate, formatted);
+    }
   }
 
   function updateNote(value: string) {
@@ -302,7 +204,7 @@ export default function App() {
 
   function resetRows() {
     if (!data || !baseDate) return;
-    setPredictions(generatePredictionRows(data.points, period, baseDate, maxHorizon));
+    setPredictions(generatePredictionRows(data.points, period, baseDate, forecastRowCount));
     setFileStatus('已重置当前预测表');
   }
 
@@ -312,8 +214,8 @@ export default function App() {
       return;
     }
 
-    const fileData: PredictionFileV3 = {
-      schema: 'gupiao-manual-predictions/v3',
+    const fileData: PredictionFileV5 = {
+      schema: 'gupiao-ma40-predictions/v1',
       exportedAt: new Date().toISOString(),
       stockCode: data.code,
       stockName: data.name,
@@ -327,7 +229,7 @@ export default function App() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `${data.code}-${period}-${baseDate}-forecast-ma.json`;
+    link.download = `${data.code}-${period}-${baseDate}-forecast-ma40.json`;
     document.body.appendChild(link);
     link.click();
     link.remove();
@@ -342,7 +244,7 @@ export default function App() {
       const text = await file.text();
       const parsed = normalizePredictionFile(JSON.parse(text));
       if (!parsed) {
-        throw new Error('文件格式不是本系统导出的预测文件');
+        throw new Error('文件格式不是本系统导出的 MA40 预测文件');
       }
 
       importedPlanRef.current = parsed;
@@ -355,7 +257,6 @@ export default function App() {
       saveWorkspaceCache({
         stockCode: parsed.stockCode,
         period: parsed.period,
-        horizon: maxHorizon,
         baseDate: parsed.baseDate,
         updatedAt: new Date().toISOString(),
       });
@@ -371,8 +272,8 @@ export default function App() {
     <main className="app-shell">
       <section className="topbar">
         <div>
-          <p className="eyebrow">Eastmoney K-Line Forecast Compare</p>
-          <h1>人工预测走势对比</h1>
+          <p className="eyebrow">MA40 Forecast Console</p>
+          <h1>人工预测 MA40 走势</h1>
         </div>
         <form
           className="stock-search"
@@ -407,23 +308,9 @@ export default function App() {
           ))}
         </div>
 
-        <div className="horizon-display" aria-label="显示均线">
-          {horizons.map((item) => (
-            <button
-              aria-pressed={visibleHorizons[item]}
-              className={`${horizonStyles[item].className} ${visibleHorizons[item] ? 'selected' : 'muted'}`}
-              key={item}
-              onClick={() => toggleHorizon(item)}
-              type="button"
-            >
-              <b>MA{item}</b>
-              <small>
-                {item}
-                {unit}
-                均线
-              </small>
-            </button>
-          ))}
+        <div className="ma40-badge">
+          <b>MA40</b>
+          <span>真实线 + 预测线</span>
         </div>
 
         <label className="select-field">
@@ -442,7 +329,8 @@ export default function App() {
         <Metric label="股票" value={data ? `${data.name} ${data.code}` : '申万宏源 000166'} />
         <Metric label="最新周期" value={latest?.date ?? '--'} />
         <Metric label="最新收盘" value={latest ? latest.close.toFixed(2) : '--'} />
-        <Metric label="已填写" value={`${filledCount}/${predictions.length || maxHorizon}`} />
+        <Metric label="预测窗口" value={`${MA40_WINDOW}${unit}`} />
+        <Metric label="已填写" value={`${filledCount}/${predictions.length || forecastRowCount}`} />
         <Metric label="可对比" value={`${summary.compared}`} />
         <Metric label="MAE" value={summary.mae === null ? '--' : summary.mae.toFixed(2)} />
         <Metric label="MAPE" value={summary.mape === null ? '--' : `${summary.mape.toFixed(2)}%`} />
@@ -451,13 +339,14 @@ export default function App() {
       <section className="workspace">
         <div className="chart-panel">
           {isLoading ? (
-            <div className="loading">正在从东方财富加载K线数据...</div>
+            <div className="loading">正在加载K线数据...</div>
           ) : data ? (
             <KLineChart
               points={data.points}
               lineSeries={lineSeries}
               baseDate={baseDate}
               period={period}
+              showCloseLine={false}
             />
           ) : (
             <div className="loading">暂无K线数据</div>
@@ -467,8 +356,8 @@ export default function App() {
         <aside className="input-panel">
           <div className="panel-head">
             <div>
-              <p className="eyebrow">Manual Input</p>
-              <h2>预测收盘价</h2>
+              <p className="eyebrow">Manual MA40 Input</p>
+              <h2>预测MA40</h2>
             </div>
             <div className="panel-actions">
               <button type="button" className="ghost" onClick={exportPredictions}>
@@ -492,36 +381,28 @@ export default function App() {
           {fileStatus ? <div className="file-status">{fileStatus}</div> : null}
           <div className="cache-status">{cacheStatus}</div>
 
-          <div className="prediction-table moving-average-table">
-            <div className={`prediction-row table-head columns-${visibleHorizonList.length}`}>
+          <div className="prediction-table ma40-table">
+            <div className="prediction-row table-head">
               <span>目标周期</span>
-              <span>预测收盘</span>
-              <span>真实价</span>
-              {visibleHorizonList.map((item) => (
-                <span className={`horizon-head ${horizonStyles[item].className}`} key={item}>
-                  MA{item}
-                </span>
-              ))}
+              <span>预测MA40</span>
+              <span>反推收盘</span>
+              <span>真实收盘</span>
             </div>
-            {projectedAverageRows.map((row) => (
-              <div className={`prediction-row columns-${visibleHorizonList.length}`} key={row.targetDate}>
+            {projection.rows.map((row) => (
+              <div className="prediction-row" key={row.targetDate}>
                 <span className="date-cell">{row.targetDate}</span>
                 <input
-                  className="prediction-input forecast-close-input"
-                  aria-label={`${row.targetDate} 预测收盘价`}
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  value={row.predictedClose}
+                  className="prediction-input forecast-ma40-input"
+                  aria-label={`${row.targetDate} 预测MA40`}
+                  type="text"
+                  inputMode="decimal"
+                  value={row.predictedMa40}
                   onChange={(event) => updatePrediction(row.targetDate, event.target.value)}
+                  onBlur={() => formatPredictionInput(row.targetDate)}
                   placeholder="0.00"
                 />
+                <span className="derived-close-cell">{formatNumber(row.derivedClose)}</span>
                 <span>{formatNumber(row.actualClose)}</span>
-                {visibleHorizonList.map((item) => (
-                  <span className={`ma-cell ${horizonStyles[item].className}`} key={item}>
-                    {formatNumber(row.ma[item])}
-                  </span>
-                ))}
               </div>
             ))}
           </div>
@@ -531,7 +412,7 @@ export default function App() {
             <textarea
               value={predictions[0]?.note ?? ''}
               onChange={(event) => updateNote(event.target.value)}
-              placeholder="例如：基本面判断、压力位、人工假设..."
+              placeholder="例如：MA40目标、趋势判断、压力位..."
             />
           </label>
         </aside>
@@ -540,27 +421,19 @@ export default function App() {
   );
 }
 
-function normalizePredictionFile(value: unknown): PredictionFileV3 | null {
-  if (isPredictionFileV3(value)) return value;
-  if (isLegacyPredictionFileV2(value)) {
-    return {
-      schema: 'gupiao-manual-predictions/v3',
-      exportedAt: value.exportedAt,
-      stockCode: value.stockCode,
-      stockName: value.stockName,
-      period: value.period,
-      baseDate: value.baseDate,
-      predictions: mergeLegacyPredictionRows(value.predictionsByHorizon),
-    };
-  }
+function normalizePredictionFile(value: unknown): PredictionFileV5 | null {
+  if (!isPredictionFileV5(value)) return null;
 
-  return null;
+  return {
+    ...value,
+    predictions: value.predictions.map(normalizePredictionPoint),
+  };
 }
 
-function isPredictionFileV3(value: unknown): value is PredictionFileV3 {
-  const candidate = value as PredictionFileV3;
+function isPredictionFileV5(value: unknown): value is PredictionFileV5 {
+  const candidate = value as PredictionFileV5;
   return (
-    candidate?.schema === 'gupiao-manual-predictions/v3' &&
+    candidate?.schema === 'gupiao-ma40-predictions/v1' &&
     typeof candidate.stockCode === 'string' &&
     ['day', 'week', 'month'].includes(candidate.period) &&
     typeof candidate.baseDate === 'string' &&
@@ -568,46 +441,22 @@ function isPredictionFileV3(value: unknown): value is PredictionFileV3 {
   );
 }
 
-function isLegacyPredictionFileV2(value: unknown): value is LegacyPredictionFileV2 {
-  const candidate = value as LegacyPredictionFileV2;
-  return (
-    candidate?.schema === 'gupiao-manual-predictions/v2' &&
-    typeof candidate.stockCode === 'string' &&
-    ['day', 'week', 'month'].includes(candidate.period) &&
-    typeof candidate.baseDate === 'string' &&
-    horizons.every((item) => Array.isArray(candidate.predictionsByHorizon?.[item]))
-  );
+function formatDecimalInput(value: string) {
+  if (value.trim() === '') return '';
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed.toFixed(2) : value;
 }
 
-function mergeLegacyPredictionRows(rowsByHorizon: Record<Horizon, PredictionPoint[]>) {
-  const byDate = new Map<string, PredictionPoint>();
+function normalizeDecimalInput(value: string) {
+  const trimmed = value.trim();
+  if (trimmed === '') return '';
 
-  for (const horizon of horizons) {
-    for (const row of rowsByHorizon[horizon]) {
-      const current = byDate.get(row.targetDate);
-      if (!current) {
-        byDate.set(row.targetDate, { ...row });
-        continue;
-      }
+  const cleaned = trimmed.replace(/[^\d.]/g, '');
+  const [integerPart, ...decimalParts] = cleaned.split('.');
+  if (!decimalParts.length) return integerPart;
 
-      byDate.set(row.targetDate, {
-        ...current,
-        predictedClose:
-          current.predictedClose.trim() === '' && row.predictedClose.trim() !== ''
-            ? row.predictedClose
-            : current.predictedClose,
-        note: current.note.trim() === '' && row.note.trim() !== '' ? row.note : current.note,
-      });
-    }
-  }
-
-  return Array.from(byDate.values()).sort((left, right) =>
-    left.targetDate.localeCompare(right.targetDate),
-  );
-}
-
-function countFilled(rows: PredictionPoint[]) {
-  return rows.filter((row) => row.predictedClose.trim() !== '').length;
+  const decimals = decimalParts.join('').slice(0, 2);
+  return `${integerPart || '0'}.${decimals}`;
 }
 
 function Metric({ label, value }: { label: string; value: string }) {

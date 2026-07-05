@@ -1,7 +1,5 @@
 export type PeriodType = 'day' | 'week' | 'month';
 
-export type Horizon = 5 | 10 | 20;
-
 export interface KLinePoint {
   date: string;
   open: number;
@@ -25,12 +23,13 @@ export interface StockKLineResponse {
 
 export interface PredictionPoint {
   targetDate: string;
-  predictedClose: string;
+  predictedMa40: string;
   note: string;
 }
 
 export interface ComparisonRow extends PredictionPoint {
   actualClose: number | null;
+  derivedClose: number | null;
   diff: number | null;
   diffPct: number | null;
 }

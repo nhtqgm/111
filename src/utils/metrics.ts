@@ -1,22 +1,15 @@
-import type { ComparisonRow, KLinePoint, PredictionPoint } from '../types';
+import type { ComparisonRow } from '../types';
+import type { Ma40ProjectionRow } from './movingAverage';
 
-export function comparePredictions(
-  predictions: PredictionPoint[],
-  points: KLinePoint[],
-): ComparisonRow[] {
-  const actualByDate = new Map(points.map((point) => [point.date, point.close]));
-
-  return predictions.map((row) => {
-    const predicted = Number(row.predictedClose);
-    const actualClose = actualByDate.get(row.targetDate) ?? null;
-    const hasPrediction = Number.isFinite(predicted) && row.predictedClose.trim() !== '';
-    const diff = hasPrediction && actualClose !== null ? predicted - actualClose : null;
+export function compareProjectionRows(rows: Ma40ProjectionRow[]): ComparisonRow[] {
+  return rows.map((row) => {
+    const diff =
+      row.derivedClose !== null && row.actualClose !== null ? row.derivedClose - row.actualClose : null;
 
     return {
       ...row,
-      actualClose,
       diff,
-      diffPct: diff !== null && actualClose ? (Math.abs(diff) / actualClose) * 100 : null,
+      diffPct: diff !== null && row.actualClose ? (Math.abs(diff) / row.actualClose) * 100 : null,
     };
   });
 }
