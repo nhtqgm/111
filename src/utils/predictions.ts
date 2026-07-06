@@ -9,8 +9,8 @@ export interface WorkspaceCache {
 
 const WORKSPACE_CACHE_KEY = 'prediction-ma40:last-workspace';
 
-export function predictionPlanKey(stockCode: string, period: PeriodType, baseDate: string) {
-  return `prediction-ma40:${stockCode}:${period}:${baseDate}:v1`;
+export function predictionPlanKey(stockCode: string, period: PeriodType, _baseDate?: string) {
+  return `prediction-ma:${stockCode}:${period}:v2`;
 }
 
 export function loadPredictions(key: string): PredictionPoint[] | null {
@@ -37,7 +37,10 @@ export function loadPredictionRows(
   rowCount: number,
 ): PredictionPoint[] {
   const rows = generatePredictionRows(points, period, baseDate, rowCount);
-  const currentRows = loadPredictions(predictionPlanKey(stockCode, period, baseDate)) ?? [];
+  const currentRows =
+    loadPredictions(predictionPlanKey(stockCode, period, baseDate)) ??
+    loadPredictions(legacyPredictionPlanKey(stockCode, period, baseDate)) ??
+    [];
 
   return rows.map((row) => {
     const currentMatch = currentRows.find((item) => item.targetDate === row.targetDate);
@@ -130,6 +133,10 @@ function mergePredictionValues(
       Object.entries(savedValues).filter(([, value]) => value.trim() !== ''),
     ),
   };
+}
+
+function legacyPredictionPlanKey(stockCode: string, period: PeriodType, baseDate: string) {
+  return `prediction-ma40:${stockCode}:${period}:${baseDate}:v1`;
 }
 
 function getTargetDates(

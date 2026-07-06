@@ -146,7 +146,7 @@ export default function KLineChart({
             ? {
                 symbol: ['none', 'none'],
                 label: { formatter: '预测起点', color: '#5f5444' },
-                lineStyle: { color: '#8c6a3d', type: 'dashed', width: 1 },
+                lineStyle: { color: '#8c6a3d', type: 'solid', width: 1 },
                 data: [{ xAxis: baseDate }],
               }
             : undefined,

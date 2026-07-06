@@ -53,7 +53,7 @@ export default function App() {
   const [queryCode, setQueryCode] = useState(initialWorkspace?.stockCode ?? '000166');
   const [period, setPeriod] = useState<PeriodType>(initialWorkspace?.period ?? 'month');
   const [data, setData] = useState<StockKLineResponse | null>(null);
-  const [baseDate, setBaseDate] = useState(initialWorkspace?.baseDate ?? todayDate);
+  const [baseDate, setBaseDate] = useState(todayDate);
   const [predictions, setPredictions] = useState<PredictionPoint[]>([]);
   const [visibleMaWindows, setVisibleMaWindows] = useState<MaWindow[]>([5, 10, 20, 40, 60]);
   const [inputMaWindow, setInputMaWindow] = useState<MaWindow>(40);
@@ -66,7 +66,6 @@ export default function App() {
   );
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const importedPlanRef = useRef<PredictionFileV5 | null>(null);
-  const initialWorkspaceRef = useRef(initialWorkspace);
 
   useEffect(() => {
     let cancelled = false;
@@ -77,28 +76,7 @@ export default function App() {
       .then((result) => {
         if (cancelled) return;
         setData(result);
-        setBaseDate(() => {
-          const importedPlan = importedPlanRef.current;
-          if (
-            importedPlan &&
-            importedPlan.stockCode === result.code &&
-            importedPlan.period === period
-          ) {
-            return importedPlan.baseDate;
-          }
-
-          const cachedWorkspace = initialWorkspaceRef.current;
-          if (
-            cachedWorkspace &&
-            cachedWorkspace.stockCode === result.code &&
-            cachedWorkspace.period === period
-          ) {
-            initialWorkspaceRef.current = null;
-            return cachedWorkspace.baseDate;
-          }
-
-          return result.points.at(-1)?.date ?? todayDate;
-        });
+        setBaseDate(result.points.at(-1)?.date ?? todayDate);
       })
       .catch((err: Error) => {
         if (cancelled) return;
@@ -121,8 +99,7 @@ export default function App() {
     if (
       importedPlan &&
       importedPlan.stockCode === data.code &&
-      importedPlan.period === period &&
-      importedPlan.baseDate === baseDate
+      importedPlan.period === period
     ) {
       setPredictions(importedPlan.predictions);
       savePredictions(predictionPlanKey(data.code, period, baseDate), importedPlan.predictions);
@@ -198,7 +175,7 @@ export default function App() {
           color: lineColors[windowSize],
           rows: projection.predictedLines[windowSize],
           lineWidth: windowSize === 40 ? 3.2 : 2.5,
-          lineType: 'dashed' as const,
+          lineType: 'solid' as const,
           symbol: 'circle',
           symbolSize: windowSize === 40 ? 7 : 5,
           symbolOffset: [0, 0] as [number, number],
@@ -293,13 +270,12 @@ export default function App() {
       setStockCode(parsed.stockCode);
       setQueryCode(parsed.stockCode);
       setPeriod(parsed.period);
-      setBaseDate(parsed.baseDate);
       setPredictions(parsed.predictions);
-      savePredictions(predictionPlanKey(parsed.stockCode, parsed.period, parsed.baseDate), parsed.predictions);
+      savePredictions(predictionPlanKey(parsed.stockCode, parsed.period, baseDate), parsed.predictions);
       saveWorkspaceCache({
         stockCode: parsed.stockCode,
         period: parsed.period,
-        baseDate: parsed.baseDate,
+        baseDate,
         updatedAt: new Date().toISOString(),
       });
       setFileStatus(`已选择文件：${file.name}`);
@@ -405,14 +381,6 @@ export default function App() {
           })}
         </div>
 
-        <label className="select-field">
-          <span>预测起点</span>
-          <input
-            type="date"
-            value={baseDate}
-            onChange={(event) => setBaseDate(event.target.value || todayDate)}
-          />
-        </label>
       </section>
 
       {error ? <div className="error-banner">{error}</div> : null}
