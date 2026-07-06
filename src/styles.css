@@ -460,6 +460,42 @@ h2 {
   font-weight: 800;
 }
 
+.input-mode-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 8px;
+  border: 1px solid #c8beae;
+  border-radius: 6px;
+  background: #f2eadc;
+}
+
+.input-mode-strip span {
+  margin-right: 4px;
+  color: #746b5d;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.input-mode-strip button {
+  height: 30px;
+  min-width: 54px;
+  border: 1px solid #9a8f7f;
+  border-radius: 6px;
+  background: #fffdf8;
+  color: #2c332d;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.input-mode-strip button.active {
+  border-color: #26302a;
+  background: #26302a;
+  color: #f7f4ee;
+}
+
 .prediction-table {
   display: grid;
   gap: 5px;

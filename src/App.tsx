@@ -56,6 +56,7 @@ export default function App() {
   const [baseDate, setBaseDate] = useState(initialWorkspace?.baseDate ?? todayDate);
   const [predictions, setPredictions] = useState<PredictionPoint[]>([]);
   const [visibleMaWindows, setVisibleMaWindows] = useState<MaWindow[]>([5, 10, 20, 40, 60]);
+  const [inputMaWindow, setInputMaWindow] = useState<MaWindow>(40);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
   const [fileStatus, setFileStatus] = useState('');
@@ -148,14 +149,14 @@ export default function App() {
   const projection = useMemo(
     () =>
       data
-        ? buildMa40Projection(data.points, predictions, baseDate)
+        ? buildMa40Projection(data.points, predictions, baseDate, inputMaWindow)
         : {
             rows: [],
             actualLines: createEmptyLineMap(),
             predictedLines: createEmptyLineMap(),
             closeByDate: new Map<string, number>(),
           },
-    [baseDate, data, predictions],
+    [baseDate, data, inputMaWindow, predictions],
   );
   const predictionComparisons = useMemo(
     () => compareProjectionRows(projection.rows),
@@ -168,7 +169,9 @@ export default function App() {
     [data],
   );
   const unit = periods.find((item) => item.value === period)?.unit ?? '';
-  const filledCount = predictions.filter((row) => row.predictedMa40.trim() !== '').length;
+  const filledCount = predictions.filter(
+    (row) => getPredictionInputValue(row, inputMaWindow).trim() !== '',
+  ).length;
   const predictionTableStyle = {
     gridTemplateColumns: `132px 112px 104px 86px repeat(${visibleMaWindows.length}, 72px)`,
     minWidth: `${456 + visibleMaWindows.length * 80}px`,
@@ -220,15 +223,18 @@ export default function App() {
     const normalizedValue = normalizeDecimalInput(value);
     setPredictions((current) =>
       current.map((row) =>
-        row.targetDate === targetDate ? { ...row, predictedMa40: normalizedValue } : row,
+        row.targetDate === targetDate
+          ? setPredictionInputValue(row, inputMaWindow, normalizedValue)
+          : row,
       ),
     );
   }
 
   function formatPredictionInput(targetDate: string) {
     const row = predictions.find((item) => item.targetDate === targetDate);
-    const formatted = formatDecimalInput(row?.predictedMa40 ?? '');
-    if (formatted !== row?.predictedMa40) {
+    const currentValue = row ? getPredictionInputValue(row, inputMaWindow) : '';
+    const formatted = formatDecimalInput(currentValue);
+    if (formatted !== currentValue) {
       updatePrediction(targetDate, formatted);
     }
   }
@@ -343,11 +349,6 @@ export default function App() {
           ))}
         </div>
 
-        <div className="ma40-badge">
-          <b>MA40</b>
-          <span>输入目标并反推收盘</span>
-        </div>
-
         <div className="horizon-display ma-display" aria-label="均线显示选择">
           {MA_WINDOWS.map((windowSize) => {
             const selected = visibleMaWindows.includes(windowSize);
@@ -412,8 +413,8 @@ export default function App() {
         <aside className="input-panel">
           <div className="panel-head">
             <div>
-              <p className="eyebrow">Manual MA40 Input</p>
-              <h2>预测MA40</h2>
+              <p className="eyebrow">Manual MA Input</p>
+              <h2>预测MA{inputMaWindow}</h2>
             </div>
             <div className="panel-actions">
               <button type="button" className="ghost" onClick={exportPredictions}>
@@ -437,10 +438,24 @@ export default function App() {
           {fileStatus ? <div className="file-status">{fileStatus}</div> : null}
           <div className="cache-status">{cacheStatus}</div>
 
+          <div className="input-mode-strip" aria-label="反推基准选择">
+            <span>反推基准</span>
+            {MA_WINDOWS.map((windowSize) => (
+              <button
+                key={windowSize}
+                type="button"
+                className={inputMaWindow === windowSize ? 'active' : ''}
+                onClick={() => setInputMaWindow(windowSize)}
+              >
+                MA{windowSize}
+              </button>
+            ))}
+          </div>
+
           <div className="prediction-table ma40-table">
             <div className="prediction-row table-head" style={predictionTableStyle}>
               <span>目标周期</span>
-              <span>预测MA40</span>
+              <span>预测MA{inputMaWindow}</span>
               <span>反推收盘</span>
               <span>真实收盘</span>
               {visibleMaWindows.map((windowSize) => (
@@ -452,10 +467,10 @@ export default function App() {
                 <span className="date-cell">{row.targetDate}</span>
                 <input
                   className="prediction-input forecast-ma40-input"
-                  aria-label={`${row.targetDate} 预测MA40`}
+                  aria-label={`${row.targetDate} 预测MA${inputMaWindow}`}
                   type="text"
                   inputMode="decimal"
-                  value={row.predictedMa40}
+                  value={getPredictionInputValue(row, inputMaWindow)}
                   onChange={(event) => updatePrediction(row.targetDate, event.target.value)}
                   onBlur={() => formatPredictionInput(row.targetDate)}
                   placeholder="0.0000"
@@ -519,6 +534,27 @@ function normalizeDecimalInput(value: string) {
 
   const decimals = decimalParts.join('').slice(0, 4);
   return `${integerPart || '0'}.${decimals}`;
+}
+
+function getPredictionInputValue(row: PredictionPoint, windowSize: MaWindow) {
+  return row.predictedMaValues[String(windowSize)] ?? (windowSize === 40 ? row.predictedMa40 : '');
+}
+
+function setPredictionInputValue(
+  row: PredictionPoint,
+  windowSize: MaWindow,
+  value: string,
+): PredictionPoint {
+  const predictedMaValues = {
+    ...row.predictedMaValues,
+    [String(windowSize)]: value,
+  };
+
+  return {
+    ...row,
+    predictedMa40: windowSize === 40 ? value : row.predictedMa40,
+    predictedMaValues,
+  };
 }
 
 function createEmptyLineMap(): Record<MaWindow, LineValuePoint[]> {

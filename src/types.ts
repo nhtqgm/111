@@ -25,6 +25,7 @@ export interface StockKLineResponse {
 export interface PredictionPoint {
   targetDate: string;
   predictedMa40: string;
+  predictedMaValues: Record<string, string>;
   note: string;
 }
 

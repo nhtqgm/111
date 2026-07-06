@@ -40,6 +40,7 @@ export function buildMa40Projection(
   points: KLinePoint[],
   predictions: PredictionPoint[],
   baseDate: string,
+  inputWindow: MaWindow = MA40_WINDOW,
 ): Ma40Projection {
   const actualCloseByDate = new Map(points.map((point) => [point.date, point.close]));
   const closeByDate = new Map(actualCloseByDate);
@@ -52,11 +53,17 @@ export function buildMa40Projection(
   );
 
   const rows = sortedPredictions.map((row) => {
-    const predictedMa40 = parseInput(row.predictedMa40);
+    const predictedMa = parseInput(getPredictedMaInput(row, inputWindow));
     const derivedClose =
-      predictedMa40 === null
+      predictedMa === null
         ? null
-        : reverseCloseFromMovingAverage(orderedDates, closeByDate, row.targetDate, predictedMa40);
+        : reverseCloseFromMovingAverage(
+            orderedDates,
+            closeByDate,
+            row.targetDate,
+            predictedMa,
+            inputWindow,
+          );
 
     if (derivedClose !== null) {
       closeByDate.set(row.targetDate, derivedClose);
@@ -121,18 +128,19 @@ function reverseCloseFromMovingAverage(
   orderedDates: string[],
   closeByDate: Map<string, number>,
   targetDate: string,
-  targetMa40: number,
+  targetMa: number,
+  windowSize: MaWindow,
 ) {
   const targetIndex = orderedDates.indexOf(targetDate);
   if (targetIndex < 0) return null;
 
-  const previousDates = orderedDates.slice(targetIndex - (MA40_WINDOW - 1), targetIndex);
-  if (previousDates.length !== MA40_WINDOW - 1) return null;
+  const previousDates = orderedDates.slice(targetIndex - (windowSize - 1), targetIndex);
+  if (previousDates.length !== windowSize - 1) return null;
 
   const previousValues = previousDates.map((date) => closeByDate.get(date) ?? Number.NaN);
   if (previousValues.some((value) => !Number.isFinite(value))) return null;
 
-  return targetMa40 * MA40_WINDOW - sum(previousValues);
+  return targetMa * windowSize - sum(previousValues);
 }
 
 function calculateMovingAverageAtDate(
@@ -157,6 +165,10 @@ function parseInput(value: string) {
   if (value.trim() === '') return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function getPredictedMaInput(row: PredictionPoint, windowSize: MaWindow) {
+  return row.predictedMaValues[String(windowSize)] ?? (windowSize === 40 ? row.predictedMa40 : '');
 }
 
 function mergeDates(actualDates: string[], predictedDates: string[]) {

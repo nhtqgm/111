@@ -46,6 +46,7 @@ export function loadPredictionRows(
     const normalized = normalizePredictionPoint(currentMatch);
     return {
       ...row,
+      predictedMaValues: mergePredictionValues(row.predictedMaValues, normalized.predictedMaValues),
       predictedMa40:
         row.predictedMa40.trim() === '' && normalized.predictedMa40.trim() !== ''
           ? normalized.predictedMa40
@@ -89,15 +90,45 @@ export function generatePredictionRows(
   return targetDates.map((targetDate) => ({
     targetDate,
     predictedMa40: '',
+    predictedMaValues: {},
     note: '',
   }));
 }
 
 export function normalizePredictionPoint(value: any): PredictionPoint {
+  const predictedMa40 = String(value?.predictedMa40 ?? value?.predictedMaValues?.['40'] ?? '');
+  const predictedMaValues = normalizePredictionValues(value?.predictedMaValues);
+  if (predictedMa40.trim() !== '' && !predictedMaValues['40']) {
+    predictedMaValues['40'] = predictedMa40;
+  }
+
   return {
     targetDate: String(value?.targetDate ?? ''),
-    predictedMa40: String(value?.predictedMa40 ?? ''),
+    predictedMa40,
+    predictedMaValues,
     note: String(value?.note ?? ''),
+  };
+}
+
+function normalizePredictionValues(value: any) {
+  if (!value || typeof value !== 'object') return {};
+
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => ['5', '10', '20', '40', '60'].includes(key))
+      .map(([key, input]) => [key, String(input ?? '')]),
+  );
+}
+
+function mergePredictionValues(
+  baseValues: Record<string, string>,
+  savedValues: Record<string, string>,
+) {
+  return {
+    ...baseValues,
+    ...Object.fromEntries(
+      Object.entries(savedValues).filter(([, value]) => value.trim() !== ''),
+    ),
   };
 }
 
