@@ -405,7 +405,7 @@ export default function App() {
                   value={row.predictedMa40}
                   onChange={(event) => updatePrediction(row.targetDate, event.target.value)}
                   onBlur={() => formatPredictionInput(row.targetDate)}
-                  placeholder="0.00"
+                  placeholder="0.0000"
                 />
                 <span className="derived-close-cell">{formatNumber(row.derivedClose)}</span>
                 <span>{formatNumber(row.actualClose)}</span>
@@ -450,7 +450,7 @@ function isPredictionFileV5(value: unknown): value is PredictionFileV5 {
 function formatDecimalInput(value: string) {
   if (value.trim() === '') return '';
   const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed.toFixed(2) : value;
+  return Number.isFinite(parsed) ? parsed.toFixed(4) : value;
 }
 
 function normalizeDecimalInput(value: string) {
@@ -461,7 +461,7 @@ function normalizeDecimalInput(value: string) {
   const [integerPart, ...decimalParts] = cleaned.split('.');
   if (!decimalParts.length) return integerPart;
 
-  const decimals = decimalParts.join('').slice(0, 2);
+  const decimals = decimalParts.join('').slice(0, 4);
   return `${integerPart || '0'}.${decimals}`;
 }
 
