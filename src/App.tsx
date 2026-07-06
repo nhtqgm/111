@@ -57,6 +57,7 @@ export default function App() {
   const [predictions, setPredictions] = useState<PredictionPoint[]>([]);
   const [visibleMaWindows, setVisibleMaWindows] = useState<MaWindow[]>([5, 10, 20, 40, 60]);
   const [inputMaWindow, setInputMaWindow] = useState<MaWindow>(40);
+  const [isTableExpanded, setIsTableExpanded] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
   const [fileStatus, setFileStatus] = useState('');
@@ -309,6 +310,42 @@ export default function App() {
     }
   }
 
+  function renderPredictionTable(expanded = false) {
+    return (
+      <div className={`prediction-table ma40-table ${expanded ? 'expanded-table' : ''}`}>
+        <div className="prediction-row table-head" style={predictionTableStyle}>
+          <span>目标周期</span>
+          <span>预测MA{inputMaWindow}</span>
+          <span>反推收盘</span>
+          <span>真实收盘</span>
+          {visibleMaWindows.map((windowSize) => (
+            <span key={windowSize}>MA{windowSize}</span>
+          ))}
+        </div>
+        {projection.rows.map((row) => (
+          <div className="prediction-row" key={row.targetDate} style={predictionTableStyle}>
+            <span className="date-cell">{row.targetDate}</span>
+            <input
+              className="prediction-input forecast-ma40-input"
+              aria-label={`${row.targetDate} 预测MA${inputMaWindow}`}
+              type="text"
+              inputMode="decimal"
+              value={getPredictionInputValue(row, inputMaWindow)}
+              onChange={(event) => updatePrediction(row.targetDate, event.target.value)}
+              onBlur={() => formatPredictionInput(row.targetDate)}
+              placeholder="0.0000"
+            />
+            <span className="derived-close-cell">{formatNumber(row.derivedClose)}</span>
+            <span>{formatNumber(row.actualClose)}</span>
+            {visibleMaWindows.map((windowSize) => (
+              <span key={windowSize}>{formatNumber(row.maValues[windowSize])}</span>
+            ))}
+          </div>
+        ))}
+      </div>
+    );
+  }
+
   return (
     <main className="app-shell">
       <section className="topbar">
@@ -426,6 +463,9 @@ export default function App() {
               <button type="button" className="ghost" onClick={resetRows}>
                 重置
               </button>
+              <button type="button" className="ghost" onClick={() => setIsTableExpanded(true)}>
+                放大
+              </button>
               <input
                 ref={fileInputRef}
                 className="hidden-file"
@@ -452,37 +492,7 @@ export default function App() {
             ))}
           </div>
 
-          <div className="prediction-table ma40-table">
-            <div className="prediction-row table-head" style={predictionTableStyle}>
-              <span>目标周期</span>
-              <span>预测MA{inputMaWindow}</span>
-              <span>反推收盘</span>
-              <span>真实收盘</span>
-              {visibleMaWindows.map((windowSize) => (
-                <span key={windowSize}>MA{windowSize}</span>
-              ))}
-            </div>
-            {projection.rows.map((row) => (
-              <div className="prediction-row" key={row.targetDate} style={predictionTableStyle}>
-                <span className="date-cell">{row.targetDate}</span>
-                <input
-                  className="prediction-input forecast-ma40-input"
-                  aria-label={`${row.targetDate} 预测MA${inputMaWindow}`}
-                  type="text"
-                  inputMode="decimal"
-                  value={getPredictionInputValue(row, inputMaWindow)}
-                  onChange={(event) => updatePrediction(row.targetDate, event.target.value)}
-                  onBlur={() => formatPredictionInput(row.targetDate)}
-                  placeholder="0.0000"
-                />
-                <span className="derived-close-cell">{formatNumber(row.derivedClose)}</span>
-                <span>{formatNumber(row.actualClose)}</span>
-                {visibleMaWindows.map((windowSize) => (
-                  <span key={windowSize}>{formatNumber(row.maValues[windowSize])}</span>
-                ))}
-              </div>
-            ))}
-          </div>
+          {renderPredictionTable()}
 
           <label className="note-field">
             <span>备注</span>
@@ -494,6 +504,23 @@ export default function App() {
           </label>
         </aside>
       </section>
+
+      {isTableExpanded ? (
+        <div className="table-modal-backdrop" role="presentation">
+          <section className="table-modal" role="dialog" aria-modal="true" aria-label="完整预测表">
+            <div className="table-modal-head">
+              <div>
+                <p className="eyebrow">Full Table</p>
+                <h2>完整预测表</h2>
+              </div>
+              <button type="button" className="ghost" onClick={() => setIsTableExpanded(false)}>
+                关闭
+              </button>
+            </div>
+            {renderPredictionTable(true)}
+          </section>
+        </div>
+      ) : null}
     </main>
   );
 }
