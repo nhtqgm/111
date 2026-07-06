@@ -149,6 +149,7 @@ h2 {
 
 .horizon-display {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   padding: 4px;
   border: 1px solid #2d342e;
@@ -241,6 +242,18 @@ h2 {
     repeat-x;
 }
 
+.horizon-display button.horizon-40::before {
+  height: 4px;
+}
+
+.horizon-display button.horizon-60::before {
+  background: repeating-linear-gradient(
+    90deg,
+    var(--horizon-color) 0 3px,
+    transparent 3px 7px
+  );
+}
+
 .horizon-display b,
 .horizon-display small {
   display: block;
@@ -268,6 +281,18 @@ h2 {
   --horizon-color: #5f7d5d;
   --horizon-bg: #e8efe2;
   --horizon-soft: #f4f8f1;
+}
+
+.horizon-40 {
+  --horizon-color: #8f4d6b;
+  --horizon-bg: #f1e2e8;
+  --horizon-soft: #fbf3f6;
+}
+
+.horizon-60 {
+  --horizon-color: #555a9b;
+  --horizon-bg: #e7e8f4;
+  --horizon-soft: #f4f5fb;
 }
 
 .horizon-head {

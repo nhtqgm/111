@@ -1,9 +1,16 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { type CSSProperties, useEffect, useMemo, useRef, useState } from 'react';
 import KLineChart, { type ChartLineSeries } from './components/KLineChart';
 import { fetchKLines } from './services/eastmoney';
 import type { PeriodType, PredictionPoint, StockKLineResponse } from './types';
 import { compareProjectionRows, formatNumber, summarizeComparisons } from './utils/metrics';
-import { buildMa40Projection, calculateMovingAverage, MA40_WINDOW } from './utils/movingAverage';
+import {
+  buildMa40Projection,
+  calculateMovingAverage,
+  type LineValuePoint,
+  MA40_WINDOW,
+  MA_WINDOWS,
+  type MaWindow,
+} from './utils/movingAverage';
 import {
   generatePredictionRows,
   loadPredictionRows,
@@ -23,6 +30,13 @@ const periods: Array<{ value: PeriodType; label: string; unit: string }> = [
 const forecastRowCount = 40;
 const todayDate = formatDate(new Date());
 const initialWorkspace = loadWorkspaceCache();
+const lineColors: Record<MaWindow, string> = {
+  5: '#2f7893',
+  10: '#a87935',
+  20: '#5f7d5d',
+  40: '#8f4d6b',
+  60: '#555a9b',
+};
 
 interface PredictionFileV5 {
   schema: 'gupiao-ma40-predictions/v1';
@@ -41,6 +55,7 @@ export default function App() {
   const [data, setData] = useState<StockKLineResponse | null>(null);
   const [baseDate, setBaseDate] = useState(initialWorkspace?.baseDate ?? todayDate);
   const [predictions, setPredictions] = useState<PredictionPoint[]>([]);
+  const [visibleMaWindows, setVisibleMaWindows] = useState<MaWindow[]>([5, 10, 20, 40, 60]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
   const [fileStatus, setFileStatus] = useState('');
@@ -136,8 +151,8 @@ export default function App() {
         ? buildMa40Projection(data.points, predictions, baseDate)
         : {
             rows: [],
-            actualLine: [],
-            predictedLine: [],
+            actualLines: createEmptyLineMap(),
+            predictedLines: createEmptyLineMap(),
             closeByDate: new Map<string, number>(),
           },
     [baseDate, data, predictions],
@@ -154,36 +169,52 @@ export default function App() {
   );
   const unit = periods.find((item) => item.value === period)?.unit ?? '';
   const filledCount = predictions.filter((row) => row.predictedMa40.trim() !== '').length;
+  const predictionTableStyle = {
+    gridTemplateColumns: `132px 112px 104px 86px repeat(${visibleMaWindows.length}, 72px)`,
+    minWidth: `${456 + visibleMaWindows.length * 80}px`,
+  };
   const lineSeries = useMemo<ChartLineSeries[]>(
-    () => [
-      {
-        label: '真实MA40',
-        color: '#2f7893',
-        rows: projection.actualLine,
-        lineWidth: 2.2,
-        lineType: 'solid',
-        symbol: 'none',
-        symbolSize: 0,
-        symbolOffset: [0, 0],
-        opacity: 0.78,
-        showSymbol: false,
-        z: 4,
-      },
-      {
-        label: '预测MA40',
-        color: '#a87935',
-        rows: projection.predictedLine,
-        lineWidth: 3,
-        lineType: 'dashed',
-        symbol: 'circle',
-        symbolSize: 7,
-        symbolOffset: [0, 0],
-        opacity: 0.94,
-        z: 8,
-      },
-    ],
-    [projection.actualLine, projection.predictedLine],
+    () =>
+      visibleMaWindows.flatMap((windowSize) => [
+        {
+          label: `真实MA${windowSize}`,
+          color: lineColors[windowSize],
+          rows: projection.actualLines[windowSize],
+          lineWidth: windowSize === 40 ? 2.5 : 1.8,
+          lineType: 'solid' as const,
+          symbol: 'none',
+          symbolSize: 0,
+          symbolOffset: [0, 0] as [number, number],
+          opacity: windowSize === 40 ? 0.82 : 0.66,
+          showSymbol: false,
+          z: 3 + windowSize,
+        },
+        {
+          label: `预测MA${windowSize}`,
+          color: lineColors[windowSize],
+          rows: projection.predictedLines[windowSize],
+          lineWidth: windowSize === 40 ? 3.2 : 2.5,
+          lineType: 'dashed' as const,
+          symbol: 'circle',
+          symbolSize: windowSize === 40 ? 7 : 5,
+          symbolOffset: [0, 0] as [number, number],
+          opacity: 0.96,
+          showSymbol: windowSize === 40,
+          z: 10 + windowSize,
+        },
+      ]),
+    [projection.actualLines, projection.predictedLines, visibleMaWindows],
   );
+
+  function toggleMaWindow(windowSize: MaWindow) {
+    setVisibleMaWindows((current) => {
+      if (current.includes(windowSize)) {
+        return current.length === 1 ? current : current.filter((item) => item !== windowSize);
+      }
+
+      return MA_WINDOWS.filter((item) => current.includes(item) || item === windowSize);
+    });
+  }
 
   function updatePrediction(targetDate: string, value: string) {
     const normalizedValue = normalizeDecimalInput(value);
@@ -314,7 +345,26 @@ export default function App() {
 
         <div className="ma40-badge">
           <b>MA40</b>
-          <span>真实线 + 预测线</span>
+          <span>输入目标并反推收盘</span>
+        </div>
+
+        <div className="horizon-display ma-display" aria-label="均线显示选择">
+          {MA_WINDOWS.map((windowSize) => {
+            const selected = visibleMaWindows.includes(windowSize);
+
+            return (
+              <button
+                key={windowSize}
+                type="button"
+                className={`horizon-${windowSize} ${selected ? 'selected' : 'muted'}`}
+                onClick={() => toggleMaWindow(windowSize)}
+                style={{ '--horizon-color': lineColors[windowSize] } as CSSProperties}
+              >
+                <b>MA{windowSize}</b>
+                <small>{selected ? '显示' : '隐藏'}</small>
+              </button>
+            );
+          })}
         </div>
 
         <label className="select-field">
@@ -388,14 +438,17 @@ export default function App() {
           <div className="cache-status">{cacheStatus}</div>
 
           <div className="prediction-table ma40-table">
-            <div className="prediction-row table-head">
+            <div className="prediction-row table-head" style={predictionTableStyle}>
               <span>目标周期</span>
               <span>预测MA40</span>
               <span>反推收盘</span>
               <span>真实收盘</span>
+              {visibleMaWindows.map((windowSize) => (
+                <span key={windowSize}>MA{windowSize}</span>
+              ))}
             </div>
             {projection.rows.map((row) => (
-              <div className="prediction-row" key={row.targetDate}>
+              <div className="prediction-row" key={row.targetDate} style={predictionTableStyle}>
                 <span className="date-cell">{row.targetDate}</span>
                 <input
                   className="prediction-input forecast-ma40-input"
@@ -409,6 +462,9 @@ export default function App() {
                 />
                 <span className="derived-close-cell">{formatNumber(row.derivedClose)}</span>
                 <span>{formatNumber(row.actualClose)}</span>
+                {visibleMaWindows.map((windowSize) => (
+                  <span key={windowSize}>{formatNumber(row.maValues[windowSize])}</span>
+                ))}
               </div>
             ))}
           </div>
@@ -463,6 +519,16 @@ function normalizeDecimalInput(value: string) {
 
   const decimals = decimalParts.join('').slice(0, 4);
   return `${integerPart || '0'}.${decimals}`;
+}
+
+function createEmptyLineMap(): Record<MaWindow, LineValuePoint[]> {
+  return MA_WINDOWS.reduce(
+    (lines, windowSize) => ({
+      ...lines,
+      [windowSize]: [],
+    }),
+    {} as Record<MaWindow, LineValuePoint[]>,
+  );
 }
 
 function Metric({ label, value }: { label: string; value: string }) {

@@ -1,6 +1,8 @@
 import type { KLinePoint, PredictionPoint } from '../types';
 
-export const MA40_WINDOW = 40;
+export const MA_WINDOWS = [5, 10, 20, 40, 60] as const;
+export type MaWindow = (typeof MA_WINDOWS)[number];
+export const MA40_WINDOW: MaWindow = 40;
 
 export interface LineValuePoint {
   targetDate: string;
@@ -11,12 +13,13 @@ export interface Ma40ProjectionRow extends PredictionPoint {
   actualClose: number | null;
   derivedClose: number | null;
   ma40: number | null;
+  maValues: Record<MaWindow, number | null>;
 }
 
 export interface Ma40Projection {
   rows: Ma40ProjectionRow[];
-  actualLine: LineValuePoint[];
-  predictedLine: LineValuePoint[];
+  actualLines: Record<MaWindow, LineValuePoint[]>;
+  predictedLines: Record<MaWindow, LineValuePoint[]>;
   closeByDate: Map<string, number>;
 }
 
@@ -61,33 +64,55 @@ export function buildMa40Projection(
       closeByDate.set(row.targetDate, Number.NaN);
     }
 
+    const maValues = Object.fromEntries(
+      MA_WINDOWS.map((windowSize) => [
+        windowSize,
+        derivedClose === null
+          ? null
+          : calculateMovingAverageAtDate(orderedDates, closeByDate, row.targetDate, windowSize),
+      ]),
+    ) as Record<MaWindow, number | null>;
+
     return {
       ...row,
       actualClose: actualCloseByDate.get(row.targetDate) ?? null,
       derivedClose,
-      ma40:
-        derivedClose === null
-          ? null
-          : calculateMovingAverageAtDate(orderedDates, closeByDate, row.targetDate),
+      ma40: maValues[40],
+      maValues,
     };
   });
 
-  const actualLine = calculateMovingAverage(points).filter(
-    (row) => row.value !== null && row.targetDate < baseDate,
-  );
-  const anchor = [...actualLine].reverse().find((row) => row.targetDate < baseDate);
-  const predictedLine: LineValuePoint[] = [
-    ...(anchor ? [anchor] : []),
-    ...rows.map((row) => ({
-      targetDate: row.targetDate,
-      value: row.ma40,
-    })),
-  ];
+  const actualLines = Object.fromEntries(
+    MA_WINDOWS.map((windowSize) => [
+      windowSize,
+      calculateMovingAverage(points, windowSize).filter(
+        (row) => row.value !== null && row.targetDate < baseDate,
+      ),
+    ]),
+  ) as Record<MaWindow, LineValuePoint[]>;
+  const predictedLines = Object.fromEntries(
+    MA_WINDOWS.map((windowSize) => {
+      const anchor = [...actualLines[windowSize]].reverse().find(
+        (row) => row.targetDate < baseDate,
+      );
+
+      return [
+        windowSize,
+        [
+          ...(anchor ? [anchor] : []),
+          ...rows.map((row) => ({
+            targetDate: row.targetDate,
+            value: row.maValues[windowSize],
+          })),
+        ],
+      ];
+    }),
+  ) as Record<MaWindow, LineValuePoint[]>;
 
   return {
     rows,
-    actualLine,
-    predictedLine,
+    actualLines,
+    predictedLines,
     closeByDate,
   };
 }
@@ -114,12 +139,13 @@ function calculateMovingAverageAtDate(
   orderedDates: string[],
   closeByDate: Map<string, number>,
   targetDate: string,
+  windowSize: MaWindow,
 ) {
   const targetIndex = orderedDates.indexOf(targetDate);
   if (targetIndex < 0) return null;
 
-  const windowDates = orderedDates.slice(targetIndex - MA40_WINDOW + 1, targetIndex + 1);
-  if (windowDates.length !== MA40_WINDOW) return null;
+  const windowDates = orderedDates.slice(targetIndex - windowSize + 1, targetIndex + 1);
+  if (windowDates.length !== windowSize) return null;
 
   const values = windowDates.map((date) => closeByDate.get(date) ?? Number.NaN);
   if (values.some((value) => !Number.isFinite(value))) return null;
