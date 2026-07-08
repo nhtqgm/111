@@ -469,6 +469,7 @@ export default function App() {
               period={period}
               showActualKLine={showActualMaLines}
               showCloseLine={false}
+              showVolume={showActualMaLines}
             />
           ) : (
             <div className="loading">暂无K线数据</div>

@@ -35,6 +35,7 @@ interface KLineChartProps {
   period: PeriodType;
   showActualKLine?: boolean;
   showCloseLine?: boolean;
+  showVolume?: boolean;
 }
 
 const periodName: Record<PeriodType, string> = {
@@ -51,6 +52,7 @@ export default function KLineChart({
   period,
   showActualKLine = true,
   showCloseLine = true,
+  showVolume = true,
 }: KLineChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<echarts.EChartsType | null>(null);
@@ -94,10 +96,12 @@ export default function KLineChart({
     chart.setOption({
       backgroundColor: '#f7f4ee',
       animationDuration: 420,
-      grid: [
-        { left: 54, right: 28, top: 66, height: '56%' },
-        { left: 54, right: 28, top: '77%', height: '12%' },
-      ],
+      grid: showVolume
+        ? [
+            { left: 54, right: 28, top: 66, height: '56%' },
+            { left: 54, right: 28, top: '77%', height: '12%' },
+          ]
+        : [{ left: 54, right: 28, top: 66, bottom: 48 }],
       tooltip: {
         trigger: 'axis',
         axisPointer: { type: 'cross' },
@@ -134,13 +138,17 @@ export default function KLineChart({
           axisLine: { lineStyle: { color: '#b6b0a4' } },
           axisLabel: { color: '#6f6a60', hideOverlap: true },
         },
-        {
-          type: 'category',
-          gridIndex: 1,
-          data: xAxis,
-          axisLine: { lineStyle: { color: '#b6b0a4' } },
-          axisLabel: { show: false },
-        },
+        ...(showVolume
+          ? [
+              {
+                type: 'category',
+                gridIndex: 1,
+                data: xAxis,
+                axisLine: { lineStyle: { color: '#b6b0a4' } },
+                axisLabel: { show: false },
+              },
+            ]
+          : []),
       ],
       yAxis: [
         {
@@ -148,22 +156,32 @@ export default function KLineChart({
           splitLine: { lineStyle: { color: '#dfd8ca' } },
           axisLabel: { color: '#6f6a60', formatter: (value: number) => value.toFixed(2) },
         },
-        {
-          scale: true,
-          gridIndex: 1,
-          splitLine: { show: false },
-          axisLabel: {
-            color: '#6f6a60',
-            formatter: (value: number) => `${Math.round(value / 10000)}万`,
-          },
-        },
+        ...(showVolume
+          ? [
+              {
+                scale: true,
+                gridIndex: 1,
+                splitLine: { show: false },
+                axisLabel: {
+                  color: '#6f6a60',
+                  formatter: (value: number) => `${Math.round(value / 10000)}万`,
+                },
+              },
+            ]
+          : []),
       ],
       dataZoom: [
-        { id: 'keyboard-inside-zoom', type: 'inside', xAxisIndex: [0, 1], start: 45, end: 100 },
+        {
+          id: 'keyboard-inside-zoom',
+          type: 'inside',
+          xAxisIndex: showVolume ? [0, 1] : [0],
+          start: 45,
+          end: 100,
+        },
         {
           id: 'keyboard-slider-zoom',
           type: 'slider',
-          xAxisIndex: [0, 1],
+          xAxisIndex: showVolume ? [0, 1] : [0],
           bottom: 8,
           height: 18,
           start: 45,
@@ -262,14 +280,18 @@ export default function KLineChart({
             },
           },
         })),
-        {
-          name: '成交量',
-          type: 'bar',
-          xAxisIndex: 1,
-          yAxisIndex: 1,
-          data: xAxis.map((date) => pointByDate.get(date)?.volume ?? 0),
-          itemStyle: { color: '#9e9587' },
-        },
+        ...(showVolume
+          ? [
+              {
+                name: '成交量',
+                type: 'bar',
+                xAxisIndex: 1,
+                yAxisIndex: 1,
+                data: xAxis.map((date) => pointByDate.get(date)?.volume ?? 0),
+                itemStyle: { color: '#9e9587' },
+              },
+            ]
+          : []),
       ],
       graphic: {
         type: 'text',
@@ -293,7 +315,7 @@ export default function KLineChart({
         chartRef.current = null;
       }
     };
-  }, [baseDate, lineSeries, period, pointSeries, points, showActualKLine, showCloseLine]);
+  }, [baseDate, lineSeries, period, pointSeries, points, showActualKLine, showCloseLine, showVolume]);
 
   function applyKeyboardZoom(start: number, end: number) {
     const normalized = normalizeZoomRange(start, end);
