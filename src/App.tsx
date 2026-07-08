@@ -466,8 +466,8 @@ export default function App() {
 
       <section className="topbar">
         <div>
-          <p className="eyebrow">MA40 Forecast Console</p>
-          <h1>人工预测 MA40 走势</h1>
+          <p className="eyebrow">MA{inputMaWindow} Forecast Console</p>
+          <h1>人工预测 MA{inputMaWindow} 走势</h1>
         </div>
         <form
           className="stock-search"
@@ -541,7 +541,7 @@ export default function App() {
         <Metric label="数据源" value={data?.sourceName ?? '--'} />
         <Metric label="最新周期" value={latest?.date ?? '--'} />
         <Metric label="历史数量" value={data ? `${data.points.length}` : '--'} />
-        <Metric label="预测窗口" value={`${MA40_WINDOW}${unit}`} />
+        <Metric label="预测窗口" value={`${inputMaWindow}${unit}`} />
         <Metric label="已填写" value={`${filledCount}/${predictions.length || forecastRowCount}`} />
         <Metric label="可对比" value={`${summary.compared}`} />
         <Metric label="MAE" value={summary.mae === null ? '--' : summary.mae.toFixed(2)} />
@@ -625,7 +625,7 @@ export default function App() {
             <textarea
               value={predictions[0]?.note ?? ''}
               onChange={(event) => updateNote(event.target.value)}
-              placeholder="例如：MA40目标、趋势判断、压力位..."
+              placeholder={`例如：MA${inputMaWindow}目标、趋势判断、压力位...`}
             />
           </label>
         </aside>
