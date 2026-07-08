@@ -8,7 +8,6 @@ import type { PeriodType, PredictionPoint, StockKLineResponse } from './types';
 import { compareProjectionRows, formatNumber, summarizeComparisons } from './utils/metrics';
 import {
   buildMa40Projection,
-  calculateMovingAverage,
   type LineValuePoint,
   MA40_WINDOW,
   MA_WINDOWS,
@@ -16,10 +15,12 @@ import {
 } from './utils/movingAverage';
 import {
   generatePredictionRows,
+  loadKLineCache,
   loadPredictionRows,
   loadWorkspaceCache,
   normalizePredictionPoint,
   predictionPlanKey,
+  saveKLineCache,
   savePredictions,
   saveWorkspaceCache,
 } from './utils/predictions';
@@ -31,6 +32,7 @@ const periods: Array<{ value: PeriodType; label: string; unit: string }> = [
 ];
 
 const forecastRowCount = 40;
+const minHistoryCount = 60;
 const todayDate = formatDate(new Date());
 const initialWorkspace = loadWorkspaceCache();
 const lineColors: Record<MaWindow, string> = {
@@ -59,7 +61,7 @@ export default function App() {
   const [baseDate, setBaseDate] = useState(todayDate);
   const [predictions, setPredictions] = useState<PredictionPoint[]>([]);
   const [visibleMaWindows, setVisibleMaWindows] = useState<MaWindow[]>([5, 10, 20, 40, 60]);
-  const [inputMaWindow, setInputMaWindow] = useState<MaWindow>(40);
+  const inputMaWindow = MA40_WINDOW;
   const [isTableExpanded, setIsTableExpanded] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
@@ -67,32 +69,29 @@ export default function App() {
   const [cacheStatus, setCacheStatus] = useState(
     initialWorkspace ? `已恢复上次缓存：${initialWorkspace.stockCode}` : '本机自动缓存已开启',
   );
+  const [historyStatus, setHistoryStatus] = useState('等待读取本地历史数据');
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const importedPlanRef = useRef<PredictionFileV5 | null>(null);
 
   useEffect(() => {
-    let cancelled = false;
-    setIsLoading(true);
+    const cached = loadKLineCache(queryCode, period);
     setError('');
 
-    fetchKLines(queryCode, period)
-      .then((result) => {
-        if (cancelled) return;
-        setData(result);
-        setBaseDate(result.points.at(-1)?.date ?? todayDate);
-      })
-      .catch((err: Error) => {
-        if (cancelled) return;
-        setData(null);
-        setError(err.message);
-      })
-      .finally(() => {
-        if (!cancelled) setIsLoading(false);
-      });
+    if (!cached) {
+      setData(null);
+      setPredictions([]);
+      setBaseDate(todayDate);
+      setHistoryStatus('暂无本地历史数据，请点击“联网更新”拉取最近历史收盘价');
+      return;
+    }
 
-    return () => {
-      cancelled = true;
-    };
+    const cachedData = markAsLocalCache(cached.data);
+    setData(cachedData);
+    setBaseDate(cachedData.points.at(-1)?.date ?? todayDate);
+    setHistoryStatus(formatHistoryStatus(cached.updatedAt, cachedData.points.length));
+    if (cachedData.points.length < minHistoryCount) {
+      setError(`本地历史数据不足${minHistoryCount}条，MA60计算可能不完整，请联网更新一次`);
+    }
   }, [period, queryCode]);
 
   useEffect(() => {
@@ -145,10 +144,6 @@ export default function App() {
   );
   const summary = useMemo(() => summarizeComparisons(predictionComparisons), [predictionComparisons]);
   const latest = data?.points.at(-1);
-  const latestActualMa40 = useMemo(
-    () => (data ? calculateMovingAverage(data.points).at(-1)?.value ?? null : null),
-    [data],
-  );
   const unit = periods.find((item) => item.value === period)?.unit ?? '';
   const filledCount = predictions.filter(
     (row) => getPredictionInputValue(row, inputMaWindow).trim() !== '',
@@ -159,21 +154,7 @@ export default function App() {
   };
   const lineSeries = useMemo<ChartLineSeries[]>(
     () =>
-      visibleMaWindows.flatMap((windowSize) => [
-        {
-          label: `真实MA${windowSize}`,
-          color: lineColors[windowSize],
-          rows: projection.actualLines[windowSize],
-          lineWidth: windowSize === 40 ? 2.5 : 1.8,
-          lineType: 'solid' as const,
-          symbol: 'none',
-          symbolSize: 0,
-          symbolOffset: [0, 0] as [number, number],
-          opacity: windowSize === 40 ? 0.82 : 0.66,
-          showSymbol: false,
-          z: 3 + windowSize,
-        },
-        {
+      visibleMaWindows.map((windowSize) => ({
           label: `预测MA${windowSize}`,
           color: lineColors[windowSize],
           rows: projection.predictedLines[windowSize],
@@ -185,9 +166,8 @@ export default function App() {
           opacity: 0.96,
           showSymbol: windowSize === 40,
           z: 10 + windowSize,
-        },
-      ]),
-    [projection.actualLines, projection.predictedLines, visibleMaWindows],
+        })),
+    [projection.predictedLines, visibleMaWindows],
   );
   const pointSeries = useMemo<ChartPointSeries[]>(
     () => [
@@ -234,6 +214,37 @@ export default function App() {
     const formatted = formatDecimalInput(currentValue);
     if (formatted !== currentValue) {
       updatePrediction(targetDate, formatted);
+    }
+  }
+
+  async function refreshHistoricalData() {
+    setIsLoading(true);
+    setError('');
+    setHistoryStatus('正在联网更新历史收盘价...');
+
+    try {
+      const result = await fetchKLines(stockCode, period);
+      saveKLineCache(result, period);
+      setData(markAsOnlineResult(result));
+      setBaseDate(result.points.at(-1)?.date ?? todayDate);
+      setStockCode(result.code);
+      setQueryCode(result.code);
+      setHistoryStatus(`已联网更新：${result.points.length}条，${new Date().toLocaleString()}`);
+      if (result.points.length < minHistoryCount) {
+        setError(`联网数据不足${minHistoryCount}条，MA60计算可能不完整`);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '联网更新失败';
+      const cached = loadKLineCache(stockCode, period);
+      if (cached) {
+        const cachedData = markAsLocalCache(cached.data);
+        setData(cachedData);
+        setBaseDate(cachedData.points.at(-1)?.date ?? todayDate);
+        setHistoryStatus(`${formatHistoryStatus(cached.updatedAt, cachedData.points.length)}；联网失败，继续使用本地缓存`);
+      }
+      setError(`联网更新失败：${message}`);
+    } finally {
+      setIsLoading(false);
     }
   }
 
@@ -364,7 +375,10 @@ export default function App() {
             maxLength={6}
             onChange={(event) => setStockCode(event.target.value)}
           />
-          <button type="submit">加载</button>
+          <button type="submit">读取缓存</button>
+          <button type="button" onClick={refreshHistoricalData} disabled={isLoading}>
+            {isLoading ? '更新中' : '联网更新'}
+          </button>
         </form>
       </section>
 
@@ -409,8 +423,7 @@ export default function App() {
         <Metric label="股票" value={data ? `${data.name} ${data.code}` : '申万宏源 000166'} />
         <Metric label="数据源" value={data?.sourceName ?? '--'} />
         <Metric label="最新周期" value={latest?.date ?? '--'} />
-        <Metric label="最新收盘" value={latest ? latest.close.toFixed(2) : '--'} />
-        <Metric label="最新MA40" value={formatNumber(latestActualMa40)} />
+        <Metric label="历史数量" value={data ? `${data.points.length}` : '--'} />
         <Metric label="预测窗口" value={`${MA40_WINDOW}${unit}`} />
         <Metric label="已填写" value={`${filledCount}/${predictions.length || forecastRowCount}`} />
         <Metric label="可对比" value={`${summary.compared}`} />
@@ -465,21 +478,8 @@ export default function App() {
             </div>
           </div>
           {fileStatus ? <div className="file-status">{fileStatus}</div> : null}
+          <div className="history-status">{historyStatus}</div>
           <div className="cache-status">{cacheStatus}</div>
-
-          <div className="input-mode-strip" aria-label="反推基准选择">
-            <span>反推基准</span>
-            {MA_WINDOWS.map((windowSize) => (
-              <button
-                key={windowSize}
-                type="button"
-                className={inputMaWindow === windowSize ? 'active' : ''}
-                onClick={() => setInputMaWindow(windowSize)}
-              >
-                MA{windowSize}
-              </button>
-            ))}
-          </div>
 
           {renderPredictionTable()}
 
@@ -571,6 +571,28 @@ function setPredictionInputValue(
     predictedMa40: windowSize === 40 ? value : row.predictedMa40,
     predictedMaValues,
   };
+}
+
+function markAsLocalCache(data: StockKLineResponse): StockKLineResponse {
+  return {
+    ...data,
+    sourceName: `${data.sourceName ?? '行情'} / 本地缓存`,
+  };
+}
+
+function markAsOnlineResult(data: StockKLineResponse): StockKLineResponse {
+  return {
+    ...data,
+    sourceName: `${data.sourceName ?? '行情'} / 刚刚联网`,
+  };
+}
+
+function formatHistoryStatus(updatedAt: string, count: number) {
+  const updatedDate = new Date(updatedAt);
+  const updatedText = Number.isNaN(updatedDate.getTime())
+    ? updatedAt
+    : updatedDate.toLocaleString();
+  return `本地历史：${count}条，更新于 ${updatedText}`;
 }
 
 function createEmptyLineMap(): Record<MaWindow, LineValuePoint[]> {

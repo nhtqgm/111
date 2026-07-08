@@ -1,4 +1,4 @@
-import type { KLinePoint, PeriodType, PredictionPoint } from '../types';
+import type { KLinePoint, PeriodType, PredictionPoint, StockKLineResponse } from '../types';
 
 export interface WorkspaceCache {
   stockCode: string;
@@ -8,6 +8,7 @@ export interface WorkspaceCache {
 }
 
 const WORKSPACE_CACHE_KEY = 'prediction-ma40:last-workspace';
+const KLINE_CACHE_PREFIX = 'prediction-ma40:kline-cache';
 
 export function predictionPlanKey(stockCode: string, period: PeriodType, _baseDate?: string) {
   return `prediction-ma:${stockCode}:${period}:v2`;
@@ -83,6 +84,45 @@ export function saveWorkspaceCache(cache: WorkspaceCache) {
   localStorage.setItem(WORKSPACE_CACHE_KEY, JSON.stringify(cache));
 }
 
+export interface KLineDataCache {
+  stockCode: string;
+  period: PeriodType;
+  updatedAt: string;
+  data: StockKLineResponse;
+}
+
+export function loadKLineCache(rawStockCode: string, period: PeriodType): KLineDataCache | null {
+  const raw = localStorage.getItem(kLineCacheKey(rawStockCode, period));
+  if (!raw) return null;
+
+  try {
+    const parsed = JSON.parse(raw) as KLineDataCache;
+    if (
+      typeof parsed.stockCode === 'string' &&
+      parsed.period === period &&
+      typeof parsed.updatedAt === 'string' &&
+      isStockKLineResponse(parsed.data)
+    ) {
+      return parsed;
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
+export function saveKLineCache(data: StockKLineResponse, period: PeriodType) {
+  const cache: KLineDataCache = {
+    stockCode: data.code,
+    period,
+    updatedAt: new Date().toISOString(),
+    data,
+  };
+
+  localStorage.setItem(kLineCacheKey(data.code, period), JSON.stringify(cache));
+}
+
 export function generatePredictionRows(
   points: KLinePoint[],
   period: PeriodType,
@@ -137,6 +177,34 @@ function mergePredictionValues(
 
 function legacyPredictionPlanKey(stockCode: string, period: PeriodType, baseDate: string) {
   return `prediction-ma40:${stockCode}:${period}:${baseDate}:v1`;
+}
+
+function kLineCacheKey(rawStockCode: string, period: PeriodType) {
+  const stockCode = rawStockCode.replace(/\D/g, '').slice(0, 6);
+  return `${KLINE_CACHE_PREFIX}:${stockCode}:${period}:v1`;
+}
+
+function isStockKLineResponse(value: any): value is StockKLineResponse {
+  return (
+    value &&
+    typeof value.code === 'string' &&
+    typeof value.name === 'string' &&
+    typeof value.market === 'number' &&
+    Array.isArray(value.points) &&
+    value.points.every(isKLinePoint)
+  );
+}
+
+function isKLinePoint(value: any): value is KLinePoint {
+  return (
+    value &&
+    typeof value.date === 'string' &&
+    typeof value.open === 'number' &&
+    typeof value.close === 'number' &&
+    typeof value.high === 'number' &&
+    typeof value.low === 'number' &&
+    typeof value.volume === 'number'
+  );
 }
 
 function getTargetDates(

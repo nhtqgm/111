@@ -34,8 +34,7 @@ button {
 }
 
 .app-shell {
-  width: min(1720px, calc(100vw - 32px));
-  min-height: 100vh;
+  width: min(1500px, calc(100vw - 32px));
   margin: 0 auto;
   padding: 18px 0 32px;
   display: flex;
@@ -67,7 +66,7 @@ h2 {
 }
 
 h1 {
-  font-size: clamp(30px, 2.6vw, 42px);
+  font-size: clamp(28px, 2.2vw, 38px);
   line-height: 1.08;
   font-weight: 900;
 }
@@ -79,7 +78,7 @@ h2 {
 
 .stock-search {
   display: grid;
-  grid-template-columns: auto 120px auto;
+  grid-template-columns: auto 120px auto auto;
   align-items: center;
   gap: 10px;
   padding: 8px;
@@ -116,6 +115,11 @@ h2 {
   color: #1e211d;
   border-color: #d7a742;
   font-weight: 800;
+}
+
+.stock-search button:disabled {
+  cursor: wait;
+  opacity: 0.65;
 }
 
 .control-band {
@@ -342,7 +346,7 @@ h2 {
 
 .market-strip {
   display: grid;
-  grid-template-columns: repeat(10, minmax(96px, 1fr));
+  grid-template-columns: repeat(9, minmax(96px, 1fr));
   border: 2px solid #2d342e;
   border-radius: 8px;
   overflow: hidden;
@@ -379,8 +383,6 @@ h2 {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(470px, 520px);
   gap: 18px;
-  flex: 1;
-  min-height: max(680px, calc(100vh - 290px));
   margin-top: 18px;
 }
 
@@ -393,14 +395,13 @@ h2 {
 }
 
 .chart-panel {
-  min-height: 100%;
+  height: clamp(520px, 58vh, 620px);
   overflow: hidden;
 }
 
 .chart-surface {
   width: 100%;
   height: 100%;
-  min-height: 680px;
   outline: none;
 }
 
@@ -417,6 +418,7 @@ h2 {
 }
 
 .input-panel {
+  height: clamp(520px, 58vh, 620px);
   min-height: 0;
   padding: 14px;
   display: flex;
@@ -470,6 +472,17 @@ h2 {
   border-radius: 6px;
   background: #26302a;
   color: #f7f4ee;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.history-status {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid #c8beae;
+  border-radius: 6px;
+  background: #fffdf8;
+  color: #5f5444;
   font-size: 12px;
   font-weight: 800;
 }
@@ -795,6 +808,11 @@ h2 {
   .loading {
     min-height: 520px;
     height: 520px;
+  }
+
+  .input-panel {
+    height: auto;
+    max-height: none;
   }
 
   .workspace {
