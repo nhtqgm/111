@@ -261,6 +261,23 @@ h2 {
   );
 }
 
+.actual-line-toggle {
+  min-height: 46px;
+  padding: 0 16px;
+  border: 1px solid #2d342e;
+  border-radius: 8px;
+  background: #fffdf8;
+  color: #2d342e;
+  font-weight: 900;
+  box-shadow: inset 0 -3px 0 #9b9183;
+}
+
+.actual-line-toggle.active {
+  background: #26302a;
+  color: #f7f4ee;
+  box-shadow: inset 0 -3px 0 #d7a742;
+}
+
 .horizon-display b,
 .horizon-display small {
   display: block;

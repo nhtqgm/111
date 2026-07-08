@@ -61,6 +61,7 @@ export default function App() {
   const [baseDate, setBaseDate] = useState(todayDate);
   const [predictions, setPredictions] = useState<PredictionPoint[]>([]);
   const [visibleMaWindows, setVisibleMaWindows] = useState<MaWindow[]>([5, 10, 20, 40, 60]);
+  const [showActualMaLines, setShowActualMaLines] = useState(false);
   const inputMaWindow = MA40_WINDOW;
   const [isTableExpanded, setIsTableExpanded] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -153,8 +154,23 @@ export default function App() {
     minWidth: `${456 + visibleMaWindows.length * 80}px`,
   };
   const lineSeries = useMemo<ChartLineSeries[]>(
-    () =>
-      visibleMaWindows.map((windowSize) => ({
+    () => [
+      ...(showActualMaLines
+        ? visibleMaWindows.map((windowSize) => ({
+            label: `真实MA${windowSize}`,
+            color: lineColors[windowSize],
+            rows: projection.actualLines[windowSize],
+            lineWidth: windowSize === 40 ? 2.4 : 1.7,
+            lineType: 'solid' as const,
+            symbol: 'none',
+            symbolSize: 0,
+            symbolOffset: [0, 0] as [number, number],
+            opacity: windowSize === 40 ? 0.72 : 0.52,
+            showSymbol: false,
+            z: 3 + windowSize,
+          }))
+        : []),
+      ...visibleMaWindows.map((windowSize) => ({
           label: `预测MA${windowSize}`,
           color: lineColors[windowSize],
           rows: projection.predictedLines[windowSize],
@@ -167,7 +183,8 @@ export default function App() {
           showSymbol: windowSize === 40,
           z: 10 + windowSize,
         })),
-    [projection.predictedLines, visibleMaWindows],
+    ],
+    [projection.actualLines, projection.predictedLines, showActualMaLines, visibleMaWindows],
   );
   const pointSeries = useMemo<ChartPointSeries[]>(
     () => [
@@ -414,6 +431,14 @@ export default function App() {
             );
           })}
         </div>
+
+        <button
+          type="button"
+          className={`actual-line-toggle ${showActualMaLines ? 'active' : ''}`}
+          onClick={() => setShowActualMaLines((current) => !current)}
+        >
+          {showActualMaLines ? '显示真实均线' : '只看预测线'}
+        </button>
 
       </section>
 
