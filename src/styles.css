@@ -223,8 +223,20 @@ h2 {
   filter: saturate(0.45);
 }
 
+.horizon-display button.locked {
+  cursor: default;
+}
+
+.horizon-display button:disabled {
+  opacity: 1;
+}
+
 .horizon-display button:hover {
   transform: translateY(-1px);
+}
+
+.horizon-display button.locked:hover {
+  transform: none;
 }
 
 .horizon-display button::before {

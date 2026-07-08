@@ -60,9 +60,8 @@ export default function App() {
   const [data, setData] = useState<StockKLineResponse | null>(null);
   const [baseDate, setBaseDate] = useState(todayDate);
   const [predictions, setPredictions] = useState<PredictionPoint[]>([]);
-  const [visibleMaWindows, setVisibleMaWindows] = useState<MaWindow[]>([5, 10, 20, 40, 60]);
   const [showActualMaLines, setShowActualMaLines] = useState(false);
-  const inputMaWindow = MA40_WINDOW;
+  const [inputMaWindow, setInputMaWindow] = useState<MaWindow>(MA40_WINDOW);
   const [isTableExpanded, setIsTableExpanded] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
@@ -150,13 +149,13 @@ export default function App() {
     (row) => getPredictionInputValue(row, inputMaWindow).trim() !== '',
   ).length;
   const predictionTableStyle = {
-    gridTemplateColumns: `132px 112px 104px 86px repeat(${visibleMaWindows.length}, 72px)`,
-    minWidth: `${456 + visibleMaWindows.length * 80}px`,
+    gridTemplateColumns: `132px 112px 104px 86px repeat(${MA_WINDOWS.length}, 72px)`,
+    minWidth: `${456 + MA_WINDOWS.length * 80}px`,
   };
   const lineSeries = useMemo<ChartLineSeries[]>(
     () => [
       ...(showActualMaLines
-        ? visibleMaWindows.map((windowSize) => ({
+        ? MA_WINDOWS.map((windowSize) => ({
             label: `真实MA${windowSize}`,
             color: lineColors[windowSize],
             rows: projection.actualLines[windowSize],
@@ -170,7 +169,7 @@ export default function App() {
             z: 3 + windowSize,
           }))
         : []),
-      ...visibleMaWindows.map((windowSize) => ({
+      ...MA_WINDOWS.map((windowSize) => ({
           label: `预测MA${windowSize}`,
           color: lineColors[windowSize],
           rows: projection.predictedLines[windowSize],
@@ -184,7 +183,7 @@ export default function App() {
           z: 10 + windowSize,
         })),
     ],
-    [projection.actualLines, projection.predictedLines, showActualMaLines, visibleMaWindows],
+    [projection.actualLines, projection.predictedLines, showActualMaLines],
   );
   const pointSeries = useMemo<ChartPointSeries[]>(
     () => [
@@ -203,16 +202,6 @@ export default function App() {
     ],
     [projection.rows],
   );
-
-  function toggleMaWindow(windowSize: MaWindow) {
-    setVisibleMaWindows((current) => {
-      if (current.includes(windowSize)) {
-        return current.length === 1 ? current : current.filter((item) => item !== windowSize);
-      }
-
-      return MA_WINDOWS.filter((item) => current.includes(item) || item === windowSize);
-    });
-  }
 
   function updatePrediction(targetDate: string, value: string) {
     const normalizedValue = normalizeDecimalInput(value);
@@ -342,7 +331,7 @@ export default function App() {
           <span>预测MA{inputMaWindow}</span>
           <span>反推收盘</span>
           <span>真实收盘</span>
-          {visibleMaWindows.map((windowSize) => (
+          {MA_WINDOWS.map((windowSize) => (
             <span key={windowSize}>MA{windowSize}</span>
           ))}
         </div>
@@ -361,7 +350,7 @@ export default function App() {
             />
             <span className="derived-close-cell">{formatNumber(row.derivedClose)}</span>
             <span>{formatNumber(row.actualClose)}</span>
-            {visibleMaWindows.map((windowSize) => (
+            {MA_WINDOWS.map((windowSize) => (
               <span key={windowSize}>{formatNumber(row.maValues[windowSize])}</span>
             ))}
           </div>
@@ -414,22 +403,18 @@ export default function App() {
         </div>
 
         <div className="horizon-display ma-display" aria-label="均线显示选择">
-          {MA_WINDOWS.map((windowSize) => {
-            const selected = visibleMaWindows.includes(windowSize);
-
-            return (
-              <button
-                key={windowSize}
-                type="button"
-                className={`horizon-${windowSize} ${selected ? 'selected' : 'muted'}`}
-                onClick={() => toggleMaWindow(windowSize)}
-                style={{ '--horizon-color': lineColors[windowSize] } as CSSProperties}
-              >
-                <b>MA{windowSize}</b>
-                <small>{selected ? '显示' : '隐藏'}</small>
-              </button>
-            );
-          })}
+          {MA_WINDOWS.map((windowSize) => (
+            <button
+              key={windowSize}
+              type="button"
+              className={`horizon-${windowSize} selected locked`}
+              disabled
+              style={{ '--horizon-color': lineColors[windowSize] } as CSSProperties}
+            >
+              <b>MA{windowSize}</b>
+              <small>固定显示</small>
+            </button>
+          ))}
         </div>
 
         <button
@@ -507,6 +492,20 @@ export default function App() {
           {fileStatus ? <div className="file-status">{fileStatus}</div> : null}
           <div className="history-status">{historyStatus}</div>
           <div className="cache-status">{cacheStatus}</div>
+
+          <div className="input-mode-strip" aria-label="预测输入均线选择">
+            <span>预测输入</span>
+            {MA_WINDOWS.map((windowSize) => (
+              <button
+                key={windowSize}
+                type="button"
+                className={inputMaWindow === windowSize ? 'active' : ''}
+                onClick={() => setInputMaWindow(windowSize)}
+              >
+                MA{windowSize}
+              </button>
+            ))}
+          </div>
 
           {renderPredictionTable()}
 
