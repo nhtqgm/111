@@ -288,6 +288,21 @@ h2 {
   box-shadow: inset 0 -3px 0 #d7a742;
 }
 
+.replay-open-button {
+  min-height: 42px;
+  padding: 0 16px;
+  border: 1px solid #2d342e;
+  border-radius: 8px;
+  background: #fff7d7;
+  color: #26302a;
+  font-weight: 900;
+  box-shadow: inset 0 -3px 0 #d7a742;
+}
+
+.replay-open-button:hover {
+  background: #ffe790;
+}
+
 .horizon-display b,
 .horizon-display small {
   display: block;
@@ -819,6 +834,17 @@ h2 {
   box-shadow: 8px 8px 0 #1f251f;
 }
 
+.replay-modal {
+  width: min(1240px, 96vw);
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+  border: 2px solid #2d342e;
+  border-radius: 8px;
+  background: #f7f4ee;
+  box-shadow: 8px 8px 0 #1f251f;
+}
+
 .detail-modal-head {
   display: flex;
   align-items: center;
@@ -840,6 +866,155 @@ h2 {
   min-height: 0;
   padding: 14px 16px 16px;
   overflow: auto;
+}
+
+.replay-modal-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px 16px;
+  overflow: auto;
+}
+
+.replay-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(110px, 1fr));
+  border: 2px solid #2d342e;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #fffdf8;
+}
+
+.replay-table {
+  display: grid;
+  gap: 4px;
+  min-height: 160px;
+  overflow: auto;
+  border: 1px solid #c8beae;
+  border-radius: 8px;
+  background: #fffdf8;
+  padding: 8px;
+}
+
+.replay-row {
+  display: grid;
+  grid-template-columns: 116px 118px 94px 84px 84px 74px 74px 66px 58px;
+  align-items: center;
+  gap: 8px;
+  min-width: 830px;
+  min-height: 38px;
+  border-bottom: 1px solid #e0d7ca;
+  color: #343b35;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.replay-row:last-child {
+  border-bottom: 0;
+}
+
+.replay-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  min-height: 30px;
+  background: #fffdf8;
+  color: #766d60;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.replay-status {
+  width: fit-content;
+  border-radius: 999px;
+  padding: 3px 8px;
+  color: #fffdf8;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.replay-status.ready {
+  background: #5f7d5d;
+}
+
+.replay-status.pending {
+  background: #8f4d6b;
+}
+
+.replay-empty {
+  padding: 18px;
+  color: #746b5d;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.replay-detail-panel {
+  border: 1px solid #c8beae;
+  border-radius: 8px;
+  background: #fffdf8;
+  padding: 12px;
+}
+
+.replay-close-card {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.replay-close-card div {
+  display: grid;
+  gap: 5px;
+  border: 1px dashed #c8beae;
+  border-radius: 6px;
+  background: #f6f1e8;
+  padding: 8px;
+}
+
+.replay-close-card span {
+  color: #746b5d;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.replay-close-card strong {
+  color: #26302a;
+  font-size: 15px;
+}
+
+.replay-ma-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(150px, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.replay-ma-card {
+  border: 1px solid #c8beae;
+  border-radius: 8px;
+  background: #fbf6ed;
+  padding: 9px;
+}
+
+.replay-ma-values {
+  display: grid;
+  gap: 5px;
+  margin-top: 8px;
+  color: #2c332d;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.hit {
+  color: #b13a2e;
+  font-weight: 900;
+}
+
+.miss {
+  color: #14745f;
+  font-weight: 900;
 }
 
 .formula-card {
@@ -1073,6 +1248,15 @@ h2 {
     grid-template-columns: repeat(3, minmax(120px, 1fr));
   }
 
+  .replay-summary-grid {
+    grid-template-columns: repeat(3, minmax(120px, 1fr));
+  }
+
+  .replay-close-card,
+  .replay-ma-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .metric {
     border-bottom: 1px solid #c8beae;
   }
@@ -1120,6 +1304,12 @@ h2 {
 
   .market-strip {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .replay-summary-grid,
+  .replay-close-card,
+  .replay-ma-grid {
+    grid-template-columns: 1fr;
   }
 
   .metric {

@@ -5,6 +5,12 @@ import {
 } from '../src/utils/movingAverage.ts';
 import { filterCompletedKLineData } from '../src/utils/completedPeriods.ts';
 import { generatePredictionRows } from '../src/utils/predictions.ts';
+import {
+  buildReplayReviewRows,
+  createReplaySnapshotsFromProjection,
+  mergeReplaySnapshots,
+  summarizeReplayRows,
+} from '../src/utils/replay.ts';
 
 const EPSILON = 1e-9;
 
@@ -13,6 +19,7 @@ function main() {
   verifyWeekFiltering();
   verifyMonthFiltering();
   verifyProjectionMathForAllWindows();
+  verifyReplayReviewSnapshots();
   console.log('MA period verification passed.');
 }
 
@@ -217,6 +224,75 @@ function verifyProjectionCase(period, points, baseDate, inputWindow) {
     assert.equal(projection.actualLines[outputWindow].at(-1)?.targetDate, baseDate);
     assert.equal(projection.predictedLines[outputWindow][0]?.targetDate, baseDate);
   }
+}
+
+function verifyReplayReviewSnapshots() {
+  const historical = makeBusinessDaysEnding('2026-07-07', 80);
+  const future = [makePoint('2026-07-08', 88), makePoint('2026-07-09', 91)];
+  const baseDate = '2026-07-07';
+  const inputWindow = 40;
+  const targetRows = generatePredictionRows(historical, 'day', baseDate, 2);
+  const predictions = targetRows.map((row, index) => ({
+    ...row,
+    predictedMaValues: {
+      40: String(50 + index),
+    },
+  }));
+  const projection = buildMa40Projection(historical, predictions, baseDate, inputWindow);
+  const snapshots = createReplaySnapshotsFromProjection({
+    stockCode: '000166',
+    stockName: 'test',
+    period: 'day',
+    baseDate,
+    points: historical,
+    rows: projection.rows,
+    inputMaWindow: inputWindow,
+    existingSnapshots: [],
+    now: '2026-07-08T12:00:00.000Z',
+  });
+
+  assert.equal(snapshots.length, 2);
+  assert.equal(snapshots[0].targetDate, '2026-07-08');
+  assert.equal(snapshots[0].inputMaWindow, 40);
+  assert.equal(snapshots[0].predictedMaValues['40'], projection.rows[0].maValues[40]);
+  assert.equal(
+    mergeReplaySnapshots(snapshots, [
+      {
+        ...snapshots[0],
+        predictedClose: snapshots[0].predictedClose + 1,
+        updatedAt: '2026-07-08T13:00:00.000Z',
+      },
+    ]).length,
+    2,
+  );
+
+  const reviewRows = buildReplayReviewRows(snapshots, [...historical, ...future]);
+  assert.equal(reviewRows.length, 2);
+  assert.equal(reviewRows[0].status, 'ready');
+  assertAlmostEqual(
+    reviewRows[0].actualClose,
+    88,
+    'replay actual close should come from later real K-line',
+  );
+  assertAlmostEqual(
+    reviewRows[0].closeDiff,
+    snapshots[0].predictedClose - 88,
+    'replay close diff',
+  );
+
+  const actualMa40 = average([...historical.slice(-39), future[0]].map((point) => point.close));
+  assertAlmostEqual(reviewRows[0].maComparisons[40].actual, actualMa40, 'replay actual MA40');
+  assertAlmostEqual(
+    reviewRows[0].maComparisons[40].diff,
+    snapshots[0].predictedMaValues['40'] - actualMa40,
+    'replay MA40 diff',
+  );
+
+  const summary = summarizeReplayRows(reviewRows);
+  assert.equal(summary.total, 2);
+  assert.equal(summary.ready, 2);
+  assert.equal(summary.pending, 0);
+  assert.equal(typeof summary.closeMae, 'number');
 }
 
 function makeResponse(points) {
