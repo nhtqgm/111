@@ -66,12 +66,15 @@ export default function App() {
   const [isTableExpanded, setIsTableExpanded] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
+  const [isAutoSaveEnabled, setIsAutoSaveEnabled] = useState(true);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'info' | 'success' | 'warning' } | null>(
     null,
   );
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const importedPlanRef = useRef<PredictionFileV5 | null>(null);
   const toastTimerRef = useRef<number | null>(null);
+  const lastSavedSignatureRef = useRef('');
 
   useEffect(
     () => () => {
@@ -125,6 +128,33 @@ export default function App() {
   useEffect(() => {
     if (!data || !baseDate || !predictions.length) return;
 
+    setHasUnsavedChanges(true);
+  }, [baseDate, data, period, predictions]);
+
+  useEffect(() => {
+    if (!isAutoSaveEnabled) return;
+
+    const timer = window.setInterval(() => {
+      saveCurrentWorkspace(true);
+    }, 30000);
+
+    return () => window.clearInterval(timer);
+  }, [baseDate, data, hasUnsavedChanges, isAutoSaveEnabled, period, predictions]);
+
+  function saveCurrentWorkspace(showNotice: boolean) {
+    if (!data || !baseDate || !predictions.length || !hasUnsavedChanges) return;
+
+    const signature = JSON.stringify({
+      stockCode: data.code,
+      period,
+      baseDate,
+      predictions,
+    });
+    if (signature === lastSavedSignatureRef.current) {
+      setHasUnsavedChanges(false);
+      return;
+    }
+
     savePredictions(predictionPlanKey(data.code, period, baseDate), predictions);
     saveWorkspaceCache({
       stockCode: data.code,
@@ -132,8 +162,13 @@ export default function App() {
       baseDate,
       updatedAt: new Date().toISOString(),
     });
-    showToast(`已自动保存：${new Date().toLocaleTimeString()}`, 'success');
-  }, [baseDate, data, period, predictions]);
+    lastSavedSignatureRef.current = signature;
+    setHasUnsavedChanges(false);
+
+    if (showNotice) {
+      showToast(`已自动保存：${new Date().toLocaleTimeString()}`, 'success');
+    }
+  }
 
   const projection = useMemo(
     () =>
@@ -524,6 +559,20 @@ export default function App() {
               <h2>预测MA{inputMaWindow}</h2>
             </div>
             <div className="panel-actions">
+              <label className="autosave-toggle">
+                <input
+                  type="checkbox"
+                  checked={isAutoSaveEnabled}
+                  onChange={(event) => {
+                    setIsAutoSaveEnabled(event.target.checked);
+                    showToast(
+                      event.target.checked ? '自动保存已开启：每30秒保存一次' : '自动保存已关闭',
+                      event.target.checked ? 'success' : 'warning',
+                    );
+                  }}
+                />
+                <span>自动保存</span>
+              </label>
               <button type="button" className="ghost" onClick={exportPredictions}>
                 导出
               </button>
