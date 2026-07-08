@@ -10,6 +10,7 @@ import { compareProjectionRows, formatNumber, summarizeComparisons } from './uti
 import {
   buildMa40Projection,
   type LineValuePoint,
+  type Ma40ProjectionRow,
   MA40_WINDOW,
   MA_WINDOWS,
   type MaWindow,
@@ -65,6 +66,7 @@ export default function App() {
   const [showActualMaLines, setShowActualMaLines] = useState(false);
   const [inputMaWindow, setInputMaWindow] = useState<MaWindow>(MA40_WINDOW);
   const [isTableExpanded, setIsTableExpanded] = useState(false);
+  const [detailTargetDate, setDetailTargetDate] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
@@ -213,9 +215,13 @@ export default function App() {
     (row) => getPredictionInputValue(row, inputMaWindow).trim() !== '',
   ).length;
   const predictionTableStyle = {
-    gridTemplateColumns: `132px 112px 104px 86px repeat(${visibleMaWindows.length}, 72px)`,
-    minWidth: `${456 + visibleMaWindows.length * 80}px`,
+    gridTemplateColumns: `132px 112px 104px 86px 62px repeat(${visibleMaWindows.length}, 72px)`,
+    minWidth: `${526 + visibleMaWindows.length * 80}px`,
   };
+  const detailRow = useMemo(
+    () => projection.rows.find((row) => row.targetDate === detailTargetDate) ?? null,
+    [detailTargetDate, projection.rows],
+  );
   const lineSeries = useMemo<ChartLineSeries[]>(
     () => [
       ...(showActualMaLines
@@ -430,6 +436,7 @@ export default function App() {
           <span>预测MA{inputMaWindow}</span>
           <span>反推收盘</span>
           <span>真实收盘</span>
+          <span>明细</span>
           {visibleMaWindows.map((windowSize) => (
             <span key={windowSize}>MA{windowSize}</span>
           ))}
@@ -449,6 +456,13 @@ export default function App() {
             />
             <span className="derived-close-cell">{formatNumber(row.derivedClose)}</span>
             <span>{formatNumber(row.actualClose)}</span>
+            <button
+              type="button"
+              className="detail-button"
+              onClick={() => setDetailTargetDate(row.targetDate)}
+            >
+              明细
+            </button>
             {visibleMaWindows.map((windowSize) => (
               <span key={windowSize}>{formatNumber(row.maValues[windowSize])}</span>
             ))}
@@ -652,8 +666,139 @@ export default function App() {
           </section>
         </div>
       ) : null}
+
+      {detailRow ? (
+        <CalculationDetailModal
+          row={detailRow}
+          inputMaWindow={inputMaWindow}
+          onClose={() => setDetailTargetDate(null)}
+        />
+      ) : null}
     </main>
   );
+}
+
+function CalculationDetailModal({
+  row,
+  inputMaWindow,
+  onClose,
+}: {
+  row: Ma40ProjectionRow;
+  inputMaWindow: MaWindow;
+  onClose: () => void;
+}) {
+  const reverse = row.calculation.reverse;
+  const reverseFormula =
+    reverse.predictedMa !== null &&
+    reverse.previousSum !== null &&
+    reverse.derivedClose !== null
+      ? `${formatNumber(reverse.predictedMa, 4)} × ${inputMaWindow} - ${formatNumber(reverse.previousSum)} = ${formatNumber(reverse.derivedClose)}`
+      : reverse.reason ?? '暂无可计算的明细';
+
+  return (
+    <div className="detail-modal-backdrop" role="presentation">
+      <section className="detail-modal" role="dialog" aria-modal="true" aria-label="计算明细">
+        <div className="detail-modal-head">
+          <div>
+            <p className="eyebrow">Calculation Detail</p>
+            <h2>{row.targetDate} 计算明细</h2>
+          </div>
+          <button type="button" className="ghost" onClick={onClose}>
+            关闭
+          </button>
+        </div>
+
+        <div className="detail-modal-body">
+          <section className="formula-card main-formula">
+            <div className="formula-card-head">
+              <span>反推收盘价</span>
+              <strong>预测MA{inputMaWindow}</strong>
+            </div>
+            <div className="formula-line">{reverseFormula}</div>
+            <div className="formula-meta">
+              <span>预测MA：{formatNumber(reverse.predictedMa, 4)}</span>
+              <span>前{inputMaWindow - 1}期合计：{formatNumber(reverse.previousSum)}</span>
+              <span>反推收盘：{formatNumber(reverse.derivedClose)}</span>
+            </div>
+          </section>
+
+          <section className="detail-section">
+            <div className="detail-section-head">
+              <h3>前{inputMaWindow - 1}期参与反推的收盘价</h3>
+              <span>{reverse.previousValues.length}条</span>
+            </div>
+            <ValueList values={reverse.previousValues} emptyText={reverse.reason ?? '暂无参与数据'} />
+          </section>
+
+          <section className="detail-section">
+            <div className="detail-section-head">
+              <h3>MA5 / MA10 / MA20 / MA40 / MA60 计算</h3>
+              <span>先求和，再除以周期数</span>
+            </div>
+            <div className="ma-detail-grid">
+              {MA_WINDOWS.map((windowSize) => {
+                const detail = row.calculation.movingAverages[windowSize];
+                const currentValue = detail.values.at(-1);
+                const previousValues = detail.values.slice(0, -1);
+                const previousSum = sumCalculationValues(previousValues);
+                const formula =
+                  detail.average !== null && currentValue
+                    ? `(${formatNumber(currentValue.value)} + ${formatNumber(previousSum)}) / ${windowSize} = ${formatNumber(detail.average)}`
+                    : detail.reason ?? '暂无可计算的明细';
+
+                return (
+                  <article className="ma-detail-card" key={windowSize}>
+                    <div className="ma-detail-title">MA{windowSize}</div>
+                    <div className="ma-detail-formula">{formula}</div>
+                    <div className="ma-detail-meta">
+                      <span>当前反推收盘：{formatNumber(currentValue?.value ?? null)}</span>
+                      <span>前{Math.max(windowSize - 1, 0)}期合计：{formatNumber(previousSum)}</span>
+                      <span>总和：{formatNumber(detail.sum)}</span>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          </section>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function ValueList({
+  values,
+  emptyText,
+}: {
+  values: Ma40ProjectionRow['calculation']['reverse']['previousValues'];
+  emptyText: string;
+}) {
+  if (!values.length) {
+    return <div className="empty-detail">{emptyText}</div>;
+  }
+
+  return (
+    <div className="value-list">
+      <div className="value-list-head">
+        <span>周期</span>
+        <span>来源</span>
+        <span>收盘价</span>
+      </div>
+      {values.map((item) => (
+        <div className="value-list-row" key={item.targetDate}>
+          <span>{item.targetDate}</span>
+          <span className={`source-pill ${item.source}`}>
+            {item.source === 'actual' ? '真实' : '预测'}
+          </span>
+          <strong>{formatNumber(item.value)}</strong>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function sumCalculationValues(values: Array<{ value: number }>) {
+  return values.length ? values.reduce((total, item) => total + item.value, 0) : null;
 }
 
 function normalizePredictionFile(value: unknown): PredictionFileV5 | null {

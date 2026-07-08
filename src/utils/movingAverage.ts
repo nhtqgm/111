@@ -9,11 +9,40 @@ export interface LineValuePoint {
   value: number | null;
 }
 
+export interface CalculationValueItem {
+  targetDate: string;
+  value: number;
+  source: 'actual' | 'predicted';
+}
+
+export interface ReverseCalculationDetail {
+  inputWindow: MaWindow;
+  predictedMa: number | null;
+  previousValues: CalculationValueItem[];
+  previousSum: number | null;
+  derivedClose: number | null;
+  reason: string | null;
+}
+
+export interface MovingAverageCalculationDetail {
+  windowSize: MaWindow;
+  values: CalculationValueItem[];
+  sum: number | null;
+  average: number | null;
+  reason: string | null;
+}
+
+export interface ProjectionCalculationDetail {
+  reverse: ReverseCalculationDetail;
+  movingAverages: Record<MaWindow, MovingAverageCalculationDetail>;
+}
+
 export interface Ma40ProjectionRow extends PredictionPoint {
   actualClose: number | null;
   derivedClose: number | null;
   ma40: number | null;
   maValues: Record<MaWindow, number | null>;
+  calculation: ProjectionCalculationDetail;
 }
 
 export interface Ma40Projection {
@@ -44,6 +73,7 @@ export function buildMa40Projection(
 ): Ma40Projection {
   const actualCloseByDate = new Map(points.map((point) => [point.date, point.close]));
   const closeByDate = new Map(actualCloseByDate);
+  const predictedCloseDates = new Set<string>();
   const sortedPredictions = [...predictions].sort((a, b) =>
     a.targetDate.localeCompare(b.targetDate),
   );
@@ -54,30 +84,42 @@ export function buildMa40Projection(
 
   const rows = sortedPredictions.map((row) => {
     const predictedMa = parseInput(getPredictedMaInput(row, inputWindow));
-    const derivedClose =
-      predictedMa === null
-        ? null
-        : reverseCloseFromMovingAverage(
-            orderedDates,
-            closeByDate,
-            row.targetDate,
-            predictedMa,
-            inputWindow,
-          );
+    const reverse = buildReverseCalculation(
+      orderedDates,
+      closeByDate,
+      actualCloseByDate,
+      predictedCloseDates,
+      row.targetDate,
+      predictedMa,
+      inputWindow,
+    );
+    const derivedClose = reverse.derivedClose;
 
     if (derivedClose !== null) {
       closeByDate.set(row.targetDate, derivedClose);
+      predictedCloseDates.add(row.targetDate);
     } else if (!closeByDate.has(row.targetDate)) {
       closeByDate.set(row.targetDate, Number.NaN);
     }
 
-    const maValues = Object.fromEntries(
+    const movingAverages = Object.fromEntries(
       MA_WINDOWS.map((windowSize) => [
         windowSize,
         derivedClose === null
-          ? null
-          : calculateMovingAverageAtDate(orderedDates, closeByDate, row.targetDate, windowSize),
+          ? buildEmptyMovingAverageCalculation(windowSize, '缺少反推收盘价，无法计算均线')
+          : buildMovingAverageCalculation(
+              orderedDates,
+              closeByDate,
+              actualCloseByDate,
+              predictedCloseDates,
+              row.targetDate,
+              windowSize,
+            ),
       ]),
+    ) as Record<MaWindow, MovingAverageCalculationDetail>;
+
+    const maValues = Object.fromEntries(
+      MA_WINDOWS.map((windowSize) => [windowSize, movingAverages[windowSize].average]),
     ) as Record<MaWindow, number | null>;
 
     return {
@@ -86,6 +128,10 @@ export function buildMa40Projection(
       derivedClose,
       ma40: maValues[40],
       maValues,
+      calculation: {
+        reverse,
+        movingAverages,
+      },
     };
   });
 
@@ -124,41 +170,119 @@ export function buildMa40Projection(
   };
 }
 
-function reverseCloseFromMovingAverage(
+function buildReverseCalculation(
   orderedDates: string[],
   closeByDate: Map<string, number>,
+  actualCloseByDate: Map<string, number>,
+  predictedCloseDates: Set<string>,
   targetDate: string,
-  targetMa: number,
+  predictedMa: number | null,
   windowSize: MaWindow,
-) {
+): ReverseCalculationDetail {
+  const emptyDetail = (reason: string): ReverseCalculationDetail => ({
+    inputWindow: windowSize,
+    predictedMa,
+    previousValues: [],
+    previousSum: null,
+    derivedClose: null,
+    reason,
+  });
+
+  if (predictedMa === null) return emptyDetail(`请先填写预测MA${windowSize}`);
+
   const targetIndex = orderedDates.indexOf(targetDate);
-  if (targetIndex < 0) return null;
+  if (targetIndex < 0) return emptyDetail('目标周期不存在');
 
   const previousDates = orderedDates.slice(targetIndex - (windowSize - 1), targetIndex);
-  if (previousDates.length !== windowSize - 1) return null;
+  if (previousDates.length !== windowSize - 1) {
+    return emptyDetail(`需要前${windowSize - 1}个周期收盘价，目前数量不足`);
+  }
 
-  const previousValues = previousDates.map((date) => closeByDate.get(date) ?? Number.NaN);
-  if (previousValues.some((value) => !Number.isFinite(value))) return null;
+  const previousValues = buildCalculationValues(
+    previousDates,
+    closeByDate,
+    actualCloseByDate,
+    predictedCloseDates,
+  );
+  if (previousValues === null) return emptyDetail(`前${windowSize - 1}个周期存在缺失收盘价`);
 
-  return targetMa * windowSize - sum(previousValues);
+  const previousSum = sum(previousValues.map((item) => item.value));
+  return {
+    inputWindow: windowSize,
+    predictedMa,
+    previousValues,
+    previousSum,
+    derivedClose: predictedMa * windowSize - previousSum,
+    reason: null,
+  };
 }
 
-function calculateMovingAverageAtDate(
+function buildMovingAverageCalculation(
   orderedDates: string[],
   closeByDate: Map<string, number>,
+  actualCloseByDate: Map<string, number>,
+  predictedCloseDates: Set<string>,
   targetDate: string,
   windowSize: MaWindow,
-) {
+): MovingAverageCalculationDetail {
+  const emptyDetail = (reason: string) => buildEmptyMovingAverageCalculation(windowSize, reason);
   const targetIndex = orderedDates.indexOf(targetDate);
-  if (targetIndex < 0) return null;
+  if (targetIndex < 0) return emptyDetail('目标周期不存在');
 
   const windowDates = orderedDates.slice(targetIndex - windowSize + 1, targetIndex + 1);
-  if (windowDates.length !== windowSize) return null;
+  if (windowDates.length !== windowSize) {
+    return emptyDetail(`需要${windowSize}个周期收盘价，目前数量不足`);
+  }
 
-  const values = windowDates.map((date) => closeByDate.get(date) ?? Number.NaN);
-  if (values.some((value) => !Number.isFinite(value))) return null;
+  const values = buildCalculationValues(
+    windowDates,
+    closeByDate,
+    actualCloseByDate,
+    predictedCloseDates,
+  );
+  if (values === null) return emptyDetail(`MA${windowSize}窗口存在缺失收盘价`);
 
-  return average(values);
+  const total = sum(values.map((item) => item.value));
+  return {
+    windowSize,
+    values,
+    sum: total,
+    average: total / windowSize,
+    reason: null,
+  };
+}
+
+function buildEmptyMovingAverageCalculation(
+  windowSize: MaWindow,
+  reason: string,
+): MovingAverageCalculationDetail {
+  return {
+    windowSize,
+    values: [],
+    sum: null,
+    average: null,
+    reason,
+  };
+}
+
+function buildCalculationValues(
+  dates: string[],
+  closeByDate: Map<string, number>,
+  actualCloseByDate: Map<string, number>,
+  predictedCloseDates: Set<string>,
+): CalculationValueItem[] | null {
+  const values = dates.map((date) => {
+    const value = closeByDate.get(date) ?? Number.NaN;
+    return {
+      targetDate: date,
+      value,
+      source: (predictedCloseDates.has(date) || !actualCloseByDate.has(date)
+        ? 'predicted'
+        : 'actual') as CalculationValueItem['source'],
+    };
+  });
+
+  return values.some((item) => !Number.isFinite(item.value)) ? null : values;
 }
 
 function parseInput(value: string) {

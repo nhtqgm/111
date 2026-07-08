@@ -158,22 +158,57 @@ function verifyProjectionCase(period, points, baseDate, inputWindow) {
     const targetMa = Number(prediction.predictedMaValues[String(inputWindow)]);
     const targetIndex = orderedDates.indexOf(prediction.targetDate);
     const reverseDates = orderedDates.slice(targetIndex - (inputWindow - 1), targetIndex);
-    const expectedClose = targetMa * inputWindow - sum(reverseDates.map((date) => closeByDate.get(date)));
+    const reverseValues = reverseDates.map((date) => closeByDate.get(date));
+    const expectedPreviousSum = sum(reverseValues);
+    const expectedClose = targetMa * inputWindow - expectedPreviousSum;
 
     assertAlmostEqual(
       projectionRow.derivedClose,
       expectedClose,
       `${period} MA${inputWindow} reverse close at ${prediction.targetDate}`,
     );
+    assert.equal(
+      projectionRow.calculation.reverse.previousValues.length,
+      inputWindow - 1,
+      `${period} MA${inputWindow} reverse previous value count`,
+    );
+    assertAlmostEqual(
+      projectionRow.calculation.reverse.previousSum,
+      expectedPreviousSum,
+      `${period} MA${inputWindow} reverse previous sum at ${prediction.targetDate}`,
+    );
+    assertAlmostEqual(
+      projectionRow.calculation.reverse.derivedClose,
+      expectedClose,
+      `${period} MA${inputWindow} reverse detail close at ${prediction.targetDate}`,
+    );
 
     closeByDate.set(prediction.targetDate, expectedClose);
     for (const outputWindow of MA_WINDOWS) {
       const windowDates = orderedDates.slice(targetIndex - outputWindow + 1, targetIndex + 1);
-      const expectedMa = average(windowDates.map((date) => closeByDate.get(date)));
+      const windowValues = windowDates.map((date) => closeByDate.get(date));
+      const expectedSum = sum(windowValues);
+      const expectedMa = expectedSum / outputWindow;
+      const calculationDetail = projectionRow.calculation.movingAverages[outputWindow];
       assertAlmostEqual(
         projectionRow.maValues[outputWindow],
         expectedMa,
         `${period} input MA${inputWindow} output MA${outputWindow} at ${prediction.targetDate}`,
+      );
+      assert.equal(
+        calculationDetail.values.length,
+        outputWindow,
+        `${period} input MA${inputWindow} output MA${outputWindow} detail count`,
+      );
+      assertAlmostEqual(
+        calculationDetail.sum,
+        expectedSum,
+        `${period} input MA${inputWindow} output MA${outputWindow} detail sum`,
+      );
+      assertAlmostEqual(
+        calculationDetail.average,
+        expectedMa,
+        `${period} input MA${inputWindow} output MA${outputWindow} detail average`,
       );
     }
   }
