@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { type KeyboardEvent, useEffect, useRef } from 'react';
 import * as echarts from 'echarts';
 import type { KLinePoint, PeriodType } from '../types';
 import type { LineValuePoint } from '../utils/movingAverage';
@@ -39,11 +39,15 @@ export default function KLineChart({
   showCloseLine = true,
 }: KLineChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const chartRef = useRef<echarts.EChartsType | null>(null);
+  const zoomRangeRef = useRef({ start: 45, end: 100 });
 
   useEffect(() => {
     if (!containerRef.current || !points.length) return;
 
     const chart = echarts.init(containerRef.current, undefined, { renderer: 'canvas' });
+    chartRef.current = chart;
+    zoomRangeRef.current = { start: 45, end: 100 };
     const visiblePoints = points.slice(-180);
     const lineDates = lineSeries.flatMap((series) =>
       series.rows.filter((row) => row.value !== null).map((row) => row.targetDate),
@@ -118,8 +122,16 @@ export default function KLineChart({
         },
       ],
       dataZoom: [
-        { type: 'inside', xAxisIndex: [0, 1], start: 45, end: 100 },
-        { type: 'slider', xAxisIndex: [0, 1], bottom: 8, height: 18, start: 45, end: 100 },
+        { id: 'keyboard-inside-zoom', type: 'inside', xAxisIndex: [0, 1], start: 45, end: 100 },
+        {
+          id: 'keyboard-slider-zoom',
+          type: 'slider',
+          xAxisIndex: [0, 1],
+          bottom: 8,
+          height: 18,
+          start: 45,
+          end: 100,
+        },
       ],
       series: [
         {
@@ -218,10 +230,84 @@ export default function KLineChart({
     return () => {
       window.removeEventListener('resize', resize);
       chart.dispose();
+      if (chartRef.current === chart) {
+        chartRef.current = null;
+      }
     };
   }, [baseDate, lineSeries, period, points, showCloseLine]);
 
-  return <div className="chart-surface" ref={containerRef} />;
+  function applyKeyboardZoom(start: number, end: number) {
+    const normalized = normalizeZoomRange(start, end);
+    zoomRangeRef.current = normalized;
+    chartRef.current?.dispatchAction({
+      type: 'dataZoom',
+      batch: [
+        { dataZoomId: 'keyboard-inside-zoom', ...normalized },
+        { dataZoomId: 'keyboard-slider-zoom', ...normalized },
+      ],
+    });
+  }
+
+  function handleKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+
+    event.preventDefault();
+    const { start, end } = zoomRangeRef.current;
+    const span = end - start;
+    const center = (start + end) / 2;
+
+    if (event.key === 'ArrowUp') {
+      const nextSpan = Math.max(5, span * 0.82);
+      applyKeyboardZoom(center - nextSpan / 2, center + nextSpan / 2);
+      return;
+    }
+
+    if (event.key === 'ArrowDown') {
+      const nextSpan = Math.min(100, span * 1.22);
+      applyKeyboardZoom(center - nextSpan / 2, center + nextSpan / 2);
+      return;
+    }
+
+    const step = Math.max(2, span * 0.16);
+    applyKeyboardZoom(
+      event.key === 'ArrowLeft' ? start - step : start + step,
+      event.key === 'ArrowLeft' ? end - step : end + step,
+    );
+  }
+
+  return (
+    <div
+      aria-label="K线图区域，点击后可用上下箭头放大缩小，左右箭头左右移动"
+      className="chart-surface"
+      onKeyDown={handleKeyDown}
+      onMouseDown={() => containerRef.current?.focus()}
+      ref={containerRef}
+      tabIndex={0}
+    />
+  );
+}
+
+function normalizeZoomRange(start: number, end: number) {
+  const requestedSpan = end - start;
+  const nextSpan = Math.max(5, Math.min(100, requestedSpan));
+  const center = (start + end) / 2;
+  let nextStart = center - nextSpan / 2;
+  let nextEnd = center + nextSpan / 2;
+
+  if (nextStart < 0) {
+    nextStart = 0;
+    nextEnd = nextSpan;
+  }
+
+  if (nextEnd > 100) {
+    nextEnd = 100;
+    nextStart = 100 - nextSpan;
+  }
+
+  return {
+    start: Number(nextStart.toFixed(2)),
+    end: Number(nextEnd.toFixed(2)),
+  };
 }
 
 function mergeDates(actualDates: string[], predictedDates: string[]) {
