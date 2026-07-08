@@ -467,6 +467,7 @@ export default function App() {
               pointSeries={pointSeries}
               baseDate={baseDate}
               period={period}
+              showActualKLine={showActualMaLines}
               showCloseLine={false}
             />
           ) : (

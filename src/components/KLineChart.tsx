@@ -33,6 +33,7 @@ interface KLineChartProps {
   pointSeries?: ChartPointSeries[];
   baseDate: string;
   period: PeriodType;
+  showActualKLine?: boolean;
   showCloseLine?: boolean;
 }
 
@@ -48,6 +49,7 @@ export default function KLineChart({
   pointSeries = [],
   baseDate,
   period,
+  showActualKLine = true,
   showCloseLine = true,
 }: KLineChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -93,8 +95,8 @@ export default function KLineChart({
       backgroundColor: '#f7f4ee',
       animationDuration: 420,
       grid: [
-        { left: 54, right: 28, top: 32, height: '61%' },
-        { left: 54, right: 28, top: '75%', height: '14%' },
+        { left: 54, right: 28, top: 66, height: '56%' },
+        { left: 54, right: 28, top: '77%', height: '12%' },
       ],
       tooltip: {
         trigger: 'axis',
@@ -104,13 +106,21 @@ export default function KLineChart({
         textStyle: { color: '#f9f6ef' },
       },
       legend: {
-        top: 4,
+        type: 'scroll',
+        top: 6,
         left: 12,
+        right: 68,
+        height: 42,
         itemWidth: 14,
         itemHeight: 8,
+        pageButtonGap: 6,
+        pageButtonItemGap: 4,
+        pageIconColor: '#5f5444',
+        pageIconInactiveColor: '#c8beae',
+        pageTextStyle: { color: '#5f5444' },
         textStyle: { color: '#3d453f' },
         data: [
-          '真实K线',
+          ...(showActualKLine ? ['真实K线'] : []),
           ...(showCloseLine ? ['真实收盘'] : []),
           ...lineSeries.map((series) => series.label),
           ...pointSeries.map((series) => series.label),
@@ -161,35 +171,32 @@ export default function KLineChart({
         },
       ],
       series: [
-        {
-          name: '真实K线',
-          type: 'candlestick',
-          data: xAxis.map((date) => {
-            const point = pointByDate.get(date);
-            return point
-              ? [
-                  roundPrice(point.open),
-                  roundPrice(point.close),
-                  roundPrice(point.low),
-                  roundPrice(point.high),
-                ]
-              : ['-', '-', '-', '-'];
-          }),
-          itemStyle: {
-            color: '#b43d31',
-            color0: '#1f8b74',
-            borderColor: '#b43d31',
-            borderColor0: '#1f8b74',
-          },
-          markLine: baseDate
-            ? {
-                symbol: ['none', 'none'],
-                label: { formatter: '预测起点', color: '#5f5444' },
-                lineStyle: { color: '#8c6a3d', type: 'solid', width: 1 },
-                data: [{ xAxis: baseDate }],
-              }
-            : undefined,
-        },
+        ...(showActualKLine
+          ? [
+              {
+                name: '真实K线',
+                type: 'candlestick',
+                data: xAxis.map((date) => {
+                  const point = pointByDate.get(date);
+                  return point
+                    ? [
+                        roundPrice(point.open),
+                        roundPrice(point.close),
+                        roundPrice(point.low),
+                        roundPrice(point.high),
+                      ]
+                    : ['-', '-', '-', '-'];
+                }),
+                itemStyle: {
+                  color: '#b43d31',
+                  color0: '#1f8b74',
+                  borderColor: '#b43d31',
+                  borderColor0: '#1f8b74',
+                },
+                markLine: createBaseDateMarkLine(baseDate),
+              },
+            ]
+          : []),
         ...(showCloseLine
           ? [
               {
@@ -286,7 +293,7 @@ export default function KLineChart({
         chartRef.current = null;
       }
     };
-  }, [baseDate, lineSeries, period, pointSeries, points, showCloseLine]);
+  }, [baseDate, lineSeries, period, pointSeries, points, showActualKLine, showCloseLine]);
 
   function applyKeyboardZoom(start: number, end: number) {
     const normalized = normalizeZoomRange(start, end);
@@ -363,6 +370,17 @@ function normalizeZoomRange(start: number, end: number) {
   return {
     start: Math.max(0, Number(nextStart.toFixed(2))),
     end: Math.min(100, Number(nextEnd.toFixed(2))),
+  };
+}
+
+function createBaseDateMarkLine(baseDate: string) {
+  if (!baseDate) return undefined;
+
+  return {
+    symbol: ['none', 'none'],
+    label: { formatter: '预测起点', color: '#5f5444' },
+    lineStyle: { color: '#8c6a3d', type: 'solid', width: 1 },
+    data: [{ xAxis: baseDate }],
   };
 }
 
