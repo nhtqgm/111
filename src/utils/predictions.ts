@@ -215,7 +215,8 @@ function getTargetDates(
 ) {
   const dates = points.map((point) => point.date);
   const baseIndex = dates.indexOf(baseDate);
-  const knownFuture = baseIndex >= 0 ? dates.slice(baseIndex, baseIndex + rowCount) : [baseDate];
+  const knownFuture =
+    baseIndex >= 0 ? dates.slice(baseIndex + 1, baseIndex + 1 + rowCount) : [];
 
   if (knownFuture.length === rowCount) {
     return knownFuture;

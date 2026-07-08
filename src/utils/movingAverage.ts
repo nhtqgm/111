@@ -93,14 +93,14 @@ export function buildMa40Projection(
     MA_WINDOWS.map((windowSize) => [
       windowSize,
       calculateMovingAverage(points, windowSize).filter(
-        (row) => row.value !== null && row.targetDate < baseDate,
+        (row) => row.value !== null && row.targetDate <= baseDate,
       ),
     ]),
   ) as Record<MaWindow, LineValuePoint[]>;
   const predictedLines = Object.fromEntries(
     MA_WINDOWS.map((windowSize) => {
       const anchor = [...actualLines[windowSize]].reverse().find(
-        (row) => row.targetDate < baseDate,
+        (row) => row.targetDate <= baseDate,
       );
 
       return [
