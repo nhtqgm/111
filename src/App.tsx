@@ -5,6 +5,7 @@ import KLineChart, {
 } from './components/KLineChart';
 import { fetchKLines } from './services/eastmoney';
 import type { PeriodType, PredictionPoint, StockKLineResponse } from './types';
+import { filterCompletedKLineData } from './utils/completedPeriods';
 import { compareProjectionRows, formatNumber, summarizeComparisons } from './utils/metrics';
 import {
   buildMa40Projection,
@@ -96,11 +97,14 @@ export default function App() {
       return;
     }
 
-    const cachedData = markAsLocalCache(cached.data);
-    setData(cachedData);
-    setBaseDate(cachedData.points.at(-1)?.date ?? todayDate);
-    showToast(formatHistoryStatus(cached.updatedAt, cachedData.points.length), 'info');
-    if (cachedData.points.length < minHistoryCount) {
+    const completed = filterCompletedKLineData(markAsLocalCache(cached.data), period);
+    setData(completed.data);
+    setBaseDate(completed.lastCompletedDate ?? todayDate);
+    showToast(
+      formatHistoryStatus(cached.updatedAt, completed.data.points.length, completed.removedPoints.length),
+      'info',
+    );
+    if (completed.data.points.length < minHistoryCount) {
       setError(`本地历史数据不足${minHistoryCount}条，MA60计算可能不完整，请联网更新一次`);
     }
   }, [period, queryCode]);
@@ -321,24 +325,25 @@ export default function App() {
 
     try {
       const result = await fetchKLines(stockCode, period);
-      saveKLineCache(result, period);
-      setData(markAsOnlineResult(result));
-      setBaseDate(result.points.at(-1)?.date ?? todayDate);
-      setStockCode(result.code);
-      setQueryCode(result.code);
-      showToast(`已联网更新：${result.points.length}条，${new Date().toLocaleString()}`, 'success');
-      if (result.points.length < minHistoryCount) {
+      const completed = filterCompletedKLineData(markAsOnlineResult(result), period);
+      saveKLineCache(completed.data, period);
+      setData(completed.data);
+      setBaseDate(completed.lastCompletedDate ?? todayDate);
+      setStockCode(completed.data.code);
+      setQueryCode(completed.data.code);
+      showToast(`已联网更新：${completed.data.points.length}条，${new Date().toLocaleString()}`, 'success');
+      if (completed.data.points.length < minHistoryCount) {
         setError(`联网数据不足${minHistoryCount}条，MA60计算可能不完整`);
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : '联网更新失败';
       const cached = loadKLineCache(stockCode, period);
       if (cached) {
-        const cachedData = markAsLocalCache(cached.data);
-        setData(cachedData);
-        setBaseDate(cachedData.points.at(-1)?.date ?? todayDate);
+        const completed = filterCompletedKLineData(markAsLocalCache(cached.data), period);
+        setData(completed.data);
+        setBaseDate(completed.lastCompletedDate ?? todayDate);
         showToast(
-          `${formatHistoryStatus(cached.updatedAt, cachedData.points.length)}；联网失败，继续使用本地缓存`,
+          `${formatHistoryStatus(cached.updatedAt, completed.data.points.length, completed.removedPoints.length)}；联网失败，继续使用本地缓存`,
           'warning',
         );
       }
@@ -724,12 +729,13 @@ function markAsOnlineResult(data: StockKLineResponse): StockKLineResponse {
   };
 }
 
-function formatHistoryStatus(updatedAt: string, count: number) {
+function formatHistoryStatus(updatedAt: string, count: number, removedCount = 0) {
   const updatedDate = new Date(updatedAt);
   const updatedText = Number.isNaN(updatedDate.getTime())
     ? updatedAt
     : updatedDate.toLocaleString();
-  return `本地历史：${count}条，更新于 ${updatedText}`;
+  const removedText = removedCount > 0 ? `，已过滤未完成K线${removedCount}条` : '';
+  return `本地历史：${count}条，更新于 ${updatedText}${removedText}`;
 }
 
 function createEmptyLineMap(): Record<MaWindow, LineValuePoint[]> {

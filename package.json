@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "tsc -b && vite build",
+    "verify:ma": "node scripts/verify-ma-periods.mjs",
     "preview": "vite preview --host 0.0.0.0",
     "electron:dev": "npm run build && electron .",
     "dist:win": "npm run dist:win7",
