@@ -1,5 +1,8 @@
 import { type CSSProperties, useEffect, useMemo, useRef, useState } from 'react';
-import KLineChart, { type ChartLineSeries } from './components/KLineChart';
+import KLineChart, {
+  type ChartLineSeries,
+  type ChartPointSeries,
+} from './components/KLineChart';
 import { fetchKLines } from './services/eastmoney';
 import type { PeriodType, PredictionPoint, StockKLineResponse } from './types';
 import { compareProjectionRows, formatNumber, summarizeComparisons } from './utils/metrics';
@@ -185,6 +188,23 @@ export default function App() {
         },
       ]),
     [projection.actualLines, projection.predictedLines, visibleMaWindows],
+  );
+  const pointSeries = useMemo<ChartPointSeries[]>(
+    () => [
+      {
+        label: '预测收盘价',
+        color: '#ffe600',
+        borderColor: '#20251f',
+        rows: projection.rows.map((row) => ({
+          targetDate: row.targetDate,
+          value: row.derivedClose,
+        })),
+        symbol: 'diamond',
+        symbolSize: 13,
+        z: 120,
+      },
+    ],
+    [projection.rows],
   );
 
   function toggleMaWindow(windowSize: MaWindow) {
@@ -406,6 +426,7 @@ export default function App() {
             <KLineChart
               points={data.points}
               lineSeries={lineSeries}
+              pointSeries={pointSeries}
               baseDate={baseDate}
               period={period}
               showCloseLine={false}

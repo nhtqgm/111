@@ -17,9 +17,20 @@ export interface ChartLineSeries {
   z: number;
 }
 
+export interface ChartPointSeries {
+  label: string;
+  color: string;
+  borderColor?: string;
+  rows: LineValuePoint[];
+  symbol: string;
+  symbolSize: number;
+  z: number;
+}
+
 interface KLineChartProps {
   points: KLinePoint[];
   lineSeries: ChartLineSeries[];
+  pointSeries?: ChartPointSeries[];
   baseDate: string;
   period: PeriodType;
   showCloseLine?: boolean;
@@ -34,6 +45,7 @@ const periodName: Record<PeriodType, string> = {
 export default function KLineChart({
   points,
   lineSeries,
+  pointSeries = [],
   baseDate,
   period,
   showCloseLine = true,
@@ -52,9 +64,23 @@ export default function KLineChart({
     const lineDates = lineSeries.flatMap((series) =>
       series.rows.filter((row) => row.value !== null).map((row) => row.targetDate),
     );
-    const xAxis = mergeDates([...visiblePoints.map((point) => point.date), baseDate], lineDates);
+    const pointDates = pointSeries.flatMap((series) =>
+      series.rows.filter((row) => row.value !== null).map((row) => row.targetDate),
+    );
+    const xAxis = mergeDates(
+      [...visiblePoints.map((point) => point.date), baseDate],
+      [...lineDates, ...pointDates],
+    );
     const pointByDate = new Map(points.map((point) => [point.date, point]));
     const lineMaps = lineSeries.map((series) => ({
+      ...series,
+      values: new Map(
+        series.rows
+          .filter((row) => row.value !== null)
+          .map((row) => [row.targetDate, row.value as number]),
+      ),
+    }));
+    const pointMaps = pointSeries.map((series) => ({
       ...series,
       values: new Map(
         series.rows
@@ -87,6 +113,7 @@ export default function KLineChart({
           '真实K线',
           ...(showCloseLine ? ['真实收盘'] : []),
           ...lineSeries.map((series) => series.label),
+          ...pointSeries.map((series) => series.label),
         ],
       },
       xAxis: [
@@ -203,6 +230,31 @@ export default function KLineChart({
             borderWidth: 2,
           },
         })),
+        ...pointMaps.map((series) => ({
+          name: series.label,
+          type: 'scatter',
+          data: xAxis.map((date) => {
+            const value = series.values.get(date);
+            return value === undefined ? null : roundPrice(value);
+          }),
+          symbol: series.symbol,
+          symbolSize: series.symbolSize,
+          z: series.z,
+          itemStyle: {
+            color: series.color,
+            borderColor: series.borderColor ?? '#20251f',
+            borderWidth: 2,
+            shadowBlur: 8,
+            shadowColor: 'rgba(255, 230, 0, 0.55)',
+          },
+          emphasis: {
+            scale: 1.25,
+            itemStyle: {
+              shadowBlur: 12,
+              shadowColor: 'rgba(255, 230, 0, 0.75)',
+            },
+          },
+        })),
         {
           name: '成交量',
           type: 'bar',
@@ -234,7 +286,7 @@ export default function KLineChart({
         chartRef.current = null;
       }
     };
-  }, [baseDate, lineSeries, period, points, showCloseLine]);
+  }, [baseDate, lineSeries, period, pointSeries, points, showCloseLine]);
 
   function applyKeyboardZoom(start: number, end: number) {
     const normalized = normalizeZoomRange(start, end);
