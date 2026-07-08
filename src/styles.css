@@ -518,27 +518,6 @@ h2 {
   gap: 6px;
 }
 
-.autosave-toggle {
-  min-height: 34px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 10px;
-  border: 1px solid #777061;
-  border-radius: 6px;
-  background: #fffdf8;
-  color: #2c332d;
-  font-size: 12px;
-  font-weight: 900;
-  white-space: nowrap;
-}
-
-.autosave-toggle input {
-  width: 15px;
-  height: 15px;
-  accent-color: #26302a;
-}
-
 .ghost {
   height: 34px;
   padding: 0 12px;
@@ -572,6 +551,12 @@ h2 {
   color: #f7f4ee;
   font-size: 12px;
   font-weight: 800;
+}
+
+.primary-save {
+  background: #26302a;
+  color: #f7f4ee;
+  border-color: #26302a;
 }
 
 .history-status {

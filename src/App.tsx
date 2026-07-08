@@ -66,7 +66,6 @@ export default function App() {
   const [isTableExpanded, setIsTableExpanded] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
-  const [isAutoSaveEnabled, setIsAutoSaveEnabled] = useState(true);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'info' | 'success' | 'warning' } | null>(
     null,
@@ -132,17 +131,28 @@ export default function App() {
   }, [baseDate, data, period, predictions]);
 
   useEffect(() => {
-    if (!isAutoSaveEnabled) return;
-
     const timer = window.setInterval(() => {
-      saveCurrentWorkspace(true);
+      saveCurrentWorkspace({ notice: 'auto' });
     }, 30000);
 
     return () => window.clearInterval(timer);
-  }, [baseDate, data, hasUnsavedChanges, isAutoSaveEnabled, period, predictions]);
+  }, [baseDate, data, hasUnsavedChanges, period, predictions]);
 
-  function saveCurrentWorkspace(showNotice: boolean) {
-    if (!data || !baseDate || !predictions.length || !hasUnsavedChanges) return;
+  function saveCurrentWorkspace({
+    force = false,
+    notice,
+  }: {
+    force?: boolean;
+    notice: 'auto' | 'manual';
+  }) {
+    if (!data || !baseDate || !predictions.length) {
+      if (notice === 'manual') {
+        showToast('暂无可保存的数据', 'warning');
+      }
+      return;
+    }
+
+    if (!force && !hasUnsavedChanges) return;
 
     const signature = JSON.stringify({
       stockCode: data.code,
@@ -152,6 +162,9 @@ export default function App() {
     });
     if (signature === lastSavedSignatureRef.current) {
       setHasUnsavedChanges(false);
+      if (notice === 'manual') {
+        showToast(`已保存：${new Date().toLocaleTimeString()}`, 'success');
+      }
       return;
     }
 
@@ -165,9 +178,12 @@ export default function App() {
     lastSavedSignatureRef.current = signature;
     setHasUnsavedChanges(false);
 
-    if (showNotice) {
-      showToast(`已自动保存：${new Date().toLocaleTimeString()}`, 'success');
-    }
+    showToast(
+      notice === 'auto'
+        ? `已自动保存：${new Date().toLocaleTimeString()}`
+        : `已保存：${new Date().toLocaleTimeString()}`,
+      'success',
+    );
   }
 
   const projection = useMemo(
@@ -559,22 +575,15 @@ export default function App() {
               <h2>预测MA{inputMaWindow}</h2>
             </div>
             <div className="panel-actions">
-              <label className="autosave-toggle">
-                <input
-                  type="checkbox"
-                  checked={isAutoSaveEnabled}
-                  onChange={(event) => {
-                    setIsAutoSaveEnabled(event.target.checked);
-                    showToast(
-                      event.target.checked ? '自动保存已开启：每30秒保存一次' : '自动保存已关闭',
-                      event.target.checked ? 'success' : 'warning',
-                    );
-                  }}
-                />
-                <span>自动保存</span>
-              </label>
               <button type="button" className="ghost" onClick={exportPredictions}>
                 导出
+              </button>
+              <button
+                type="button"
+                className="ghost primary-save"
+                onClick={() => saveCurrentWorkspace({ force: true, notice: 'manual' })}
+              >
+                保存
               </button>
               <button type="button" className="ghost" onClick={() => fileInputRef.current?.click()}>
                 导入
