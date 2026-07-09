@@ -11,32 +11,64 @@ permissions:
   id-token: write
 
 concurrency:
-  group: pages-main-${{ github.ref_name }}
+  group: pages
   cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout main for production root
         uses: actions/checkout@v4
+        with:
+          ref: main
+          path: main-site
+
+      - name: Checkout integrated preview branch
+        uses: actions/checkout@v4
+        continue-on-error: true
+        with:
+          ref: codex-plan-replay-integrated-v1
+          path: preview-site
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+          cache-dependency-path: main-site/package-lock.json
 
-      - name: Install dependencies
-        run: npm ci
+      - name: Build production root
+        working-directory: main-site
+        run: |
+          npm ci
+          npm run build
 
-      - name: Build
-        run: npm run build
+      - name: Build integrated preview if branch is available
+        run: |
+          if [ -f preview-site/package.json ]; then
+            cd preview-site
+            npm ci
+            npm run build
+          else
+            echo "Preview branch is not available; only publishing production root."
+          fi
+
+      - name: Compose Pages artifact
+        run: |
+          mkdir -p pages-site
+          cp -R main-site/dist/. pages-site/
+          if [ -d preview-site/dist ]; then
+            mkdir -p pages-site/preview/codex-plan-replay-integrated-v1
+            cp -R preview-site/dist/. pages-site/preview/codex-plan-replay-integrated-v1/
+          fi
+          touch pages-site/.nojekyll
+          test -f pages-site/index.html
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: dist
+          path: pages-site
 
   deploy:
     environment:
