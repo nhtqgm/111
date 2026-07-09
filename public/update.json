@@ -1,7 +1,7 @@
 {
   "app": "gupiao-ma40",
   "version": "0.2.7",
-  "url": "https://github.com/nhtqgm/111/releases/latest",
+  "url": "https://github.com/nhtqgm/111/releases/download/v0.2.7/gupiao-forecast-0.2.7-win7.exe",
   "notes": "Add full local backup export/import and update checking.",
   "publishedAt": "2026-07-09"
 }
