@@ -572,6 +572,7 @@ h2 {
 .plan-manager {
   display: grid;
   grid-template-columns: minmax(190px, 1fr) auto;
+  align-items: end;
   gap: 8px;
   margin-top: 10px;
   padding: 8px;
@@ -605,7 +606,12 @@ h2 {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
+  align-self: end;
   gap: 6px;
+}
+
+.plan-actions .ghost {
+  height: 34px;
 }
 
 .history-status {
