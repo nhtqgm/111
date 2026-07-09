@@ -454,12 +454,16 @@ h2 {
 }
 
 .workspace {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(470px, 520px);
+  display: flex;
+  flex-direction: column;
   flex: 1 1 auto;
   min-height: 0;
   gap: 12px;
   margin-top: 6px;
+  padding: 0 6px 14px 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
 }
 
 .chart-panel,
@@ -471,7 +475,8 @@ h2 {
 }
 
 .chart-panel {
-  height: 100%;
+  flex: 0 0 clamp(520px, 58vh, 720px);
+  height: clamp(520px, 58vh, 720px);
   min-height: 0;
   overflow: hidden;
 }
@@ -495,7 +500,8 @@ h2 {
 }
 
 .input-panel {
-  height: 100%;
+  flex: 0 0 auto;
+  height: auto;
   min-height: 0;
   padding: 12px;
   display: flex;
@@ -614,6 +620,11 @@ h2 {
   min-height: 0;
   overflow: auto;
   padding-right: 4px;
+}
+
+.input-panel > .prediction-table {
+  flex: 0 1 auto;
+  max-height: min(52vh, 520px);
 }
 
 .prediction-table.expanded-table {
