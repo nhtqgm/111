@@ -2,7 +2,7 @@ name: Deploy web app
 
 on:
   push:
-    branches: [main]
+    branches: [main, codex-plan-management-v1]
   workflow_dispatch:
 
 permissions:
