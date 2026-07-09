@@ -43,9 +43,9 @@ jobs:
         run: |
           $version = $env:RELEASE_TAG.TrimStart('v')
           New-Item -ItemType Directory -Force -Path release | Out-Null
-          Copy-Item -LiteralPath "release-raw\*-win7.exe" -Destination "release\gupiao-forecast-$version-win7.exe"
-          Copy-Item -LiteralPath "release-raw\*-win7-x64.exe" -Destination "release\gupiao-forecast-$version-win7-x64.exe"
-          Copy-Item -LiteralPath "release-raw\*-win7-ia32.exe" -Destination "release\gupiao-forecast-$version-win7-ia32.exe"
+          Copy-Item -Path "release-raw\*-win7.exe" -Destination "release\gupiao-forecast-$version-win7.exe"
+          Copy-Item -Path "release-raw\*-win7-x64.exe" -Destination "release\gupiao-forecast-$version-win7-x64.exe"
+          Copy-Item -Path "release-raw\*-win7-ia32.exe" -Destination "release\gupiao-forecast-$version-win7-ia32.exe"
 
       - name: Remove malformed generated assets
         uses: actions/github-script@v7
