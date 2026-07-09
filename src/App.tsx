@@ -651,6 +651,10 @@ export default function App() {
   }
 
   function renderPredictionTable(expanded = false) {
+    const latestClose = latest?.close ?? 10;
+    const sliderMin = Math.max(0, Number((latestClose * 0.5).toFixed(4)));
+    const sliderMax = Math.max(sliderMin + 1, Number((latestClose * 1.8).toFixed(4)));
+
     return (
       <div className={`prediction-table ma40-table ${expanded ? 'expanded-table' : ''}`}>
         <div className="prediction-row table-head" style={predictionTableStyle}>
@@ -666,16 +670,33 @@ export default function App() {
         {projection.rows.map((row) => (
           <div className="prediction-row" key={row.targetDate} style={predictionTableStyle}>
             <span className="date-cell">{row.targetDate}</span>
-            <input
-              className="prediction-input forecast-ma40-input"
-              aria-label={`${row.targetDate} 预测MA${inputMaWindow}`}
-              type="text"
-              inputMode="decimal"
-              value={getPredictionInputValue(row, inputMaWindow)}
-              onChange={(event) => updatePrediction(row.targetDate, event.target.value)}
-              onBlur={() => formatPredictionInput(row.targetDate)}
-              placeholder="0.0000"
-            />
+            <div className="prediction-input-stack">
+              <input
+                className="prediction-input forecast-ma40-input"
+                aria-label={`${row.targetDate} 预测MA${inputMaWindow}`}
+                type="text"
+                inputMode="decimal"
+                value={getPredictionInputValue(row, inputMaWindow)}
+                onChange={(event) => updatePrediction(row.targetDate, event.target.value)}
+                onBlur={() => formatPredictionInput(row.targetDate)}
+                placeholder="0.0000"
+              />
+              <input
+                className="prediction-slider"
+                aria-label={`${row.targetDate} 预测MA${inputMaWindow}滑杆`}
+                type="range"
+                min={sliderMin}
+                max={sliderMax}
+                step={0.0001}
+                value={getPredictionSliderValue(row, inputMaWindow)}
+                onChange={(event) =>
+                  updatePrediction(
+                    row.targetDate,
+                    Number(event.target.value).toFixed(4),
+                  )
+                }
+              />
+            </div>
             <span className="derived-close-cell">{formatNumber(row.derivedClose)}</span>
             <span>{formatNumber(row.actualClose)}</span>
             <button
@@ -1393,6 +1414,12 @@ function normalizeDecimalInput(value: string) {
 
 function getPredictionInputValue(row: PredictionPoint, windowSize: MaWindow) {
   return row.predictedMaValues[String(windowSize)] ?? (windowSize === 40 ? row.predictedMa40 : '');
+}
+
+function getPredictionSliderValue(row: PredictionPoint, windowSize: MaWindow) {
+  const input = getPredictionInputValue(row, windowSize);
+  const parsed = Number(input);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function setPredictionInputValue(
