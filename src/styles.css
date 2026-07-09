@@ -43,7 +43,7 @@ button {
   width: calc(100vw - 16px);
   height: 100vh;
   margin: 0 auto;
-  padding: 8px 0 12px;
+  padding: 4px 0 8px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -54,15 +54,15 @@ button {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  padding: 4px 0 8px;
+  gap: 12px;
+  padding: 2px 0 5px;
   border-bottom: 2px solid #2d342e;
 }
 
 .eyebrow {
-  margin: 0 0 3px;
+  margin: 0 0 1px;
   color: #80683d;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 800;
   letter-spacing: 0;
   text-transform: uppercase;
@@ -75,7 +75,7 @@ h2 {
 }
 
 h1 {
-  font-size: clamp(24px, 2vw, 32px);
+  font-size: 22px;
   line-height: 1.08;
   font-weight: 900;
 }
@@ -89,16 +89,16 @@ h2 {
   display: grid;
   grid-template-columns: auto 120px auto auto;
   align-items: center;
-  gap: 8px;
-  padding: 7px;
+  gap: 6px;
+  padding: 5px;
   background: #262d28;
   color: #f4efe6;
   border-radius: 8px;
 }
 
 .stock-search label {
-  padding-left: 6px;
-  font-size: 13px;
+  padding-left: 5px;
+  font-size: 12px;
   color: #d5c9b5;
 }
 
@@ -106,20 +106,20 @@ h2 {
 .stock-search button,
 .select-field select,
 .select-field input {
-  height: 34px;
+  height: 26px;
   border: 1px solid #877c6b;
   border-radius: 6px;
 }
 
 .stock-search input {
   width: 100%;
-  padding: 0 10px;
+  padding: 0 9px;
   background: #f7f4ee;
   color: #111611;
 }
 
 .stock-search button {
-  padding: 0 15px;
+  padding: 0 12px;
   background: #d7a742;
   color: #1e211d;
   border-color: #d7a742;
@@ -136,22 +136,22 @@ h2 {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  padding: 8px 0;
+  gap: 6px;
+  padding: 5px 0;
 }
 
 .segmented {
   display: flex;
-  gap: 4px;
-  padding: 4px;
+  gap: 3px;
+  padding: 3px;
   border: 1px solid #2d342e;
   border-radius: 8px;
   background: #e0d7c8;
 }
 
 .segmented button {
-  min-width: 74px;
-  height: 32px;
+  min-width: 62px;
+  height: 25px;
   border: 0;
   border-radius: 6px;
   background: transparent;
@@ -167,8 +167,8 @@ h2 {
 .horizon-display {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  padding: 4px;
+  gap: 4px;
+  padding: 3px;
   border: 1px solid #2d342e;
   border-radius: 8px;
   background: #f2eadc;
@@ -201,10 +201,12 @@ h2 {
 
 .horizon-display button {
   position: relative;
-  display: grid;
-  min-width: 76px;
-  min-height: 40px;
-  place-items: center;
+  display: flex;
+  min-width: 58px;
+  min-height: 27px;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
   border: 1px solid color-mix(in srgb, var(--horizon-color) 34%, #c8beae);
   border-radius: 6px;
   background: var(--horizon-soft);
@@ -224,7 +226,7 @@ h2 {
   opacity: 1;
   background: #fffdf8;
   border-color: var(--horizon-color);
-  box-shadow: inset 0 -3px 0 var(--horizon-color);
+  box-shadow: inset 0 -2px 0 var(--horizon-color);
   color: var(--horizon-color);
 }
 
@@ -239,9 +241,9 @@ h2 {
 
 .horizon-display button::before {
   content: '';
-  width: 26px;
-  height: 3px;
-  margin-bottom: 3px;
+  width: 16px;
+  height: 2px;
+  margin-bottom: 0;
   border-radius: 999px;
   background: var(--horizon-color);
 }
@@ -272,20 +274,20 @@ h2 {
 }
 
 .actual-line-toggle {
-  min-height: 42px;
-  padding: 0 16px;
+  min-height: 31px;
+  padding: 0 12px;
   border: 1px solid #2d342e;
   border-radius: 8px;
   background: #fffdf8;
   color: #2d342e;
   font-weight: 900;
-  box-shadow: inset 0 -3px 0 #9b9183;
+  box-shadow: inset 0 -2px 0 #9b9183;
 }
 
 .actual-line-toggle.active {
   background: #26302a;
   color: #f7f4ee;
-  box-shadow: inset 0 -3px 0 #d7a742;
+  box-shadow: inset 0 -2px 0 #d7a742;
 }
 
 .horizon-display b,
@@ -294,9 +296,7 @@ h2 {
 }
 
 .horizon-display small {
-  margin-top: 3px;
-  font-size: 10px;
-  opacity: 0.88;
+  display: none;
 }
 
 .horizon-5 {
@@ -421,15 +421,15 @@ h2 {
   flex: 0 0 auto;
   display: grid;
   grid-template-columns: repeat(9, minmax(96px, 1fr));
-  border: 2px solid #2d342e;
-  border-radius: 8px;
+  border: 1px solid #2d342e;
+  border-radius: 6px;
   overflow: hidden;
-  background: #f7f4ee;
+  background: rgba(247, 244, 238, 0.86);
 }
 
 .metric {
-  min-height: 52px;
-  padding: 8px 12px;
+  min-height: 32px;
+  padding: 4px 8px;
   border-right: 1px solid #c8beae;
 }
 
@@ -439,16 +439,16 @@ h2 {
 
 .metric span {
   display: block;
-  margin-bottom: 5px;
+  margin-bottom: 2px;
   color: #746b5d;
-  font-size: 12px;
+  font-size: 10px;
   font-weight: 800;
 }
 
 .metric strong {
   display: block;
   color: #20251f;
-  font-size: 17px;
+  font-size: 14px;
   line-height: 1.12;
   overflow-wrap: anywhere;
 }
@@ -459,7 +459,7 @@ h2 {
   flex: 1 1 auto;
   min-height: 0;
   gap: 12px;
-  margin-top: 10px;
+  margin-top: 6px;
 }
 
 .chart-panel,
