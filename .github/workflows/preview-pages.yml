@@ -1,0 +1,74 @@
+name: Deploy plan management preview web app
+
+on:
+  push:
+    branches: [codex-plan-management-v1]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build-preview:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main for production root
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: main-site
+
+      - name: Checkout preview branch
+        uses: actions/checkout@v4
+        with:
+          ref: codex-plan-management-v1
+          path: preview-site
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            main-site/package-lock.json
+            preview-site/package-lock.json
+
+      - name: Build production root from main
+        working-directory: main-site
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build preview from branch
+        working-directory: preview-site
+        run: |
+          npm ci
+          npm run build
+
+      - name: Compose Pages artifact
+        run: |
+          mkdir -p pages-site/preview/codex-plan-management-v1
+          cp -R main-site/dist/. pages-site/
+          cp -R preview-site/dist/. pages-site/preview/codex-plan-management-v1/
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: pages-site
+
+  deploy-preview:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}preview/codex-plan-management-v1/
+    runs-on: ubuntu-latest
+    needs: build-preview
+    steps:
+      - name: Deploy combined site
+        id: deployment
+        uses: actions/deploy-pages@v4
