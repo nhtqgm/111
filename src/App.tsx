@@ -665,58 +665,29 @@ export default function App() {
         </div>
         {projection.rows.map((row) => (
           <div className="prediction-row" key={row.targetDate} style={predictionTableStyle}>
-            {(() => {
-              const sliderConfig = getPredictionSliderConfig(
-                row,
-                inputMaWindow,
-                latest?.close ?? null,
-                data?.points ?? [],
-              );
-              return (
-                <>
-                  <span className="date-cell">{row.targetDate}</span>
-                  <div className="prediction-input-stack">
-                    <input
-                      className="prediction-input forecast-ma40-input"
-                      aria-label={`${row.targetDate} 预测MA${inputMaWindow}`}
-                      type="text"
-                      inputMode="decimal"
-                      value={getPredictionInputValue(row, inputMaWindow)}
-                      onChange={(event) => updatePrediction(row.targetDate, event.target.value)}
-                      onBlur={() => formatPredictionInput(row.targetDate)}
-                      placeholder="0.0000"
-                    />
-                    <input
-                      className="prediction-slider"
-                      aria-label={`${row.targetDate} 预测MA${inputMaWindow}滑杆`}
-                      type="range"
-                      min={sliderConfig.min}
-                      max={sliderConfig.max}
-                      step={sliderConfig.step}
-                      value={getPredictionSliderValue(row, inputMaWindow, sliderConfig.anchor)}
-                      onChange={(event) =>
-                        updatePrediction(
-                          row.targetDate,
-                          Number(event.target.value).toFixed(4),
-                        )
-                      }
-                    />
-                  </div>
-                  <span className="derived-close-cell">{formatNumber(row.derivedClose)}</span>
-                  <span>{formatNumber(row.actualClose)}</span>
-                  <button
-                    type="button"
-                    className="detail-button"
-                    onClick={() => setDetailTargetDate(row.targetDate)}
-                  >
-                    明细
-                  </button>
-                  {visibleMaWindows.map((windowSize) => (
-                    <span key={windowSize}>{formatNumber(row.maValues[windowSize])}</span>
-                  ))}
-                </>
-              );
-            })()}
+            <span className="date-cell">{row.targetDate}</span>
+            <input
+              className="prediction-input forecast-ma40-input"
+              aria-label={`${row.targetDate} 预测MA${inputMaWindow}`}
+              type="text"
+              inputMode="decimal"
+              value={getPredictionInputValue(row, inputMaWindow)}
+              onChange={(event) => updatePrediction(row.targetDate, event.target.value)}
+              onBlur={() => formatPredictionInput(row.targetDate)}
+              placeholder="0.0000"
+            />
+            <span className="derived-close-cell">{formatNumber(row.derivedClose)}</span>
+            <span>{formatNumber(row.actualClose)}</span>
+            <button
+              type="button"
+              className="detail-button"
+              onClick={() => setDetailTargetDate(row.targetDate)}
+            >
+              明细
+            </button>
+            {visibleMaWindows.map((windowSize) => (
+              <span key={windowSize}>{formatNumber(row.maValues[windowSize])}</span>
+            ))}
           </div>
         ))}
       </div>
@@ -1424,69 +1395,6 @@ function getPredictionInputValue(row: PredictionPoint, windowSize: MaWindow) {
   return row.predictedMaValues[String(windowSize)] ?? (windowSize === 40 ? row.predictedMa40 : '');
 }
 
-function getPredictionSliderValue(row: PredictionPoint, windowSize: MaWindow, fallback: number) {
-  const input = getPredictionInputValue(row, windowSize);
-  const parsed = Number(input);
-  return Number.isFinite(parsed) ? parsed : fallback;
-}
-
-function getPredictionSliderConfig(
-  row: PredictionPoint,
-  windowSize: MaWindow,
-  latestClose: number | null,
-  points: StockKLineResponse['points'],
-) {
-  const input = getPredictionInputValue(row, windowSize);
-  const parsed = Number(input);
-  const anchorBase =
-    Number.isFinite(parsed) && parsed > 0
-      ? parsed
-      : latestClose && latestClose > 0
-        ? latestClose
-        : 1;
-
-  const recent = points.slice(-60).map((item) => item.close).filter((value) => value > 0);
-  const volatilityPct = getCloseVolatilityPct(recent);
-  const rangePct = clamp(volatilityPct * 1.8, 0.03, 0.12);
-
-  const min = roundTo4(Math.max(0, anchorBase * (1 - rangePct)));
-  const max = roundTo4(Math.max(min + 0.01, anchorBase * (1 + rangePct)));
-  const step = getSliderStep(anchorBase);
-
-  return {
-    anchor: anchorBase,
-    min,
-    max,
-    step,
-  };
-}
-
-function getCloseVolatilityPct(values: number[]) {
-  if (values.length < 2) return 0.03;
-  const returns: number[] = [];
-  for (let index = 1; index < values.length; index += 1) {
-    const prev = values[index - 1];
-    const curr = values[index];
-    if (prev > 0 && curr > 0) {
-      returns.push(Math.abs(curr / prev - 1));
-    }
-  }
-  if (!returns.length) return 0.03;
-  const average = returns.reduce((total, value) => total + value, 0) / returns.length;
-  return average;
-}
-
-function getSliderStep(value: number) {
-  if (value < 10) return 0.001;
-  if (value < 100) return 0.01;
-  if (value < 1000) return 0.1;
-  return 1;
-}
-
-function clamp(value: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, value));
-}
-
 function setPredictionInputValue(
   row: PredictionPoint,
   windowSize: MaWindow,
@@ -1551,8 +1459,4 @@ function formatDate(date: Date) {
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const day = String(date.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
-}
-
-function roundTo4(value: number) {
-  return Number(value.toFixed(4));
 }
