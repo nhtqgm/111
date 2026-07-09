@@ -39,10 +39,12 @@ import {
 import {
   buildReplayReviewRows,
   createReplaySnapshotsFromProjection,
+  filterReplayRowsByPlan,
   loadReplaySnapshots,
   mergeReplaySnapshots,
   saveReplaySnapshots,
   summarizeReplayRows,
+  type ReplayPlanFilter,
   type ReplayReviewRow,
   type ReplaySummary,
   type ReplaySnapshot,
@@ -94,6 +96,7 @@ export default function App() {
   const [showActualMaLines, setShowActualMaLines] = useState(false);
   const [isTableExpanded, setIsTableExpanded] = useState(false);
   const [isReplayModalOpen, setIsReplayModalOpen] = useState(false);
+  const [replayPlanFilter, setReplayPlanFilter] = useState<ReplayPlanFilter>('active');
   const [detailTargetDate, setDetailTargetDate] = useState<string | null>(null);
   const [replayDetailId, setReplayDetailId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -305,7 +308,26 @@ export default function App() {
     () => (data ? buildReplayReviewRows(replaySnapshots, data.points) : []),
     [data, replaySnapshots],
   );
-  const replaySummary = useMemo(() => summarizeReplayRows(replayRows), [replayRows]);
+  const replayPlanOptions = useMemo(() => {
+    const namesByPlanId = new Map<string, string>();
+    for (const plan of plans) {
+      namesByPlanId.set(plan.id, plan.name);
+    }
+    for (const row of replayRows) {
+      if (row.planId) {
+        namesByPlanId.set(row.planId, row.planName || namesByPlanId.get(row.planId) || '历史方案');
+      }
+    }
+
+    return Array.from(namesByPlanId, ([id, name]) => ({ id, name }));
+  }, [plans, replayRows]);
+  const filteredReplayRows = useMemo(
+    () => filterReplayRowsByPlan(replayRows, replayPlanFilter, activePlanId),
+    [activePlanId, replayPlanFilter, replayRows],
+  );
+  const replaySummary = useMemo(() => summarizeReplayRows(filteredReplayRows), [filteredReplayRows]);
+  const replayTotalSummary = useMemo(() => summarizeReplayRows(replayRows), [replayRows]);
+  const hasLegacyReplayRows = useMemo(() => replayRows.some((row) => !row.planId), [replayRows]);
   const predictionComparisons = useMemo(
     () => compareProjectionRows(projection.rows),
     [projection.rows],
@@ -325,9 +347,14 @@ export default function App() {
     [detailTargetDate, projection.rows],
   );
   const replayDetailRow = useMemo(
-    () => replayRows.find((row) => row.id === replayDetailId) ?? null,
-    [replayDetailId, replayRows],
+    () => filteredReplayRows.find((row) => row.id === replayDetailId) ?? null,
+    [filteredReplayRows, replayDetailId],
   );
+  useEffect(() => {
+    if (replayDetailId && !filteredReplayRows.some((row) => row.id === replayDetailId)) {
+      setReplayDetailId(null);
+    }
+  }, [filteredReplayRows, replayDetailId]);
   const lineSeries = useMemo<ChartLineSeries[]>(
     () => [
       ...(showActualMaLines
@@ -908,8 +935,14 @@ export default function App() {
 
       {isReplayModalOpen ? (
         <ReplayReviewModal
-          rows={replayRows}
+          rows={filteredReplayRows}
           summary={replaySummary}
+          totalSummary={replayTotalSummary}
+          planFilter={replayPlanFilter}
+          planOptions={replayPlanOptions}
+          activePlanId={activePlanId}
+          hasLegacyRows={hasLegacyReplayRows}
+          onPlanFilterChange={setReplayPlanFilter}
           selectedRow={replayDetailRow}
           onSelectRow={setReplayDetailId}
           onClose={() => {
@@ -1021,16 +1054,30 @@ function CalculationDetailModal({
 function ReplayReviewModal({
   rows,
   summary,
+  totalSummary,
+  planFilter,
+  planOptions,
+  activePlanId,
+  hasLegacyRows,
+  onPlanFilterChange,
   selectedRow,
   onSelectRow,
   onClose,
 }: {
   rows: ReplayReviewRow[];
   summary: ReplaySummary;
+  totalSummary: ReplaySummary;
+  planFilter: ReplayPlanFilter;
+  planOptions: Array<{ id: string; name: string }>;
+  activePlanId: string | null;
+  hasLegacyRows: boolean;
+  onPlanFilterChange: (filter: ReplayPlanFilter) => void;
   selectedRow: ReplayReviewRow | null;
   onSelectRow: (id: string | null) => void;
   onClose: () => void;
 }) {
+  const activePlanName = planOptions.find((plan) => plan.id === activePlanId)?.name ?? '当前方案';
+
   return (
     <div className="detail-modal-backdrop" role="presentation">
       <section className="replay-modal" role="dialog" aria-modal="true" aria-label="预测复盘">
@@ -1045,6 +1092,28 @@ function ReplayReviewModal({
         </div>
 
         <div className="replay-modal-body">
+          <div className="replay-filter-bar">
+            <label className="replay-filter-field">
+              <span>复盘范围</span>
+              <select
+                value={planFilter}
+                onChange={(event) => onPlanFilterChange(event.target.value as ReplayPlanFilter)}
+              >
+                <option value="active">当前方案：{activePlanName}</option>
+                <option value="all">全部方案</option>
+                {planOptions.map((plan) => (
+                  <option key={plan.id} value={`plan:${plan.id}`}>
+                    {plan.name}
+                  </option>
+                ))}
+                {hasLegacyRows ? <option value="legacy">未归属历史</option> : null}
+              </select>
+            </label>
+            <div className="replay-filter-note">
+              当前显示 {summary.total} 条 / 全部 {totalSummary.total} 条
+            </div>
+          </div>
+
           <div className="replay-summary-grid">
             <Metric label="快照" value={`${summary.total}`} />
             <Metric label="已复盘" value={`${summary.ready}`} />
@@ -1088,7 +1157,7 @@ function ReplayReviewModal({
               rows.map((row) => (
                 <div className="replay-row" key={row.id}>
                   <span className="date-cell">{row.targetDate}</span>
-                  <span>MA{row.inputMaWindow} / {row.baseDate}</span>
+                  <span>{formatReplaySource(row)}</span>
                   <span className={`replay-status ${row.status}`}>
                     {row.status === 'ready' ? '已复盘' : '待真实K线'}
                   </span>
@@ -1207,6 +1276,11 @@ function ValueList({
 
 function sumCalculationValues(values: Array<{ value: number }>) {
   return values.length ? values.reduce((total, item) => total + item.value, 0) : null;
+}
+
+function formatReplaySource(row: ReplayReviewRow) {
+  const planName = row.planName?.trim() || (row.planId ? '历史方案' : '未归属历史');
+  return `${planName} / MA${row.inputMaWindow} / ${row.baseDate}`;
 }
 
 function formatSignedNumber(value: number | null) {

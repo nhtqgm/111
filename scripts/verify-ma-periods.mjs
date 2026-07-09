@@ -17,6 +17,7 @@ import {
 import {
   buildReplayReviewRows,
   createReplaySnapshotsFromProjection,
+  filterReplayRowsByPlan,
   mergeReplaySnapshots,
   summarizeReplayRows,
 } from '../src/utils/replay.ts';
@@ -395,6 +396,23 @@ function verifyReplayReviewSnapshots() {
   assert.equal(summary.ready, 2);
   assert.equal(summary.pending, 0);
   assert.equal(typeof summary.closeMae, 'number');
+
+  const mergedRows = buildReplayReviewRows(
+    mergeReplaySnapshots(snapshots, [
+      ...otherPlanSnapshots,
+      {
+        ...snapshots[0],
+        id: '000166:day:legacy:2026-07-07:2026-07-08:MA40',
+        planId: undefined,
+        planName: undefined,
+      },
+    ]),
+    [...historical, ...future],
+  );
+  assert.equal(filterReplayRowsByPlan(mergedRows, 'all', 'plan-a').length, 5);
+  assert.equal(filterReplayRowsByPlan(mergedRows, 'active', 'plan-a').length, 2);
+  assert.equal(filterReplayRowsByPlan(mergedRows, 'plan:plan-b', 'plan-a').length, 2);
+  assert.equal(filterReplayRowsByPlan(mergedRows, 'legacy', 'plan-a').length, 1);
 }
 
 function makeResponse(points) {

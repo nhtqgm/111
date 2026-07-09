@@ -10,6 +10,7 @@ export const REPLAY_SNAPSHOT_SCHEMA = 'gupiao-replay-snapshots/v1';
 
 export type ReplayDirection = 'up' | 'down' | 'flat';
 export type ReplayStatus = 'ready' | 'pending';
+export type ReplayPlanFilter = 'all' | 'active' | 'legacy' | `plan:${string}`;
 
 export interface ReplaySnapshot {
   schema: typeof REPLAY_SNAPSHOT_SCHEMA;
@@ -62,6 +63,24 @@ export interface ReplaySummary {
   closeMape: number | null;
   closeDirectionHitRate: number | null;
   ma40Mae: number | null;
+}
+
+/**
+ * Filter replay rows by prediction plan without changing the underlying stock+period cache bucket.
+ */
+export function filterReplayRowsByPlan(
+  rows: ReplayReviewRow[],
+  filter: ReplayPlanFilter,
+  activePlanId: string | null,
+) {
+  if (filter === 'all') return rows;
+  if (filter === 'legacy') return rows.filter((row) => !row.planId);
+  if (filter === 'active') {
+    return activePlanId ? rows.filter((row) => row.planId === activePlanId) : rows;
+  }
+
+  const planId = filter.slice('plan:'.length);
+  return rows.filter((row) => row.planId === planId);
 }
 
 /**
