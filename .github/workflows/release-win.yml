@@ -5,6 +5,11 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish'
+        required: true
+        default: 'v0.2.7'
 
 permissions:
   contents: write
@@ -12,6 +17,8 @@ permissions:
 jobs:
   build-release:
     runs-on: windows-latest
+    env:
+      RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
     steps:
       - name: Checkout
@@ -29,10 +36,44 @@ jobs:
       - name: Build Windows portable exe
         run: |
           npm run build
-          npx electron-builder --win portable --x64 --ia32 --publish never --config.directories.output=release
+          npx electron-builder --win portable --x64 --ia32 --publish never --config.directories.output=release-raw
+
+      - name: Rename release files
+        shell: pwsh
+        run: |
+          $version = $env:RELEASE_TAG.TrimStart('v')
+          New-Item -ItemType Directory -Force -Path release | Out-Null
+          Copy-Item -LiteralPath "release-raw\*-win7.exe" -Destination "release\gupiao-forecast-$version-win7.exe"
+          Copy-Item -LiteralPath "release-raw\*-win7-x64.exe" -Destination "release\gupiao-forecast-$version-win7-x64.exe"
+          Copy-Item -LiteralPath "release-raw\*-win7-ia32.exe" -Destination "release\gupiao-forecast-$version-win7-ia32.exe"
+
+      - name: Remove malformed generated assets
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = process.env.RELEASE_TAG;
+            try {
+              const release = await github.rest.repos.getReleaseByTag({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                tag,
+              });
+              for (const asset of release.data.assets) {
+                if (asset.name.startsWith('-') || asset.name.startsWith('gupiao-forecast-')) {
+                  await github.rest.repos.deleteReleaseAsset({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    asset_id: asset.id,
+                  });
+                }
+              }
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
           files: release/*.exe
           generate_release_notes: true
