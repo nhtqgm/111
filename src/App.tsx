@@ -36,6 +36,17 @@ import {
   savePredictionPlans,
   type PredictionPlan,
 } from './utils/predictionPlans';
+import {
+  buildReplayReviewRows,
+  createReplaySnapshotsFromProjection,
+  loadReplaySnapshots,
+  mergeReplaySnapshots,
+  saveReplaySnapshots,
+  summarizeReplayRows,
+  type ReplayReviewRow,
+  type ReplaySummary,
+  type ReplaySnapshot,
+} from './utils/replay';
 
 const periods: Array<{ value: PeriodType; label: string; unit: string }> = [
   { value: 'day', label: '日K', unit: '日' },
@@ -82,10 +93,13 @@ export default function App() {
   const [visibleMaWindows, setVisibleMaWindows] = useState<MaWindow[]>([5, 10, 20, 40, 60]);
   const [showActualMaLines, setShowActualMaLines] = useState(false);
   const [isTableExpanded, setIsTableExpanded] = useState(false);
+  const [isReplayModalOpen, setIsReplayModalOpen] = useState(false);
   const [detailTargetDate, setDetailTargetDate] = useState<string | null>(null);
+  const [replayDetailId, setReplayDetailId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const [replaySnapshots, setReplaySnapshots] = useState<ReplaySnapshot[]>([]);
   const [toast, setToast] = useState<{ message: string; type: 'info' | 'success' | 'warning' } | null>(
     null,
   );
@@ -176,11 +190,20 @@ export default function App() {
   }, [baseDate, data, period]);
 
   useEffect(() => {
+    if (!data) {
+      setReplaySnapshots([]);
+      return;
+    }
+
+    setReplaySnapshots(loadReplaySnapshots(data.code, period));
+  }, [data?.code, period]);
+
+  useEffect(() => {
     if (!data || !baseDate || !plans.length) return;
 
     const signature = createWorkspaceSignature(data.code, period, baseDate, plans, activePlanId);
     setHasUnsavedChanges(signature !== lastSavedSignatureRef.current);
-  }, [activePlanId, baseDate, data, period, plans]);
+  }, [activePlanId, baseDate, data, period, plans, replaySnapshots]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -188,7 +211,7 @@ export default function App() {
     }, 30000);
 
     return () => window.clearInterval(timer);
-  }, [activePlanId, baseDate, data, hasUnsavedChanges, period, plans]);
+  }, [activePlanId, baseDate, data, hasUnsavedChanges, period, plans, replaySnapshots]);
 
   function saveCurrentWorkspace({
     force = false,
@@ -215,23 +238,55 @@ export default function App() {
       return;
     }
 
+    const now = new Date().toISOString();
     savePredictionPlans(data.code, period, plans);
     saveActivePlanId(data.code, period, activePlanId);
     saveWorkspaceCache({
       stockCode: data.code,
       period,
       baseDate,
-      updatedAt: new Date().toISOString(),
+      updatedAt: now,
     });
+    let replaySnapshotCount = 0;
+    let replaySnapshotFailed = false;
+    try {
+      const incomingReplaySnapshots = createReplaySnapshotsFromProjection({
+        stockCode: data.code,
+        stockName: data.name,
+        period,
+        baseDate,
+        planId: activePlan?.id ?? null,
+        planName: activePlan?.name ?? null,
+        points: data.points,
+        rows: projection.rows,
+        inputMaWindow,
+        existingSnapshots: replaySnapshots,
+        now,
+      });
+      replaySnapshotCount = incomingReplaySnapshots.length;
+      if (incomingReplaySnapshots.length) {
+        const mergedSnapshots = mergeReplaySnapshots(replaySnapshots, incomingReplaySnapshots);
+        saveReplaySnapshots(data.code, period, mergedSnapshots);
+        setReplaySnapshots(mergedSnapshots);
+      }
+    } catch {
+      replaySnapshotFailed = true;
+    }
     lastSavedSignatureRef.current = signature;
     setHasUnsavedChanges(false);
 
-    showToast(
-      notice === 'auto'
-        ? `已自动保存：${new Date().toLocaleTimeString()}`
-        : `已保存：${new Date().toLocaleTimeString()}`,
-      'success',
-    );
+    if (replaySnapshotFailed && notice === 'manual') {
+      showToast('预测已保存；复盘快照保存失败，不影响原预测数据', 'warning');
+    } else {
+      showToast(
+        notice === 'auto'
+          ? `已自动保存：${new Date().toLocaleTimeString()}`
+          : `已保存：${new Date().toLocaleTimeString()}${
+              replaySnapshotCount ? `，已记录复盘快照${replaySnapshotCount}条` : ''
+            }`,
+        'success',
+      );
+    }
   }
 
   const projection = useMemo(
@@ -246,6 +301,11 @@ export default function App() {
           },
     [baseDate, data, inputMaWindow, predictions],
   );
+  const replayRows = useMemo(
+    () => (data ? buildReplayReviewRows(replaySnapshots, data.points) : []),
+    [data, replaySnapshots],
+  );
+  const replaySummary = useMemo(() => summarizeReplayRows(replayRows), [replayRows]);
   const predictionComparisons = useMemo(
     () => compareProjectionRows(projection.rows),
     [projection.rows],
@@ -263,6 +323,10 @@ export default function App() {
   const detailRow = useMemo(
     () => projection.rows.find((row) => row.targetDate === detailTargetDate) ?? null,
     [detailTargetDate, projection.rows],
+  );
+  const replayDetailRow = useMemo(
+    () => replayRows.find((row) => row.id === replayDetailId) ?? null,
+    [replayDetailId, replayRows],
   );
   const lineSeries = useMemo<ChartLineSeries[]>(
     () => [
@@ -682,6 +746,14 @@ export default function App() {
           {showActualMaLines ? '显示真实均线' : '只看预测线'}
         </button>
 
+        <button
+          type="button"
+          className="replay-open-button"
+          onClick={() => setIsReplayModalOpen(true)}
+        >
+          预测复盘 {replaySummary.ready}/{replaySummary.total}
+        </button>
+
       </section>
 
       {error ? <div className="error-banner">{error}</div> : null}
@@ -834,6 +906,19 @@ export default function App() {
         </div>
       ) : null}
 
+      {isReplayModalOpen ? (
+        <ReplayReviewModal
+          rows={replayRows}
+          summary={replaySummary}
+          selectedRow={replayDetailRow}
+          onSelectRow={setReplayDetailId}
+          onClose={() => {
+            setIsReplayModalOpen(false);
+            setReplayDetailId(null);
+          }}
+        />
+      ) : null}
+
       {detailRow ? (
         <CalculationDetailModal
           row={detailRow}
@@ -933,6 +1018,162 @@ function CalculationDetailModal({
   );
 }
 
+function ReplayReviewModal({
+  rows,
+  summary,
+  selectedRow,
+  onSelectRow,
+  onClose,
+}: {
+  rows: ReplayReviewRow[];
+  summary: ReplaySummary;
+  selectedRow: ReplayReviewRow | null;
+  onSelectRow: (id: string | null) => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="detail-modal-backdrop" role="presentation">
+      <section className="replay-modal" role="dialog" aria-modal="true" aria-label="预测复盘">
+        <div className="detail-modal-head">
+          <div>
+            <p className="eyebrow">Replay Review</p>
+            <h2>预测复盘</h2>
+          </div>
+          <button type="button" className="ghost" onClick={onClose}>
+            关闭
+          </button>
+        </div>
+
+        <div className="replay-modal-body">
+          <div className="replay-summary-grid">
+            <Metric label="快照" value={`${summary.total}`} />
+            <Metric label="已复盘" value={`${summary.ready}`} />
+            <Metric label="待复盘" value={`${summary.pending}`} />
+            <Metric
+              label="收盘MAE"
+              value={summary.closeMae === null ? '--' : summary.closeMae.toFixed(2)}
+            />
+            <Metric
+              label="收盘MAPE"
+              value={summary.closeMape === null ? '--' : `${summary.closeMape.toFixed(2)}%`}
+            />
+            <Metric
+              label="方向命中"
+              value={
+                summary.closeDirectionHitRate === null
+                  ? '--'
+                  : `${summary.closeDirectionHitRate.toFixed(0)}%`
+              }
+            />
+            <Metric
+              label="MA40误差"
+              value={summary.ma40Mae === null ? '--' : summary.ma40Mae.toFixed(2)}
+            />
+          </div>
+
+          <div className="replay-table">
+            <div className="replay-row replay-head">
+              <span>目标周期</span>
+              <span>预测来源</span>
+              <span>状态</span>
+              <span>预测收盘</span>
+              <span>真实收盘</span>
+              <span>误差</span>
+              <span>误差%</span>
+              <span>方向</span>
+              <span>明细</span>
+            </div>
+
+            {rows.length ? (
+              rows.map((row) => (
+                <div className="replay-row" key={row.id}>
+                  <span className="date-cell">{row.targetDate}</span>
+                  <span>MA{row.inputMaWindow} / {row.baseDate}</span>
+                  <span className={`replay-status ${row.status}`}>
+                    {row.status === 'ready' ? '已复盘' : '待真实K线'}
+                  </span>
+                  <strong>{formatNumber(row.predictedClose)}</strong>
+                  <span>{formatNumber(row.actualClose)}</span>
+                  <span className={getDiffClass(row.closeDiff)}>{formatSignedNumber(row.closeDiff)}</span>
+                  <span>{formatPercent(row.closeDiffPct)}</span>
+                  <span className={getDirectionHitClass(row.closeDirectionHit)}>
+                    {formatDirectionHit(row.closeDirectionHit)}
+                  </span>
+                  <button type="button" className="detail-button" onClick={() => onSelectRow(row.id)}>
+                    明细
+                  </button>
+                </div>
+              ))
+            ) : (
+              <div className="replay-empty">
+                还没有复盘快照。填写预测后点击“保存”，系统会把当时的预测结果单独记录下来。
+              </div>
+            )}
+          </div>
+
+          {selectedRow ? (
+            <section className="replay-detail-panel">
+              <div className="detail-section-head">
+                <h3>{selectedRow.targetDate} 复盘明细</h3>
+                <button type="button" className="ghost" onClick={() => onSelectRow(null)}>
+                  收起
+                </button>
+              </div>
+
+              <div className="replay-close-card">
+                <div>
+                  <span>预测收盘</span>
+                  <strong>{formatNumber(selectedRow.predictedClose)}</strong>
+                </div>
+                <div>
+                  <span>真实收盘</span>
+                  <strong>{formatNumber(selectedRow.actualClose)}</strong>
+                </div>
+                <div>
+                  <span>误差</span>
+                  <strong className={getDiffClass(selectedRow.closeDiff)}>
+                    {formatSignedNumber(selectedRow.closeDiff)}
+                  </strong>
+                </div>
+                <div>
+                  <span>方向</span>
+                  <strong>{formatDirection(selectedRow.predictedCloseDirection)} / {formatDirection(selectedRow.actualCloseDirection)}</strong>
+                </div>
+              </div>
+
+              <div className="replay-ma-grid">
+                {MA_WINDOWS.map((windowSize) => {
+                  const detail = selectedRow.maComparisons[windowSize];
+
+                  return (
+                    <article className="replay-ma-card" key={windowSize}>
+                      <div className="ma-detail-title">MA{windowSize}</div>
+                      <div className="replay-ma-values">
+                        <span>预测：{formatNumber(detail.predicted)}</span>
+                        <span>真实：{formatNumber(detail.actual)}</span>
+                        <span className={getDiffClass(detail.diff)}>
+                          误差：{formatSignedNumber(detail.diff)}
+                        </span>
+                        <span>误差%：{formatPercent(detail.diffPct)}</span>
+                        <span>
+                          方向：{formatDirection(detail.predictedDirection)} / {formatDirection(detail.actualDirection)}
+                        </span>
+                        <span className={getDirectionHitClass(detail.directionHit)}>
+                          {formatDirectionHit(detail.directionHit)}
+                        </span>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            </section>
+          ) : null}
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function ValueList({
   values,
   emptyText,
@@ -966,6 +1207,38 @@ function ValueList({
 
 function sumCalculationValues(values: Array<{ value: number }>) {
   return values.length ? values.reduce((total, item) => total + item.value, 0) : null;
+}
+
+function formatSignedNumber(value: number | null) {
+  if (value === null || !Number.isFinite(value)) return '--';
+  return `${value > 0 ? '+' : ''}${value.toFixed(2)}`;
+}
+
+function formatPercent(value: number | null) {
+  if (value === null || !Number.isFinite(value)) return '--';
+  return `${value.toFixed(2)}%`;
+}
+
+function formatDirection(value: ReplayReviewRow['predictedCloseDirection']) {
+  if (value === 'up') return '上涨';
+  if (value === 'down') return '下跌';
+  if (value === 'flat') return '持平';
+  return '--';
+}
+
+function formatDirectionHit(value: boolean | null) {
+  if (value === null) return '--';
+  return value ? '命中' : '未命中';
+}
+
+function getDiffClass(value: number | null) {
+  if (value === null || !Number.isFinite(value) || Math.abs(value) <= 1e-9) return '';
+  return value > 0 ? 'up' : 'down';
+}
+
+function getDirectionHitClass(value: boolean | null) {
+  if (value === null) return '';
+  return value ? 'hit' : 'miss';
 }
 
 function normalizePredictionFile(value: unknown): ImportedPredictionPlan | null {
