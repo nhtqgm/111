@@ -84,6 +84,13 @@ interface ImportedPredictionPlan {
   plan: PredictionPlan;
 }
 
+interface FullBackupFileV1 {
+  schema: 'gupiao-ma40-full-backup/v1';
+  exportedAt: string;
+  appVersion: string;
+  storage: Record<string, string>;
+}
+
 export default function App() {
   const [stockCode, setStockCode] = useState(initialWorkspace?.stockCode ?? '000166');
   const [queryCode, setQueryCode] = useState(initialWorkspace?.stockCode ?? '000166');
@@ -602,12 +609,59 @@ export default function App() {
     showToast('预测文件已导出', 'success');
   }
 
+  function exportAllData() {
+    if (data && baseDate && plans.length && activePlanId) {
+      savePredictionPlans(data.code, period, plans);
+      saveActivePlanId(data.code, period, activePlanId);
+      saveWorkspaceCache({
+        stockCode: data.code,
+        period,
+        baseDate,
+        updatedAt: new Date().toISOString(),
+      });
+    }
+
+    const storage = collectAppStorage();
+    if (!Object.keys(storage).length) {
+      showToast('No local data to export', 'warning');
+      return;
+    }
+
+    const fileData: FullBackupFileV1 = {
+      schema: 'gupiao-ma40-full-backup/v1',
+      exportedAt: new Date().toISOString(),
+      appVersion: '0.2.6',
+      storage,
+    };
+    const blob = new Blob([JSON.stringify(fileData, null, 2)], {
+      type: 'application/json;charset=utf-8',
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `gupiao-full-backup-${formatDate(new Date())}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    showToast(`Exported all local data: ${Object.keys(storage).length} items`, 'success');
+  }
+
   async function importPredictions(file: File | undefined) {
     if (!file) return;
 
     try {
       const text = await file.text();
-      const parsed = normalizePredictionFile(JSON.parse(text));
+      const rawFile = JSON.parse(text);
+      const backup = normalizeFullBackupFile(rawFile);
+      if (backup) {
+        restoreAppStorage(backup.storage);
+        showToast(`Imported all local data: ${Object.keys(backup.storage).length} items. Reloading...`, 'success');
+        window.setTimeout(() => window.location.reload(), 500);
+        return;
+      }
+
+      const parsed = normalizePredictionFile(rawFile);
       if (!parsed) {
         throw new Error('文件格式不是本系统导出的预测方案文件');
       }
@@ -824,7 +878,7 @@ export default function App() {
               <h2>预测MA{inputMaWindow}</h2>
             </div>
             <div className="panel-actions">
-              <button type="button" className="ghost" onClick={exportPredictions}>
+              <button type="button" className="ghost" onClick={exportAllData}>
                 导出
               </button>
               <button
@@ -1313,6 +1367,58 @@ function getDiffClass(value: number | null) {
 function getDirectionHitClass(value: boolean | null) {
   if (value === null) return '';
   return value ? 'hit' : 'miss';
+}
+
+function collectAppStorage() {
+  const storage: Record<string, string> = {};
+  for (let index = 0; index < localStorage.length; index += 1) {
+    const key = localStorage.key(index);
+    if (!key || !isAppStorageKey(key)) continue;
+
+    const value = localStorage.getItem(key);
+    if (value !== null) storage[key] = value;
+  }
+
+  return storage;
+}
+
+function restoreAppStorage(storage: Record<string, string>) {
+  Object.entries(storage).forEach(([key, value]) => {
+    if (isAppStorageKey(key) && typeof value === 'string') {
+      localStorage.setItem(key, value);
+    }
+  });
+}
+
+function normalizeFullBackupFile(value: unknown): FullBackupFileV1 | null {
+  if (!isFullBackupFileV1(value)) return null;
+
+  return {
+    schema: value.schema,
+    exportedAt: value.exportedAt,
+    appVersion: value.appVersion,
+    storage: Object.fromEntries(
+      Object.entries(value.storage).filter(
+        ([key, storedValue]) => isAppStorageKey(key) && typeof storedValue === 'string',
+      ),
+    ),
+  };
+}
+
+function isFullBackupFileV1(value: unknown): value is FullBackupFileV1 {
+  const candidate = value as FullBackupFileV1;
+  return (
+    candidate?.schema === 'gupiao-ma40-full-backup/v1' &&
+    typeof candidate.exportedAt === 'string' &&
+    typeof candidate.appVersion === 'string' &&
+    candidate.storage !== null &&
+    typeof candidate.storage === 'object' &&
+    !Array.isArray(candidate.storage)
+  );
+}
+
+function isAppStorageKey(key: string) {
+  return key.startsWith('prediction-ma40:') || key.startsWith('prediction-ma:');
 }
 
 function normalizePredictionFile(value: unknown): ImportedPredictionPlan | null {
