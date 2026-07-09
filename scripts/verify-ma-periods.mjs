@@ -5,6 +5,15 @@ import {
 } from '../src/utils/movingAverage.ts';
 import { filterCompletedKLineData } from '../src/utils/completedPeriods.ts';
 import { generatePredictionRows } from '../src/utils/predictions.ts';
+import {
+  copyPredictionPlan,
+  createDefaultPlan,
+  getActivePlanKey,
+  getPredictionPlansKey,
+  loadPredictionPlans,
+  saveActivePlanId,
+  savePredictionPlans,
+} from '../src/utils/predictionPlans.ts';
 
 const EPSILON = 1e-9;
 
@@ -13,6 +22,8 @@ function main() {
   verifyWeekFiltering();
   verifyMonthFiltering();
   verifyProjectionMathForAllWindows();
+  verifyPredictionPlanMigration();
+  verifyPredictionPlanIsolationAndActiveSelection();
   console.log('MA period verification passed.');
 }
 
@@ -136,6 +147,75 @@ function verifyProjectionMathForAllWindows() {
       verifyProjectionCase(testCase.period, testCase.points, testCase.baseDate, inputWindow);
     }
   }
+}
+
+function verifyPredictionPlanMigration() {
+  resetLocalStorage();
+  const stockCode = '000166';
+  const period = 'month';
+  const baseDate = '2026-06-30';
+  const points = makeMonthEndsEnding(baseDate, 80);
+  const targetRows = generatePredictionRows(points, period, baseDate, 2);
+  const legacyRows = [
+    {
+      ...targetRows[0],
+      predictedMa40: '4.8300',
+      predictedMaValues: { 40: '4.8300' },
+      note: 'legacy note',
+    },
+  ];
+
+  localStorage.setItem(`prediction-ma:${stockCode}:${period}:v2`, JSON.stringify(legacyRows));
+  const loaded = loadPredictionPlans(stockCode, period, baseDate, points, 2);
+
+  assert.equal(loaded.migrated, true);
+  assert.equal(loaded.plans.length, 1);
+  assert.equal(loaded.plans[0].source, 'migrated');
+  assert.equal(loaded.plans[0].note, 'legacy note');
+  assert.equal(loaded.plans[0].predictions[0].predictedMaValues['40'], '4.8300');
+  assert.equal(localStorage.getItem(getActivePlanKey(stockCode, period)), loaded.activePlanId);
+  assert.ok(localStorage.getItem(getPredictionPlansKey(stockCode, period)));
+}
+
+function verifyPredictionPlanIsolationAndActiveSelection() {
+  resetLocalStorage();
+  const stockCode = '000166';
+  const baseDate = '2026-06-30';
+  const points = makeMonthEndsEnding(baseDate, 80);
+  const rows = generatePredictionRows(points, 'month', baseDate, 2);
+  const conservative = {
+    ...createDefaultPlan(stockCode, 'month', rows, 'manual'),
+    name: 'conservative',
+    inputMaWindow: 20,
+  };
+  const aggressive = {
+    ...copyPredictionPlan(conservative, [conservative]),
+    name: 'aggressive',
+    predictions: conservative.predictions.map((row, index) => ({
+      ...row,
+      predictedMaValues: index === 0 ? { 20: '5.1200' } : {},
+    })),
+  };
+
+  savePredictionPlans(stockCode, 'month', [conservative, aggressive]);
+  saveActivePlanId(stockCode, 'month', aggressive.id);
+  const loadedMonth = loadPredictionPlans(stockCode, 'month', baseDate, points, 2);
+  const loadedAggressive = loadedMonth.plans.find((plan) => plan.id === aggressive.id);
+
+  assert.equal(loadedMonth.activePlanId, aggressive.id);
+  assert.equal(loadedAggressive.inputMaWindow, 20);
+  assert.equal(loadedAggressive.predictions[0].predictedMaValues['20'], '5.1200');
+
+  const loadedWeek = loadPredictionPlans(
+    stockCode,
+    'week',
+    '2026-07-03',
+    makeWeeklyDatesEnding('2026-07-03', 80),
+    2,
+  );
+  assert.equal(loadedWeek.plans.length, 1);
+  assert.notEqual(loadedWeek.activePlanId, aggressive.id);
+  assert.equal(loadedWeek.plans[0].period, 'week');
 }
 
 function verifyProjectionCase(period, points, baseDate, inputWindow) {
@@ -320,6 +400,24 @@ function sum(values) {
 
 function average(values) {
   return sum(values) / values.length;
+}
+
+function resetLocalStorage() {
+  const store = new Map();
+  globalThis.localStorage = {
+    getItem(key) {
+      return store.has(key) ? store.get(key) : null;
+    },
+    setItem(key, value) {
+      store.set(String(key), String(value));
+    },
+    removeItem(key) {
+      store.delete(key);
+    },
+    clear() {
+      store.clear();
+    },
+  };
 }
 
 main();

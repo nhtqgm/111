@@ -18,14 +18,24 @@ import {
 import {
   generatePredictionRows,
   loadKLineCache,
-  loadPredictionRows,
   loadWorkspaceCache,
   normalizePredictionPoint,
-  predictionPlanKey,
   saveKLineCache,
-  savePredictions,
   saveWorkspaceCache,
 } from './utils/predictions';
+import {
+  copyPredictionPlan,
+  createEmptyPlan,
+  createPredictionPlanExport,
+  importPredictionPlan,
+  loadPredictionPlans,
+  normalizePredictionPlanExport,
+  renamePredictionPlan,
+  resolveActivePlanId,
+  saveActivePlanId,
+  savePredictionPlans,
+  type PredictionPlan,
+} from './utils/predictionPlans';
 
 const periods: Array<{ value: PeriodType; label: string; unit: string }> = [
   { value: 'day', label: '日K', unit: '日' },
@@ -55,16 +65,22 @@ interface PredictionFileV5 {
   predictions: PredictionPoint[];
 }
 
+interface ImportedPredictionPlan {
+  stockCode: string;
+  period: PeriodType;
+  plan: PredictionPlan;
+}
+
 export default function App() {
   const [stockCode, setStockCode] = useState(initialWorkspace?.stockCode ?? '000166');
   const [queryCode, setQueryCode] = useState(initialWorkspace?.stockCode ?? '000166');
   const [period, setPeriod] = useState<PeriodType>(initialWorkspace?.period ?? 'month');
   const [data, setData] = useState<StockKLineResponse | null>(null);
   const [baseDate, setBaseDate] = useState(todayDate);
-  const [predictions, setPredictions] = useState<PredictionPoint[]>([]);
+  const [plans, setPlans] = useState<PredictionPlan[]>([]);
+  const [activePlanId, setActivePlanId] = useState<string | null>(null);
   const [visibleMaWindows, setVisibleMaWindows] = useState<MaWindow[]>([5, 10, 20, 40, 60]);
   const [showActualMaLines, setShowActualMaLines] = useState(false);
-  const [inputMaWindow, setInputMaWindow] = useState<MaWindow>(MA40_WINDOW);
   const [isTableExpanded, setIsTableExpanded] = useState(false);
   const [detailTargetDate, setDetailTargetDate] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -74,9 +90,16 @@ export default function App() {
     null,
   );
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const importedPlanRef = useRef<PredictionFileV5 | null>(null);
+  const importedPlanRef = useRef<ImportedPredictionPlan | null>(null);
   const toastTimerRef = useRef<number | null>(null);
   const lastSavedSignatureRef = useRef('');
+
+  const activePlan = useMemo(
+    () => plans.find((plan) => plan.id === activePlanId) ?? null,
+    [activePlanId, plans],
+  );
+  const predictions = activePlan?.predictions ?? [];
+  const inputMaWindow = activePlan?.inputMaWindow ?? MA40_WINDOW;
 
   useEffect(
     () => () => {
@@ -93,7 +116,8 @@ export default function App() {
 
     if (!cached) {
       setData(null);
-      setPredictions([]);
+      setPlans([]);
+      setActivePlanId(null);
       setBaseDate(todayDate);
       showToast('暂无本地历史数据，请点击“联网更新”拉取最近历史收盘价', 'warning');
       return;
@@ -114,27 +138,49 @@ export default function App() {
   useEffect(() => {
     if (!data || !baseDate) return;
 
+    const loaded = loadPredictionPlans(data.code, period, baseDate, data.points, forecastRowCount);
+    let nextPlans = loaded.plans;
+    let nextActivePlanId = loaded.activePlanId;
     const importedPlan = importedPlanRef.current;
     if (
       importedPlan &&
       importedPlan.stockCode === data.code &&
       importedPlan.period === period
     ) {
-      setPredictions(importedPlan.predictions);
-      savePredictions(predictionPlanKey(data.code, period, baseDate), importedPlan.predictions);
+      const rows = generatePredictionRows(data.points, period, baseDate, forecastRowCount);
+      const imported = importPredictionPlan(
+        importedPlan.plan,
+        data.code,
+        period,
+        rows,
+        nextPlans,
+      );
+      nextPlans = [...nextPlans, imported];
+      nextActivePlanId = imported.id;
+      savePredictionPlans(data.code, period, nextPlans);
+      saveActivePlanId(data.code, period, nextActivePlanId);
       importedPlanRef.current = null;
       showToast('预测文件已加载', 'success');
-      return;
     }
 
-    setPredictions(loadPredictionRows(data.code, period, baseDate, data.points, forecastRowCount));
+    setPlans(nextPlans);
+    setActivePlanId(nextActivePlanId);
+    lastSavedSignatureRef.current = createWorkspaceSignature(
+      data.code,
+      period,
+      baseDate,
+      nextPlans,
+      nextActivePlanId,
+    );
+    setHasUnsavedChanges(false);
   }, [baseDate, data, period]);
 
   useEffect(() => {
-    if (!data || !baseDate || !predictions.length) return;
+    if (!data || !baseDate || !plans.length) return;
 
-    setHasUnsavedChanges(true);
-  }, [baseDate, data, period, predictions]);
+    const signature = createWorkspaceSignature(data.code, period, baseDate, plans, activePlanId);
+    setHasUnsavedChanges(signature !== lastSavedSignatureRef.current);
+  }, [activePlanId, baseDate, data, period, plans]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -142,7 +188,7 @@ export default function App() {
     }, 30000);
 
     return () => window.clearInterval(timer);
-  }, [baseDate, data, hasUnsavedChanges, period, predictions]);
+  }, [activePlanId, baseDate, data, hasUnsavedChanges, period, plans]);
 
   function saveCurrentWorkspace({
     force = false,
@@ -151,7 +197,7 @@ export default function App() {
     force?: boolean;
     notice: 'auto' | 'manual';
   }) {
-    if (!data || !baseDate || !predictions.length) {
+    if (!data || !baseDate || !plans.length || !activePlanId) {
       if (notice === 'manual') {
         showToast('暂无可保存的数据', 'warning');
       }
@@ -160,12 +206,7 @@ export default function App() {
 
     if (!force && !hasUnsavedChanges) return;
 
-    const signature = JSON.stringify({
-      stockCode: data.code,
-      period,
-      baseDate,
-      predictions,
-    });
+    const signature = createWorkspaceSignature(data.code, period, baseDate, plans, activePlanId);
     if (signature === lastSavedSignatureRef.current) {
       setHasUnsavedChanges(false);
       if (notice === 'manual') {
@@ -174,7 +215,8 @@ export default function App() {
       return;
     }
 
-    savePredictions(predictionPlanKey(data.code, period, baseDate), predictions);
+    savePredictionPlans(data.code, period, plans);
+    saveActivePlanId(data.code, period, activePlanId);
     saveWorkspaceCache({
       stockCode: data.code,
       period,
@@ -273,15 +315,86 @@ export default function App() {
     [projection.rows],
   );
 
-  function updatePrediction(targetDate: string, value: string) {
-    const normalizedValue = normalizeDecimalInput(value);
-    setPredictions((current) =>
-      current.map((row) =>
-        row.targetDate === targetDate
-          ? setPredictionInputValue(row, inputMaWindow, normalizedValue)
-          : row,
+  function updateActivePlan(updater: (plan: PredictionPlan) => PredictionPlan) {
+    if (!activePlanId) return;
+    setPlans((current) =>
+      current.map((plan) =>
+        plan.id === activePlanId
+          ? {
+              ...updater(plan),
+              updatedAt: new Date().toISOString(),
+            }
+          : plan,
       ),
     );
+  }
+
+  function updatePrediction(targetDate: string, value: string) {
+    const normalizedValue = normalizeDecimalInput(value);
+    updateActivePlan((plan) => ({
+      ...plan,
+      predictions: plan.predictions.map((row) =>
+        row.targetDate === targetDate
+          ? setPredictionInputValue(row, plan.inputMaWindow, normalizedValue)
+          : row,
+      ),
+    }));
+  }
+
+  function updateInputMaWindow(windowSize: MaWindow) {
+    updateActivePlan((plan) => ({
+      ...plan,
+      inputMaWindow: windowSize,
+    }));
+  }
+
+  function createPlan() {
+    if (!data || !baseDate) return;
+    const rows = generatePredictionRows(data.points, period, baseDate, forecastRowCount);
+    const nextPlan = createEmptyPlan(data.code, period, rows, plans);
+    setPlans((current) => [...current, nextPlan]);
+    setActivePlanId(nextPlan.id);
+    showToast(`已新建方案：${nextPlan.name}`, 'success');
+  }
+
+  function duplicatePlan() {
+    if (!activePlan) return;
+    const nextPlan = copyPredictionPlan(activePlan, plans);
+    setPlans((current) => [...current, nextPlan]);
+    setActivePlanId(nextPlan.id);
+    showToast(`已复制方案：${nextPlan.name}`, 'success');
+  }
+
+  function renameActivePlan() {
+    if (!activePlan) return;
+    const name = window.prompt('请输入方案名称', activePlan.name);
+    if (name === null) return;
+
+    const renamed = renamePredictionPlan(activePlan, name, plans);
+    setPlans((current) => current.map((plan) => (plan.id === activePlan.id ? renamed : plan)));
+    showToast(`方案已重命名：${renamed.name}`, 'success');
+  }
+
+  function deleteActivePlan() {
+    if (!activePlan || plans.length <= 1) {
+      showToast('至少需要保留一个方案', 'warning');
+      return;
+    }
+
+    const confirmed = window.confirm(`确定删除方案“${activePlan.name}”吗？`);
+    if (!confirmed) return;
+
+    const remainingPlans = plans.filter((plan) => plan.id !== activePlan.id);
+    const nextActivePlanId = resolveActivePlanId(remainingPlans, null);
+    setPlans(remainingPlans);
+    setActivePlanId(nextActivePlanId);
+    showToast('方案已删除', 'success');
+  }
+
+  function selectActivePlan(planId: string) {
+    if (!plans.some((plan) => plan.id === planId)) return;
+    setActivePlanId(planId);
+    if (data) saveActivePlanId(data.code, period, planId);
   }
 
   function formatPredictionInput(targetDate: string) {
@@ -360,37 +473,37 @@ export default function App() {
   }
 
   function updateNote(value: string) {
-    setPredictions((current) => current.map((row) => ({ ...row, note: value })));
+    updateActivePlan((plan) => ({
+      ...plan,
+      note: value,
+      predictions: plan.predictions.map((row) => ({ ...row, note: value })),
+    }));
   }
 
   function resetRows() {
-    if (!data || !baseDate) return;
-    setPredictions(generatePredictionRows(data.points, period, baseDate, forecastRowCount));
+    if (!data || !baseDate || !activePlan) return;
+    const rows = generatePredictionRows(data.points, period, baseDate, forecastRowCount);
+    updateActivePlan((plan) => ({
+      ...plan,
+      predictions: rows.map((row) => ({ ...row, note: plan.note })),
+    }));
     showToast('已重置当前预测表', 'success');
   }
 
   function exportPredictions() {
-    if (!data || !baseDate || !predictions.length) {
+    if (!data || !baseDate || !activePlan) {
       showToast('暂无可导出的预测数据', 'warning');
       return;
     }
 
-    const fileData: PredictionFileV5 = {
-      schema: 'gupiao-ma40-predictions/v1',
-      exportedAt: new Date().toISOString(),
-      stockCode: data.code,
-      stockName: data.name,
-      period,
-      baseDate,
-      predictions,
-    };
+    const fileData = createPredictionPlanExport(activePlan, data.name, baseDate, '0.2.6');
     const blob = new Blob([JSON.stringify(fileData, null, 2)], {
       type: 'application/json;charset=utf-8',
     });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `${data.code}-${period}-${baseDate}-forecast-ma40.json`;
+    link.download = `${data.code}-${period}-${activePlan.name}-forecast-plan.json`;
     document.body.appendChild(link);
     link.click();
     link.remove();
@@ -405,15 +518,33 @@ export default function App() {
       const text = await file.text();
       const parsed = normalizePredictionFile(JSON.parse(text));
       if (!parsed) {
-        throw new Error('文件格式不是本系统导出的 MA40 预测文件');
+        throw new Error('文件格式不是本系统导出的预测方案文件');
+      }
+
+      if (data && baseDate && parsed.stockCode === data.code && parsed.period === period) {
+        const rows = generatePredictionRows(data.points, period, baseDate, forecastRowCount);
+        const imported = importPredictionPlan(parsed.plan, data.code, period, rows, plans);
+        const nextPlans = [...plans, imported];
+        setPlans(nextPlans);
+        setActivePlanId(imported.id);
+        savePredictionPlans(data.code, period, nextPlans);
+        saveActivePlanId(data.code, period, imported.id);
+        lastSavedSignatureRef.current = createWorkspaceSignature(
+          data.code,
+          period,
+          baseDate,
+          nextPlans,
+          imported.id,
+        );
+        setHasUnsavedChanges(false);
+        showToast(`已导入方案：${imported.name}`, 'success');
+        return;
       }
 
       importedPlanRef.current = parsed;
       setStockCode(parsed.stockCode);
       setQueryCode(parsed.stockCode);
       setPeriod(parsed.period);
-      setPredictions(parsed.predictions);
-      savePredictions(predictionPlanKey(parsed.stockCode, parsed.period, baseDate), parsed.predictions);
       saveWorkspaceCache({
         stockCode: parsed.stockCode,
         period: parsed.period,
@@ -623,6 +754,42 @@ export default function App() {
             </div>
           </div>
 
+          <div className="plan-manager">
+            <label className="plan-select-field">
+              <span>当前方案</span>
+              <select
+                value={activePlanId ?? ''}
+                onChange={(event) => selectActivePlan(event.target.value)}
+                disabled={!plans.length}
+              >
+                {plans.map((plan) => (
+                  <option key={plan.id} value={plan.id}>
+                    {plan.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="plan-actions">
+              <button type="button" className="ghost" onClick={createPlan} disabled={!data}>
+                新建
+              </button>
+              <button type="button" className="ghost" onClick={duplicatePlan} disabled={!activePlan}>
+                复制
+              </button>
+              <button type="button" className="ghost" onClick={renameActivePlan} disabled={!activePlan}>
+                重命名
+              </button>
+              <button
+                type="button"
+                className="ghost danger"
+                onClick={deleteActivePlan}
+                disabled={!activePlan || plans.length <= 1}
+              >
+                删除
+              </button>
+            </div>
+          </div>
+
           <div className="input-mode-strip" aria-label="预测输入均线选择">
             <span>预测输入</span>
             {MA_WINDOWS.map((windowSize) => (
@@ -630,7 +797,7 @@ export default function App() {
                 key={windowSize}
                 type="button"
                 className={inputMaWindow === windowSize ? 'active' : ''}
-                onClick={() => setInputMaWindow(windowSize)}
+                onClick={() => updateInputMaWindow(windowSize)}
               >
                 MA{windowSize}
               </button>
@@ -642,7 +809,7 @@ export default function App() {
           <label className="note-field">
             <span>备注</span>
             <textarea
-              value={predictions[0]?.note ?? ''}
+              value={activePlan?.note ?? ''}
               onChange={(event) => updateNote(event.target.value)}
               placeholder={`例如：MA${inputMaWindow}目标、趋势判断、压力位...`}
             />
@@ -801,12 +968,34 @@ function sumCalculationValues(values: Array<{ value: number }>) {
   return values.length ? values.reduce((total, item) => total + item.value, 0) : null;
 }
 
-function normalizePredictionFile(value: unknown): PredictionFileV5 | null {
+function normalizePredictionFile(value: unknown): ImportedPredictionPlan | null {
+  const planFile = normalizePredictionPlanExport(value);
+  if (planFile) {
+    return {
+      stockCode: planFile.stockCode,
+      period: planFile.period,
+      plan: planFile.plan,
+    };
+  }
+
   if (!isPredictionFileV5(value)) return null;
 
+  const now = new Date().toISOString();
   return {
-    ...value,
-    predictions: value.predictions.map(normalizePredictionPoint),
+    stockCode: value.stockCode,
+    period: value.period,
+    plan: {
+      id: `import-${Date.now()}`,
+      name: '旧版导入方案',
+      stockCode: value.stockCode,
+      period: value.period,
+      inputMaWindow: MA40_WINDOW,
+      predictions: value.predictions.map(normalizePredictionPoint),
+      note: value.predictions.find((row) => row.note.trim())?.note ?? '',
+      createdAt: now,
+      updatedAt: now,
+      source: 'imported',
+    },
   };
 }
 
@@ -819,6 +1008,22 @@ function isPredictionFileV5(value: unknown): value is PredictionFileV5 {
     typeof candidate.baseDate === 'string' &&
     Array.isArray(candidate.predictions)
   );
+}
+
+function createWorkspaceSignature(
+  stockCode: string,
+  period: PeriodType,
+  baseDate: string,
+  plans: PredictionPlan[],
+  activePlanId: string | null,
+) {
+  return JSON.stringify({
+    stockCode,
+    period,
+    baseDate,
+    activePlanId,
+    plans,
+  });
 }
 
 function formatDecimalInput(value: string) {
