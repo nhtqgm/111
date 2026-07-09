@@ -321,6 +321,14 @@ async function loadApp(mainWindow) {
 
 app.whenReady().then(() => {
   ipcMain.handle('eastmoney:fetchKLines', fetchKLines);
+  ipcMain.handle('app:getVersion', () => app.getVersion());
+  ipcMain.handle('app:openExternal', (_event, url) => {
+    const target = String(url ?? '');
+    if (!/^https:\/\/(github\.com|nhtqgm\.github\.io)\//.test(target)) {
+      throw new Error('Unsupported update URL.');
+    }
+    return shell.openExternal(target);
+  });
   createWindow();
 
   app.on('activate', () => {

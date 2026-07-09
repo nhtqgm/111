@@ -7,5 +7,9 @@ declare global {
     eastmoneyApi?: {
       fetchKLines: (code: string, period: PeriodType) => Promise<StockKLineResponse>;
     };
+    appUpdateApi?: {
+      getCurrentVersion: () => Promise<string>;
+      openExternal: (url: string) => Promise<void>;
+    };
   }
 }

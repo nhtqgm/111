@@ -87,7 +87,7 @@ h2 {
 
 .stock-search {
   display: grid;
-  grid-template-columns: auto 120px auto auto;
+  grid-template-columns: auto 120px auto auto auto;
   align-items: center;
   gap: 6px;
   padding: 5px;

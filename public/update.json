@@ -1,0 +1,7 @@
+{
+  "app": "gupiao-ma40",
+  "version": "0.2.7",
+  "url": "https://github.com/nhtqgm/111/releases/latest",
+  "notes": "Add full local backup export/import and update checking.",
+  "publishedAt": "2026-07-09"
+}
