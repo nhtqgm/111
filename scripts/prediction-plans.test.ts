@@ -1,7 +1,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import type { PredictionPlan } from '../src/utils/predictionPlans.ts';
+import {
+  PLAN_LIMIT,
+  getActivePlanKey,
+  getPredictionPlansKey,
+  hasPredictionPlanCapacity,
+  loadPredictionPlans,
+  normalizePredictionPlanExport,
+  saveActivePlanId,
+  savePredictionPlans,
+  type PredictionPlan,
+} from '../src/utils/predictionPlans.ts';
 
 class MemoryStorage {
   private values = new Map<string, string>();
@@ -26,16 +36,6 @@ class MemoryStorage {
     this.values.delete(key);
   }
 }
-
-const predictionPlans = await import('../src/utils/predictionPlans.ts');
-const {
-  getActivePlanKey,
-  getPredictionPlansKey,
-  loadPredictionPlans,
-  normalizePredictionPlanExport,
-  saveActivePlanId,
-  savePredictionPlans,
-} = predictionPlans;
 
 function installStorage(
   storage: MemoryStorage,
@@ -87,25 +87,36 @@ test('loadPredictionPlans rejects foreign-owned stored plans instead of reassign
   assert.equal(result.plans[0].stockCode, '000166');
 });
 
+test('loadPredictionPlans rejects wrong-period stored plans instead of reassigning them', () => {
+  const storage = new MemoryStorage();
+  installStorage(storage);
+  const ownedPlan = makePlan(0);
+  const wrongPeriodPlan = makePlan(1, { period: 'day' });
+  storage.setItem(
+    getPredictionPlansKey('000166', 'month'),
+    JSON.stringify([ownedPlan, wrongPeriodPlan]),
+  );
+
+  const result = loadPredictionPlans('000166', 'month', '2026-01-31', [], 0);
+
+  assert.deepEqual(result.plans.map((plan) => plan.id), [ownedPlan.id]);
+  assert.equal(result.plans[0].period, 'month');
+});
+
 test('loadPredictionPlans preserves all existing plans beyond the creation limit', () => {
   const storage = new MemoryStorage();
   installStorage(storage);
-  const storedPlans = Array.from({ length: 31 }, (_, index) => makePlan(index));
+  const storedPlans = Array.from({ length: PLAN_LIMIT + 1 }, (_, index) => makePlan(index));
   storage.setItem(
     getPredictionPlansKey('000166', 'month'),
     JSON.stringify(storedPlans),
   );
 
   const result = loadPredictionPlans('000166', 'month', '2026-01-31', [], 0);
-  const hasPredictionPlanCapacity = (
-    predictionPlans as typeof predictionPlans & {
-      hasPredictionPlanCapacity?: (plans: PredictionPlan[]) => boolean;
-    }
-  ).hasPredictionPlanCapacity;
 
   assert.equal(result.plans.length, 31);
-  assert.equal(typeof hasPredictionPlanCapacity, 'function');
-  assert.equal(hasPredictionPlanCapacity?.(result.plans), false);
+  assert.equal(hasPredictionPlanCapacity(result.plans.slice(0, PLAN_LIMIT)), false);
+  assert.equal(hasPredictionPlanCapacity(result.plans), false);
 });
 
 test('loadPredictionPlans fills ownership omitted by legacy stored plans', () => {
