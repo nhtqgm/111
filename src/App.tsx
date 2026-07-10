@@ -9,6 +9,7 @@ import type { PeriodType, PredictionPoint, StockKLineResponse } from './types';
 import { filterCompletedKLineData } from './utils/completedPeriods';
 import {
   AppStorageRestoreError,
+  canStartStorageTransfer,
   collectAppStorage,
   EmptyAppStorageSnapshotError,
   normalizeAppStorageSnapshot,
@@ -1073,6 +1074,8 @@ export default function App() {
   }
 
   function exportAllData() {
+    if (!canStartStorageTransfer(backupRestoreInProgressRef.current)) return;
+
     if (data && baseDate && plans.length && activePlanId) {
       void Promise.all([
         savePredictionPlans(data.code, period, plans),
@@ -1113,7 +1116,7 @@ export default function App() {
   }
 
   async function importPredictions(file: File | undefined) {
-    if (!file) return;
+    if (!file || !canStartStorageTransfer(backupRestoreInProgressRef.current)) return;
 
     try {
       const text = await file.text();

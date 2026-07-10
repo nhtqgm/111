@@ -52,6 +52,13 @@ test('collect and restore use only application storage keys', async () => {
   assert.equal(storage.getItem('unrelated'), 'keep');
 });
 
+test('storage transfers are blocked while a backup restore is in progress', async () => {
+  const { canStartStorageTransfer } = await loadStorageModule();
+  assert.equal(typeof canStartStorageTransfer, 'function');
+  assert.equal(canStartStorageTransfer(false), true);
+  assert.equal(canStartStorageTransfer(true), false);
+});
+
 test('transactional restore replaces app keys, preserves unrelated keys, and persists once', async () => {
   const { restoreAppStorageTransaction } = await loadStorageModule();
   assert.equal(typeof restoreAppStorageTransaction, 'function');

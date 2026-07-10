@@ -28,6 +28,10 @@ export class AppStorageRestoreError extends Error {
   }
 }
 
+export function canStartStorageTransfer(restoreInProgress: boolean) {
+  return !restoreInProgress;
+}
+
 export function isAppStorageKey(key: string) {
   return key.startsWith('prediction-ma40:') || key.startsWith('prediction-ma:');
 }
