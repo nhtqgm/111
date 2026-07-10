@@ -835,22 +835,24 @@ export default function App() {
       }
 
       if (data && baseDate && parsed.stockCode === data.code && parsed.period === period) {
-        const rows = generatePredictionRows(data.points, period, baseDate, forecastRowCount);
-        const imported = importPredictionPlan(parsed.plan, data.code, period, rows, plans);
-        const nextPlans = [...plans, imported];
-        setPlans(nextPlans);
-        setActivePlanId(imported.id);
-        savePredictionPlans(data.code, period, nextPlans);
-        saveActivePlanId(data.code, period, imported.id);
-        lastSavedSignatureRef.current = createWorkspaceSignature(
-          data.code,
-          period,
-          baseDate,
-          nextPlans,
-          imported.id,
-        );
-        setHasUnsavedChanges(false);
-        showToast(`已导入方案：${imported.name}`, 'success');
+        runWorkspaceTransition(hasUnsavedChanges, flushCurrentWorkspace, () => {
+          const rows = generatePredictionRows(data.points, period, baseDate, forecastRowCount);
+          const imported = importPredictionPlan(parsed.plan, data.code, period, rows, plans);
+          const nextPlans = [...plans, imported];
+          savePredictionPlans(data.code, period, nextPlans);
+          saveActivePlanId(data.code, period, imported.id);
+          setPlans(nextPlans);
+          setActivePlanId(imported.id);
+          lastSavedSignatureRef.current = createWorkspaceSignature(
+            data.code,
+            period,
+            baseDate,
+            nextPlans,
+            imported.id,
+          );
+          setHasUnsavedChanges(false);
+          showToast(`已导入方案：${imported.name}`, 'success');
+        });
         return;
       }
 
