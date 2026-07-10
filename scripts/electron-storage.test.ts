@@ -52,6 +52,131 @@ test('collect and restore use only application storage keys', async () => {
   assert.equal(storage.getItem('unrelated'), 'keep');
 });
 
+test('transactional restore replaces app keys, preserves unrelated keys, and persists once', async () => {
+  const { restoreAppStorageTransaction } = await loadStorageModule();
+  assert.equal(typeof restoreAppStorageTransaction, 'function');
+
+  const storage = new MemoryStorage();
+  storage.setItem('prediction-ma:old', 'old');
+  storage.setItem('prediction-ma:stale', 'stale');
+  storage.setItem('unrelated', 'keep');
+  const saved: Record<string, string>[] = [];
+  const api = {
+    async bootstrap(snapshot: Record<string, string>) {
+      return snapshot;
+    },
+    async save(snapshot: Record<string, string>) {
+      saved.push({ ...snapshot });
+    },
+  };
+
+  await restoreAppStorageTransaction(
+    storage,
+    {
+      'prediction-ma:new': 'new',
+      unrelated: 'replace-attempt',
+      'prediction-ma:invalid': 42,
+    },
+    api,
+  );
+
+  assert.equal(storage.getItem('prediction-ma:old'), null);
+  assert.equal(storage.getItem('prediction-ma:stale'), null);
+  assert.equal(storage.getItem('prediction-ma:new'), 'new');
+  assert.equal(storage.getItem('prediction-ma:invalid'), null);
+  assert.equal(storage.getItem('unrelated'), 'keep');
+  assert.deepEqual(saved, [{ 'prediction-ma:new': 'new' }]);
+});
+
+test('transactional restore rejects an empty backup without removing existing app keys', async () => {
+  const { EmptyAppStorageSnapshotError, restoreAppStorageTransaction } =
+    await loadStorageModule();
+  assert.equal(typeof EmptyAppStorageSnapshotError, 'function');
+  assert.equal(typeof restoreAppStorageTransaction, 'function');
+
+  const storage = new MemoryStorage();
+  storage.setItem('prediction-ma:current', 'current');
+  let saveCount = 0;
+  const api = {
+    async bootstrap(snapshot: Record<string, string>) {
+      return snapshot;
+    },
+    async save() {
+      saveCount += 1;
+    },
+  };
+
+  await assert.rejects(
+    () => restoreAppStorageTransaction(storage, {}, api),
+    EmptyAppStorageSnapshotError,
+  );
+
+  assert.equal(storage.getItem('prediction-ma:current'), 'current');
+  assert.equal(saveCount, 0);
+});
+
+test('transactional restore rejects a non-app-only backup without removing existing app keys', async () => {
+  const { EmptyAppStorageSnapshotError, restoreAppStorageTransaction } =
+    await loadStorageModule();
+  assert.equal(typeof EmptyAppStorageSnapshotError, 'function');
+  assert.equal(typeof restoreAppStorageTransaction, 'function');
+
+  const storage = new MemoryStorage();
+  storage.setItem('prediction-ma:current', 'current');
+  storage.setItem('unrelated', 'keep');
+
+  await assert.rejects(
+    () => restoreAppStorageTransaction(storage, { unrelated: 'replace-attempt' }),
+    EmptyAppStorageSnapshotError,
+  );
+
+  assert.equal(storage.getItem('prediction-ma:current'), 'current');
+  assert.equal(storage.getItem('unrelated'), 'keep');
+});
+
+test('transactional restore rolls browser and Electron storage back after persistence rejects', async () => {
+  const { AppStorageRestoreError, restoreAppStorageTransaction } = await loadStorageModule();
+  assert.equal(typeof AppStorageRestoreError, 'function');
+  assert.equal(typeof restoreAppStorageTransaction, 'function');
+
+  const storage = new MemoryStorage();
+  storage.setItem('prediction-ma:current', 'current');
+  storage.setItem('prediction-ma:other', 'other');
+  storage.setItem('unrelated', 'keep');
+  const saved: Record<string, string>[] = [];
+  const api = {
+    async bootstrap(snapshot: Record<string, string>) {
+      return snapshot;
+    },
+    async save(snapshot: Record<string, string>) {
+      saved.push({ ...snapshot });
+      if (saved.length === 1) throw new Error('EXE write failed');
+    },
+  };
+
+  await assert.rejects(
+    () =>
+      restoreAppStorageTransaction(
+        storage,
+        { 'prediction-ma:imported': 'imported' },
+        api,
+      ),
+    AppStorageRestoreError,
+  );
+
+  assert.equal(storage.getItem('prediction-ma:imported'), null);
+  assert.equal(storage.getItem('prediction-ma:current'), 'current');
+  assert.equal(storage.getItem('prediction-ma:other'), 'other');
+  assert.equal(storage.getItem('unrelated'), 'keep');
+  assert.deepEqual(saved, [
+    { 'prediction-ma:imported': 'imported' },
+    {
+      'prediction-ma:current': 'current',
+      'prediction-ma:other': 'other',
+    },
+  ]);
+});
+
 test('bootstrapElectronStorage restores the canonical Electron snapshot', async () => {
   const { bootstrapElectronStorage } = await loadStorageModule();
   assert.equal(typeof bootstrapElectronStorage, 'function');

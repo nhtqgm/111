@@ -8,11 +8,12 @@ import { fetchKLines } from './services/eastmoney';
 import type { PeriodType, PredictionPoint, StockKLineResponse } from './types';
 import { filterCompletedKLineData } from './utils/completedPeriods';
 import {
+  AppStorageRestoreError,
   collectAppStorage,
-  isAppStorageKey,
-  persistElectronStorage,
+  EmptyAppStorageSnapshotError,
+  normalizeAppStorageSnapshot,
   queueElectronStorageSync,
-  restoreAppStorage,
+  restoreAppStorageTransaction,
 } from './utils/electronStorage';
 import { compareProjectionRows, formatNumber, summarizeComparisons } from './utils/metrics';
 import {
@@ -62,6 +63,11 @@ import {
   type ReplaySnapshot,
 } from './utils/replay';
 import { createStableAutosave, runWorkspaceTransition } from './utils/stableAutosave';
+import {
+  canConsumeDeferredPlanImport,
+  getStockPeriodWorkspaceKey,
+  isLoadedWorkspaceReady,
+} from './utils/workspaceContext';
 
 const periods: Array<{ value: PeriodType; label: string; unit: string }> = [
   { value: 'day', label: '日K', unit: '日' },
@@ -76,6 +82,8 @@ const initialWorkspace = loadWorkspaceCache();
 const appVersion = packageJson.version;
 const planLimitWarning = `每只股票的每个周期最多保留 ${PLAN_LIMIT} 个方案，请先删除一个方案`;
 const electronPersistenceWarning = '数据已保存在当前页面，但 EXE 持久化失败，请再次点击保存';
+const emptyBackupWarning = '导入失败：备份中没有有效的应用数据，原数据未更改';
+const backupRestoreFailureWarning = '全部数据导入失败：EXE 持久化失败，原数据已恢复';
 const updateManifestUrl = 'https://nhtqgm.github.io/111/update.json';
 const lineColors: Record<MaWindow, string> = {
   5: '#2f7893',
@@ -129,8 +137,10 @@ export default function App() {
   const [queryCode, setQueryCode] = useState(initialWorkspace?.stockCode ?? '000166');
   const [period, setPeriod] = useState<PeriodType>(initialWorkspace?.period ?? 'month');
   const [data, setData] = useState<StockKLineResponse | null>(null);
+  const [dataWorkspaceKey, setDataWorkspaceKey] = useState<string | null>(null);
   const [baseDate, setBaseDate] = useState(todayDate);
   const [plans, setPlans] = useState<PredictionPlan[]>([]);
+  const [plansWorkspaceKey, setPlansWorkspaceKey] = useState<string | null>(null);
   const [activePlanId, setActivePlanId] = useState<string | null>(null);
   const [visibleMaWindows, setVisibleMaWindows] = useState<MaWindow[]>([5, 10, 20, 40, 60]);
   const [showActualMaLines, setShowActualMaLines] = useState(false);
@@ -150,11 +160,21 @@ export default function App() {
   const [toast, setToast] = useState<{ message: string; type: 'info' | 'success' | 'warning' } | null>(
     null,
   );
+  const requestedWorkspaceKey = getStockPeriodWorkspaceKey(queryCode, period);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const importedPlanRef = useRef<ImportedPredictionPlan | null>(null);
   const toastTimerRef = useRef<number | null>(null);
   const lastSavedSignatureRef = useRef('');
   const autosaveRef = useRef<ReturnType<typeof createStableAutosave> | null>(null);
+  const backupRestoreInProgressRef = useRef(false);
+  const requestedWorkspaceKeyRef = useRef(requestedWorkspaceKey);
+  requestedWorkspaceKeyRef.current = requestedWorkspaceKey;
+
+  const loadedWorkspaceReady = isLoadedWorkspaceReady(
+    requestedWorkspaceKey,
+    dataWorkspaceKey,
+    plansWorkspaceKey,
+  );
 
   const activePlan = useMemo(
     () => plans.find((plan) => plan.id === activePlanId) ?? null,
@@ -181,20 +201,37 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (
+      backupRestoreInProgressRef.current ||
+      requestedWorkspaceKeyRef.current !== requestedWorkspaceKey
+    ) {
+      return;
+    }
+
     const cached = loadKLineCache(queryCode, period);
     setError('');
+    setData(null);
+    setDataWorkspaceKey(null);
+    setPlans([]);
+    setPlansWorkspaceKey(null);
+    setActivePlanId(null);
+    setReplaySnapshots([]);
 
     if (!cached) {
-      setData(null);
-      setPlans([]);
-      setActivePlanId(null);
       setBaseDate(todayDate);
       showToast('暂无本地历史数据，请点击“联网更新”拉取最近历史收盘价', 'warning');
       return;
     }
 
     const completed = filterCompletedKLineData(markAsLocalCache(cached.data), period);
+    const loadedDataKey = getStockPeriodWorkspaceKey(completed.data.code, period);
+    if (loadedDataKey !== requestedWorkspaceKey) {
+      setBaseDate(todayDate);
+      showToast('本地历史数据与当前股票周期不匹配，请联网更新', 'warning');
+      return;
+    }
     setData(completed.data);
+    setDataWorkspaceKey(loadedDataKey);
     setBaseDate(completed.lastCompletedDate ?? todayDate);
     showToast(
       formatHistoryStatus(cached.updatedAt, completed.data.points.length, completed.removedPoints.length),
@@ -203,10 +240,18 @@ export default function App() {
     if (completed.data.points.length < minHistoryCount) {
       setError(`本地历史数据不足${minHistoryCount}条，MA60计算可能不完整，请联网更新一次`);
     }
-  }, [period, queryCode]);
+  }, [period, queryCode, requestedWorkspaceKey]);
 
   useEffect(() => {
-    if (!data || !baseDate) return;
+    if (
+      backupRestoreInProgressRef.current ||
+      requestedWorkspaceKeyRef.current !== requestedWorkspaceKey ||
+      !data ||
+      !baseDate ||
+      dataWorkspaceKey !== requestedWorkspaceKey
+    ) {
+      return;
+    }
 
     const loaded = loadPredictionPlans(data.code, period, baseDate, data.points, forecastRowCount);
     if (loaded.migrated) {
@@ -219,8 +264,7 @@ export default function App() {
     const importedPlan = importedPlanRef.current;
     if (
       importedPlan &&
-      importedPlan.stockCode === data.code &&
-      importedPlan.period === period
+      canConsumeDeferredPlanImport(importedPlan, requestedWorkspaceKey, dataWorkspaceKey)
     ) {
       importedPlanRef.current = null;
       if (!hasPredictionPlanCapacity(nextPlans)) {
@@ -236,6 +280,12 @@ export default function App() {
         );
         nextPlans = [...nextPlans, imported];
         nextActivePlanId = imported.id;
+        saveWorkspaceCache({
+          stockCode: data.code,
+          period,
+          baseDate,
+          updatedAt: new Date().toISOString(),
+        });
         void Promise.all([
           savePredictionPlans(data.code, period, nextPlans),
           saveActivePlanId(data.code, period, nextActivePlanId),
@@ -245,6 +295,7 @@ export default function App() {
     }
 
     setPlans(nextPlans);
+    setPlansWorkspaceKey(requestedWorkspaceKey);
     setActivePlanId(nextActivePlanId);
     lastSavedSignatureRef.current = createWorkspaceSignature(
       data.code,
@@ -254,23 +305,46 @@ export default function App() {
       nextActivePlanId,
     );
     setHasUnsavedChanges(false);
-  }, [baseDate, data, period]);
+  }, [baseDate, data, dataWorkspaceKey, period, requestedWorkspaceKey]);
 
   useEffect(() => {
-    if (!data) {
+    if (
+      backupRestoreInProgressRef.current ||
+      requestedWorkspaceKeyRef.current !== requestedWorkspaceKey ||
+      !data ||
+      dataWorkspaceKey !== requestedWorkspaceKey
+    ) {
       setReplaySnapshots([]);
       return;
     }
 
     setReplaySnapshots(loadReplaySnapshots(data.code, period));
-  }, [data?.code, period]);
+  }, [data, dataWorkspaceKey, period, requestedWorkspaceKey]);
 
   useEffect(() => {
-    if (!data || !baseDate || !plans.length) return;
+    if (
+      backupRestoreInProgressRef.current ||
+      requestedWorkspaceKeyRef.current !== requestedWorkspaceKey ||
+      !loadedWorkspaceReady ||
+      !data ||
+      !baseDate ||
+      !plans.length
+    ) {
+      return;
+    }
 
     const signature = createWorkspaceSignature(data.code, period, baseDate, plans, activePlanId);
     setHasUnsavedChanges(signature !== lastSavedSignatureRef.current);
-  }, [activePlanId, baseDate, data, period, plans, replaySnapshots]);
+  }, [
+    activePlanId,
+    baseDate,
+    data,
+    loadedWorkspaceReady,
+    period,
+    plans,
+    replaySnapshots,
+    requestedWorkspaceKey,
+  ]);
 
   useEffect(() => {
     const scheduler = createStableAutosave(
@@ -300,7 +374,10 @@ export default function App() {
     force?: boolean;
     notice: 'auto' | 'manual' | 'silent';
   }) {
-    if (!data || !baseDate || !plans.length || !activePlanId) {
+    if (backupRestoreInProgressRef.current) return;
+    if (requestedWorkspaceKeyRef.current !== requestedWorkspaceKey) return;
+
+    if (!loadedWorkspaceReady || !data || !baseDate || !plans.length || !activePlanId) {
       if (notice === 'manual') {
         showToast('暂无可保存的数据', 'warning');
       }
@@ -385,25 +462,48 @@ export default function App() {
     saveCurrentWorkspace({ force: true, notice: 'silent' });
   }
 
+  function invalidateLoadedWorkspace(nextWorkspaceKey: string) {
+    requestedWorkspaceKeyRef.current = nextWorkspaceKey;
+    setIsLoading(false);
+    setData(null);
+    setDataWorkspaceKey(null);
+    setBaseDate(todayDate);
+    setPlans([]);
+    setPlansWorkspaceKey(null);
+    setActivePlanId(null);
+    setReplaySnapshots([]);
+    setDetailTargetDate(null);
+    setReplayDetailId(null);
+    setHasUnsavedChanges(false);
+    lastSavedSignatureRef.current = '';
+  }
+
   function loadStockCode() {
-    if (normalizeStockCode(stockCode) === normalizeStockCode(queryCode)) return;
+    if (backupRestoreInProgressRef.current) return;
+    const nextStockCode = normalizeStockCode(stockCode);
+    if (nextStockCode === normalizeStockCode(queryCode)) return;
+    const nextWorkspaceKey = getStockPeriodWorkspaceKey(nextStockCode, period);
 
     runWorkspaceTransition(hasUnsavedChanges, flushCurrentWorkspace, () => {
-      setQueryCode(stockCode);
+      invalidateLoadedWorkspace(nextWorkspaceKey);
+      setQueryCode(nextStockCode);
     });
   }
 
   function changePeriod(nextPeriod: PeriodType) {
+    if (backupRestoreInProgressRef.current) return;
     if (nextPeriod === period) return;
+    const nextWorkspaceKey = getStockPeriodWorkspaceKey(queryCode, nextPeriod);
 
     runWorkspaceTransition(hasUnsavedChanges, flushCurrentWorkspace, () => {
+      invalidateLoadedWorkspace(nextWorkspaceKey);
       setPeriod(nextPeriod);
     });
   }
 
   const projection = useMemo(
     () =>
-      data
+      data && dataWorkspaceKey === requestedWorkspaceKey
         ? buildMa40Projection(data.points, predictions, baseDate, inputMaWindow)
         : {
             rows: [],
@@ -411,11 +511,17 @@ export default function App() {
             predictedLines: createEmptyLineMap(),
             closeByDate: new Map<string, number>(),
           },
-    [baseDate, data, inputMaWindow, predictions],
+    [baseDate, data, dataWorkspaceKey, inputMaWindow, predictions, requestedWorkspaceKey],
   );
   const replayWorkspaceStockCode = normalizeStockCode(queryCode);
   const replayRows = useMemo(() => {
-    if (!data || normalizeStockCode(data.code) !== replayWorkspaceStockCode) return [];
+    if (
+      !loadedWorkspaceReady ||
+      !data ||
+      normalizeStockCode(data.code) !== replayWorkspaceStockCode
+    ) {
+      return [];
+    }
 
     const currentSnapshots = replaySnapshots.filter(
       (snapshot) =>
@@ -423,14 +529,17 @@ export default function App() {
         snapshot.period === period,
     );
     return buildReplayReviewRows(currentSnapshots, data.points);
-  }, [data, period, replaySnapshots, replayWorkspaceStockCode]);
+  }, [data, loadedWorkspaceReady, period, replaySnapshots, replayWorkspaceStockCode]);
   const replayCurrentPlans = useMemo(
     () =>
-      plans.filter(
-        (plan) =>
-          normalizeStockCode(plan.stockCode) === replayWorkspaceStockCode && plan.period === period,
-      ),
-    [period, plans, replayWorkspaceStockCode],
+      loadedWorkspaceReady
+        ? plans.filter(
+            (plan) =>
+              normalizeStockCode(plan.stockCode) === replayWorkspaceStockCode &&
+              plan.period === period,
+          )
+        : [],
+    [loadedWorkspaceReady, period, plans, replayWorkspaceStockCode],
   );
   const replayPlanOptions = useMemo(() => {
     const namesByPlanId = new Map(replayCurrentPlans.map((plan) => [plan.id, plan.name]));
@@ -453,19 +562,41 @@ export default function App() {
   const hasLegacyReplayRows = useMemo(() => replayRows.some((row) => !row.planId), [replayRows]);
   const resolvedReplayPlanFilter = useMemo(
     () =>
-      resolveReplayPlanFilter(
-        replayPlanFilter,
-        replayActivePlanId,
-        knownReplayPlanIds,
-        hasLegacyReplayRows,
-      ),
-    [hasLegacyReplayRows, knownReplayPlanIds, replayActivePlanId, replayPlanFilter],
+      loadedWorkspaceReady
+        ? resolveReplayPlanFilter(
+            replayPlanFilter,
+            replayActivePlanId,
+            knownReplayPlanIds,
+            hasLegacyReplayRows,
+          )
+        : replayPlanFilter,
+    [
+      hasLegacyReplayRows,
+      knownReplayPlanIds,
+      loadedWorkspaceReady,
+      replayActivePlanId,
+      replayPlanFilter,
+    ],
   );
   useEffect(() => {
+    if (
+      backupRestoreInProgressRef.current ||
+      requestedWorkspaceKeyRef.current !== requestedWorkspaceKey ||
+      !loadedWorkspaceReady
+    ) {
+      return;
+    }
     if (resolvedReplayPlanFilter !== replayPlanFilter) {
       setReplayPlanFilter(resolvedReplayPlanFilter);
     }
-  }, [period, replayPlanFilter, replayWorkspaceStockCode, resolvedReplayPlanFilter]);
+  }, [
+    loadedWorkspaceReady,
+    period,
+    replayPlanFilter,
+    replayWorkspaceStockCode,
+    requestedWorkspaceKey,
+    resolvedReplayPlanFilter,
+  ]);
   const filteredReplayRows = useMemo(
     () => filterReplayRowsByPlan(replayRows, resolvedReplayPlanFilter, replayActivePlanId),
     [replayActivePlanId, replayRows, resolvedReplayPlanFilter],
@@ -557,7 +688,14 @@ export default function App() {
   );
 
   function updateActivePlan(updater: (plan: PredictionPlan) => PredictionPlan) {
-    if (!activePlanId) return;
+    if (
+      backupRestoreInProgressRef.current ||
+      requestedWorkspaceKeyRef.current !== requestedWorkspaceKey ||
+      !loadedWorkspaceReady ||
+      !activePlanId
+    ) {
+      return;
+    }
     setPlans((current) =>
       current.map((plan) =>
         plan.id === activePlanId
@@ -590,6 +728,13 @@ export default function App() {
   }
 
   function createPlan() {
+    if (
+      backupRestoreInProgressRef.current ||
+      requestedWorkspaceKeyRef.current !== requestedWorkspaceKey ||
+      !loadedWorkspaceReady
+    ) {
+      return;
+    }
     if (!hasPredictionPlanCapacity(plans)) {
       showToast(planLimitWarning, 'warning');
       return;
@@ -605,6 +750,13 @@ export default function App() {
   }
 
   function duplicatePlan() {
+    if (
+      backupRestoreInProgressRef.current ||
+      requestedWorkspaceKeyRef.current !== requestedWorkspaceKey ||
+      !loadedWorkspaceReady
+    ) {
+      return;
+    }
     if (!hasPredictionPlanCapacity(plans)) {
       showToast(planLimitWarning, 'warning');
       return;
@@ -619,7 +771,7 @@ export default function App() {
   }
 
   function renameActivePlan() {
-    if (!activePlan) return;
+    if (backupRestoreInProgressRef.current || !loadedWorkspaceReady || !activePlan) return;
     const name = window.prompt('请输入方案名称', activePlan.name);
     if (name === null) return;
 
@@ -629,6 +781,7 @@ export default function App() {
   }
 
   function deleteActivePlan() {
+    if (backupRestoreInProgressRef.current || !loadedWorkspaceReady) return;
     if (!activePlan || plans.length <= 1) {
       showToast('至少需要保留一个方案', 'warning');
       return;
@@ -647,11 +800,18 @@ export default function App() {
   }
 
   function selectActivePlan(planId: string) {
+    if (
+      backupRestoreInProgressRef.current ||
+      requestedWorkspaceKeyRef.current !== requestedWorkspaceKey ||
+      !loadedWorkspaceReady
+    ) {
+      return;
+    }
     if (!plans.some((plan) => plan.id === planId) || planId === activePlanId) return;
 
     runWorkspaceTransition(hasUnsavedChanges, flushCurrentWorkspace, () => {
       setActivePlanId(planId);
-      if (data) {
+      if (data && dataWorkspaceKey === requestedWorkspaceKey) {
         void saveActivePlanId(data.code, period, planId).catch(() => {
           showToast(electronPersistenceWarning, 'warning');
         });
@@ -771,24 +931,54 @@ export default function App() {
   }
 
   function refreshHistoricalData() {
+    if (backupRestoreInProgressRef.current) return;
+    const requestedStockCode = normalizeStockCode(stockCode);
+    const requestedPeriod = period;
+    const fetchWorkspaceKey = getStockPeriodWorkspaceKey(requestedStockCode, requestedPeriod);
+
     runWorkspaceTransition(hasUnsavedChanges, flushCurrentWorkspace, () => {
-      void fetchHistoricalData();
+      if (fetchWorkspaceKey !== requestedWorkspaceKey) {
+        invalidateLoadedWorkspace(fetchWorkspaceKey);
+        setQueryCode(requestedStockCode);
+      }
+      void fetchHistoricalData(requestedStockCode, requestedPeriod, fetchWorkspaceKey);
     });
   }
 
-  async function fetchHistoricalData() {
+  async function fetchHistoricalData(
+    requestedStockCode: string,
+    requestedPeriod: PeriodType,
+    fetchWorkspaceKey: string,
+  ) {
     setIsLoading(true);
     setError('');
     showToast('正在联网更新历史收盘价...', 'info');
 
     try {
-      const result = await fetchKLines(stockCode, period);
-      const completed = filterCompletedKLineData(markAsOnlineResult(result), period);
-      saveKLineCache(completed.data, period);
+      const result = await fetchKLines(requestedStockCode, requestedPeriod);
+      if (
+        backupRestoreInProgressRef.current ||
+        requestedWorkspaceKeyRef.current !== fetchWorkspaceKey
+      ) {
+        return;
+      }
+
+      const completed = filterCompletedKLineData(markAsOnlineResult(result), requestedPeriod);
+      const loadedDataKey = getStockPeriodWorkspaceKey(completed.data.code, requestedPeriod);
+      if (loadedDataKey !== fetchWorkspaceKey) {
+        throw new Error('联网数据与请求的股票周期不匹配');
+      }
+
+      saveKLineCache(completed.data, requestedPeriod);
       void queueElectronStorageSync().catch(() => {
         showToast(electronPersistenceWarning, 'warning');
       });
+      setPlans([]);
+      setPlansWorkspaceKey(null);
+      setActivePlanId(null);
+      setReplaySnapshots([]);
       setData(completed.data);
+      setDataWorkspaceKey(loadedDataKey);
       setBaseDate(completed.lastCompletedDate ?? todayDate);
       setStockCode(completed.data.code);
       setQueryCode(completed.data.code);
@@ -797,20 +987,37 @@ export default function App() {
         setError(`联网数据不足${minHistoryCount}条，MA60计算可能不完整`);
       }
     } catch (err) {
+      if (
+        backupRestoreInProgressRef.current ||
+        requestedWorkspaceKeyRef.current !== fetchWorkspaceKey
+      ) {
+        return;
+      }
+
       const message = err instanceof Error ? err.message : '联网更新失败';
-      const cached = loadKLineCache(stockCode, period);
+      const cached = loadKLineCache(requestedStockCode, requestedPeriod);
       if (cached) {
-        const completed = filterCompletedKLineData(markAsLocalCache(cached.data), period);
-        setData(completed.data);
-        setBaseDate(completed.lastCompletedDate ?? todayDate);
-        showToast(
-          `${formatHistoryStatus(cached.updatedAt, completed.data.points.length, completed.removedPoints.length)}；联网失败，继续使用本地缓存`,
-          'warning',
-        );
+        const completed = filterCompletedKLineData(markAsLocalCache(cached.data), requestedPeriod);
+        const loadedDataKey = getStockPeriodWorkspaceKey(completed.data.code, requestedPeriod);
+        if (loadedDataKey === fetchWorkspaceKey) {
+          setPlans([]);
+          setPlansWorkspaceKey(null);
+          setActivePlanId(null);
+          setReplaySnapshots([]);
+          setData(completed.data);
+          setDataWorkspaceKey(loadedDataKey);
+          setBaseDate(completed.lastCompletedDate ?? todayDate);
+          showToast(
+            `${formatHistoryStatus(cached.updatedAt, completed.data.points.length, completed.removedPoints.length)}；联网失败，继续使用本地缓存`,
+            'warning',
+          );
+        }
       }
       setError(`联网更新失败：${message}`);
     } finally {
-      setIsLoading(false);
+      if (requestedWorkspaceKeyRef.current === fetchWorkspaceKey) {
+        setIsLoading(false);
+      }
     }
   }
 
@@ -822,7 +1029,15 @@ export default function App() {
   }
 
   function resetRows() {
-    if (!data || !baseDate || !activePlan) return;
+    if (
+      backupRestoreInProgressRef.current ||
+      !loadedWorkspaceReady ||
+      !data ||
+      !baseDate ||
+      !activePlan
+    ) {
+      return;
+    }
     const rows = generatePredictionRows(data.points, period, baseDate, forecastRowCount);
     updateActivePlan((plan) => ({
       ...plan,
@@ -905,14 +1120,24 @@ export default function App() {
       const rawFile = JSON.parse(text);
       const backup = normalizeFullBackupFile(rawFile);
       if (backup) {
-        restoreAppStorage(localStorage, backup.storage);
-        try {
-          await persistElectronStorage();
-        } catch {
-          throw new Error(electronPersistenceWarning);
+        const normalizedStorage = normalizeAppStorageSnapshot(backup.storage);
+        if (!Object.keys(normalizedStorage).length) {
+          throw new EmptyAppStorageSnapshotError();
         }
-        showToast(`已导入全部本地数据：${Object.keys(backup.storage).length}项，正在刷新`, 'success');
-        window.setTimeout(() => window.location.reload(), 500);
+
+        backupRestoreInProgressRef.current = true;
+        let restoreSucceeded = false;
+        try {
+          await restoreAppStorageTransaction(localStorage, normalizedStorage);
+          restoreSucceeded = true;
+        } finally {
+          if (!restoreSucceeded) {
+            backupRestoreInProgressRef.current = false;
+          }
+        }
+
+        showToast(`已导入全部本地数据：${Object.keys(normalizedStorage).length}项，正在刷新`, 'success');
+        window.location.reload();
         return;
       }
 
@@ -921,7 +1146,14 @@ export default function App() {
         throw new Error('文件格式不是本系统导出的预测方案文件');
       }
 
-      if (data && baseDate && parsed.stockCode === data.code && parsed.period === period) {
+      if (
+        loadedWorkspaceReady &&
+        data &&
+        dataWorkspaceKey === requestedWorkspaceKey &&
+        baseDate &&
+        normalizeStockCode(parsed.stockCode) === normalizeStockCode(data.code) &&
+        parsed.period === period
+      ) {
         if (!hasPredictionPlanCapacity(plans)) {
           showToast(planLimitWarning, 'warning');
           return;
@@ -950,6 +1182,8 @@ export default function App() {
       }
 
       runWorkspaceTransition(hasUnsavedChanges, flushCurrentWorkspace, () => {
+        const importedWorkspaceKey = getStockPeriodWorkspaceKey(parsed.stockCode, parsed.period);
+        invalidateLoadedWorkspace(importedWorkspaceKey);
         importedPlanRef.current = parsed;
         setStockCode(parsed.stockCode);
         setQueryCode(parsed.stockCode);
@@ -966,7 +1200,13 @@ export default function App() {
       });
       showToast(`已选择文件：${file.name}`, 'success');
     } catch (err) {
-      showToast(err instanceof Error ? err.message : '导入失败', 'warning');
+      if (err instanceof EmptyAppStorageSnapshotError) {
+        showToast(emptyBackupWarning, 'warning');
+      } else if (err instanceof AppStorageRestoreError) {
+        showToast(backupRestoreFailureWarning, 'warning');
+      } else {
+        showToast(err instanceof Error ? err.message : '导入失败', 'warning');
+      }
     } finally {
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
@@ -1708,11 +1948,7 @@ function normalizeFullBackupFile(value: unknown): FullBackupFileV1 | null {
     schema: value.schema,
     exportedAt: value.exportedAt,
     appVersion: value.appVersion,
-    storage: Object.fromEntries(
-      Object.entries(value.storage).filter(
-        ([key, storedValue]) => isAppStorageKey(key) && typeof storedValue === 'string',
-      ),
-    ),
+    storage: normalizeAppStorageSnapshot(value.storage),
   };
 }
 

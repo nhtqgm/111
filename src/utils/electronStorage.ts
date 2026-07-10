@@ -14,6 +14,20 @@ export interface ElectronStorageApi {
 let pendingSync: Promise<void> | null = null;
 let syncRequested = false;
 
+export class EmptyAppStorageSnapshotError extends Error {
+  constructor() {
+    super('Backup does not contain application storage');
+    this.name = 'EmptyAppStorageSnapshotError';
+  }
+}
+
+export class AppStorageRestoreError extends Error {
+  constructor() {
+    super('Application storage restore failed and was rolled back');
+    this.name = 'AppStorageRestoreError';
+  }
+}
+
 export function isAppStorageKey(key: string) {
   return key.startsWith('prediction-ma40:') || key.startsWith('prediction-ma:');
 }
@@ -27,6 +41,18 @@ export function collectAppStorage(storage: StorageLike) {
     if (value !== null) snapshot[key] = value;
   }
   return snapshot;
+}
+
+export function normalizeAppStorageSnapshot(snapshot: unknown) {
+  if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(snapshot).filter(
+      ([key, value]) => isAppStorageKey(key) && typeof value === 'string',
+    ),
+  );
 }
 
 export function restoreAppStorage(storage: StorageLike, snapshot: Record<string, string>) {
@@ -46,7 +72,8 @@ export function restoreAppStorage(storage: StorageLike, snapshot: Record<string,
 
 export async function bootstrapElectronStorage(
   storage: StorageLike = localStorage,
-  api: ElectronStorageApi | undefined = window.appStorageApi,
+  api: ElectronStorageApi | undefined =
+    typeof window === 'undefined' ? undefined : window.appStorageApi,
 ) {
   if (!api) return;
   const canonical = await api.bootstrap(collectAppStorage(storage));
@@ -55,15 +82,57 @@ export async function bootstrapElectronStorage(
 
 export async function persistElectronStorage(
   storage: StorageLike = localStorage,
-  api: ElectronStorageApi | undefined = window.appStorageApi,
+  api: ElectronStorageApi | undefined =
+    typeof window === 'undefined' ? undefined : window.appStorageApi,
 ) {
   if (!api) return;
   await api.save(collectAppStorage(storage));
 }
 
+export async function restoreAppStorageTransaction(
+  storage: StorageLike,
+  importedSnapshot: unknown,
+  api: ElectronStorageApi | undefined =
+    typeof window === 'undefined' ? undefined : window.appStorageApi,
+) {
+  const normalizedSnapshot = normalizeAppStorageSnapshot(importedSnapshot);
+  if (!Object.keys(normalizedSnapshot).length) {
+    throw new EmptyAppStorageSnapshotError();
+  }
+
+  const previousSnapshot = collectAppStorage(storage);
+  if (pendingSync) {
+    try {
+      await pendingSync;
+    } catch {
+      // The transaction below writes a complete replacement snapshot.
+    }
+  }
+
+  try {
+    restoreAppStorage(storage, normalizedSnapshot);
+    await persistElectronStorage(storage, api);
+  } catch {
+    try {
+      restoreAppStorage(storage, previousSnapshot);
+    } catch {
+      // Keep attempting to restore Electron even if browser storage rollback fails.
+    }
+    try {
+      await api?.save(previousSnapshot);
+    } catch {
+      // Best effort: browser storage remains the canonical rollback source.
+    }
+    throw new AppStorageRestoreError();
+  }
+
+  return normalizedSnapshot;
+}
+
 export function queueElectronStorageSync(
   storage: StorageLike = localStorage,
-  api: ElectronStorageApi | undefined = window.appStorageApi,
+  api: ElectronStorageApi | undefined =
+    typeof window === 'undefined' ? undefined : window.appStorageApi,
 ) {
   if (!api) return Promise.resolve();
   syncRequested = true;
