@@ -98,30 +98,40 @@ function getReplaySnapshotIdentity(snapshot) {
   const planId = typeof snapshot.planId === 'string' && snapshot.planId.trim()
     ? snapshot.planId.trim()
     : null;
-  const ownerId = planId ?? 'legacy';
-  const canonicalId = `${stockCode}:${snapshot.period}:${ownerId}:${snapshot.baseDate}:${snapshot.targetDate}:MA${snapshot.inputMaWindow}`;
-  const legacyId = `${stockCode}:${snapshot.period}:${snapshot.baseDate}:${snapshot.targetDate}:MA${snapshot.inputMaWindow}`;
-  if (snapshot.id === canonicalId || (!planId && snapshot.id === legacyId)) return canonicalId;
+  const suffix = `${snapshot.baseDate}:${snapshot.targetDate}:MA${snapshot.inputMaWindow}`;
+  const ownerId = planId ? `owner~plan~${encodeURIComponent(planId)}` : 'owner~legacy';
+  const canonicalId = `${stockCode}:${snapshot.period}:${ownerId}:${suffix}`;
+  const supportedIds = planId
+    ? [`${stockCode}:${snapshot.period}:${planId}:${suffix}`]
+    : [
+        `${stockCode}:${snapshot.period}:legacy:${suffix}`,
+        `${stockCode}:${snapshot.period}:${suffix}`,
+      ];
+  if (snapshot.id === canonicalId || supportedIds.includes(snapshot.id)) return canonicalId;
   return snapshot.id;
 }
 
 function reconcileReplayStorage(existingValue, incomingValue) {
   const existing = parseStoredJson(existingValue);
   const incoming = parseStoredJson(incomingValue);
-  if (!Array.isArray(existing) || !Array.isArray(incoming)) return null;
+  const existingIsArray = Array.isArray(existing);
+  const incomingIsArray = Array.isArray(incoming);
+  const snapshots = [
+    ...(existingIsArray ? existing : []),
+    ...(incomingIsArray ? incoming : []),
+  ].filter(
+    (snapshot) =>
+      snapshot &&
+      typeof snapshot === 'object' &&
+      !Array.isArray(snapshot) &&
+      typeof snapshot.id === 'string' &&
+      snapshot.id.trim(),
+  );
 
-  const snapshots = [...existing, ...incoming];
-  if (
-    snapshots.some(
-      (snapshot) =>
-        !snapshot ||
-        typeof snapshot !== 'object' ||
-        Array.isArray(snapshot) ||
-        typeof snapshot.id !== 'string' ||
-        !snapshot.id.trim(),
-    )
-  ) {
-    return null;
+  if (!snapshots.length) {
+    if (existingIsArray) return existingValue;
+    if (incomingIsArray) return incomingValue;
+    return existingValue;
   }
 
   const byId = new Map();
@@ -136,12 +146,11 @@ function reconcileReplayStorage(existingValue, incomingValue) {
 }
 
 function chooseStoredValue(key, existingValue, incomingValue) {
-  if (existingValue === incomingValue) return existingValue;
-
   if (key.startsWith('prediction-ma:replay:')) {
-    const reconciled = reconcileReplayStorage(existingValue, incomingValue);
-    if (reconciled !== null) return reconciled;
+    return reconcileReplayStorage(existingValue, incomingValue);
   }
+
+  if (existingValue === incomingValue) return existingValue;
 
   const existingUpdatedAt = getUpdatedAt(existingValue);
   const incomingUpdatedAt = getUpdatedAt(incomingValue);
@@ -163,12 +172,22 @@ function chooseStoredValue(key, existingValue, incomingValue) {
 function mergeAppStorage(existingValue, incomingValue) {
   const existing = filterAppStorage(existingValue);
   const incoming = filterAppStorage(incomingValue);
-  const merged = { ...existing };
+  const merged = Object.fromEntries(
+    Object.entries(existing).map(([key, value]) => [
+      key,
+      key.startsWith('prediction-ma:replay:')
+        ? reconcileReplayStorage(value, value)
+        : value,
+    ]),
+  );
 
   Object.entries(incoming).forEach(([key, value]) => {
-    merged[key] = Object.prototype.hasOwnProperty.call(merged, key)
-      ? chooseStoredValue(key, merged[key], value)
+    const normalizedValue = key.startsWith('prediction-ma:replay:')
+      ? reconcileReplayStorage(value, value)
       : value;
+    merged[key] = Object.prototype.hasOwnProperty.call(merged, key)
+      ? chooseStoredValue(key, merged[key], normalizedValue)
+      : normalizedValue;
   });
 
   return merged;

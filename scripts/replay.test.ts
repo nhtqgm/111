@@ -261,8 +261,8 @@ test('load rejects malformed entries while migrating legacy plain snapshots', ()
   assert.deepEqual(
     loaded.map((snapshot) => snapshot.id).sort(),
     [
-      '000166:month:plan-a:2026-06-30:2026-10-31:MA40',
-      '000166:month:plan-a:2026-06-30:2026-11-30:MA40',
+      '000166:month:owner~plan~plan-a:2026-06-30:2026-10-31:MA40',
+      '000166:month:owner~plan~plan-a:2026-06-30:2026-11-30:MA40',
     ],
   );
   const migrated = loaded.find((snapshot) => snapshot.targetDate === '2026-11-30');
@@ -303,28 +303,35 @@ test('load migrates the supported legacy no-plan snapshot ID to its canonical fo
   assert.equal(loaded.length, 1);
   assert.equal(
     loaded[0].id,
-    '000166:month:legacy:2026-06-30:2026-10-31:MA40',
+    '000166:month:owner~legacy:2026-06-30:2026-10-31:MA40',
   );
   assert.equal(loaded[0].planId, undefined);
 });
 
-test('save migrates the supported legacy no-plan snapshot ID', async () => {
-  const storage = new MemoryStorage();
-  installStorage(storage);
-  const legacy = makeSnapshot({
-    id: '000166:month:2026-06-30:2026-10-31:MA40',
-    planId: undefined,
-    planName: undefined,
-  });
-
-  await replay.saveReplaySnapshots('000166', 'month', [legacy]);
-
-  const saved = JSON.parse(storage.getItem(getReplayStorageKey()) ?? '[]');
-  assert.equal(saved.length, 1);
-  assert.equal(
-    saved[0].id,
+test('save migrates all supported legacy no-plan snapshot IDs', async () => {
+  const supportedIds = [
+    '000166:month:2026-06-30:2026-10-31:MA40',
     '000166:month:legacy:2026-06-30:2026-10-31:MA40',
-  );
+  ];
+
+  for (const id of supportedIds) {
+    const storage = new MemoryStorage();
+    installStorage(storage);
+    const legacy = makeSnapshot({
+      id,
+      planId: undefined,
+      planName: undefined,
+    });
+
+    await replay.saveReplaySnapshots('000166', 'month', [legacy]);
+
+    const saved = JSON.parse(storage.getItem(getReplayStorageKey()) ?? '[]');
+    assert.equal(saved.length, 1);
+    assert.equal(
+      saved[0].id,
+      '000166:month:owner~legacy:2026-06-30:2026-10-31:MA40',
+    );
+  }
 });
 
 test('new no-plan snapshots use the canonical legacy ID form', () => {
@@ -344,7 +351,82 @@ test('new no-plan snapshots use the canonical legacy ID form', () => {
 
   assert.equal(
     snapshots[0].id,
-    '000166:month:legacy:2026-06-30:2026-07-31:MA40',
+    '000166:month:owner~legacy:2026-06-30:2026-07-31:MA40',
+  );
+});
+
+test('load migrates the just-introduced no-plan legacy ID to the tagged owner form', () => {
+  const storage = new MemoryStorage();
+  installStorage(storage);
+  const snapshot = makeSnapshot({
+    id: '000166:month:legacy:2026-06-30:2026-10-31:MA40',
+    planId: undefined,
+    planName: undefined,
+  });
+  storage.setItem(getReplayStorageKey(), JSON.stringify([snapshot]));
+
+  const loaded = replay.loadReplaySnapshots('000166', 'month');
+
+  assert.equal(loaded.length, 1);
+  assert.equal(
+    loaded[0].id,
+    '000166:month:owner~legacy:2026-06-30:2026-10-31:MA40',
+  );
+});
+
+test('planned and no-plan snapshots use distinct owner namespaces for plan ID legacy', () => {
+  const common = {
+    stockCode: '000166',
+    period: 'month' as const,
+    baseDate: '2026-06-30',
+    points: [makePoint('2026-06-30', 4.6)],
+    rows: [makeProjectionRow()],
+    inputMaWindow: 40 as const,
+    existingSnapshots: [],
+    now: '2026-07-10T00:00:00.000Z',
+  };
+  const planned = replay.createReplaySnapshotsFromProjection({
+    ...common,
+    planId: 'legacy',
+    planName: 'Legacy Plan',
+    planNote: '',
+  })[0];
+  const noPlan = replay.createReplaySnapshotsFromProjection({
+    ...common,
+    planId: null,
+    planName: null,
+    planNote: '',
+  })[0];
+
+  assert.equal(
+    planned.id,
+    '000166:month:owner~plan~legacy:2026-06-30:2026-07-31:MA40',
+  );
+  assert.equal(
+    noPlan.id,
+    '000166:month:owner~legacy:2026-06-30:2026-07-31:MA40',
+  );
+  assert.notEqual(planned.id, noPlan.id);
+});
+
+test('plan owner IDs encode plan identifiers inside the canonical segment', () => {
+  const snapshots = replay.createReplaySnapshotsFromProjection({
+    stockCode: '000166',
+    period: 'month',
+    planId: 'legacy:alpha beta',
+    planName: 'Encoded Plan',
+    planNote: '',
+    baseDate: '2026-06-30',
+    points: [makePoint('2026-06-30', 4.6)],
+    rows: [makeProjectionRow()],
+    inputMaWindow: 40,
+    existingSnapshots: [],
+    now: '2026-07-10T00:00:00.000Z',
+  });
+
+  assert.equal(
+    snapshots[0].id,
+    '000166:month:owner~plan~legacy%3Aalpha%20beta:2026-06-30:2026-07-31:MA40',
   );
 });
 
@@ -628,7 +710,12 @@ test('saving replay snapshots queues Electron persistence', async () => {
   await replay.saveReplaySnapshots('000166', 'month', [makeSnapshot()]);
 
   assert.equal(saved.length, 1);
-  assert.deepEqual(JSON.parse(saved[0][getReplayStorageKey()]), [makeSnapshot()]);
+  assert.deepEqual(JSON.parse(saved[0][getReplayStorageKey()]), [
+    {
+      ...makeSnapshot(),
+      id: '000166:month:owner~plan~plan-a:2026-06-30:2026-10-31:MA40',
+    },
+  ]);
 });
 
 test('snapshot captures the plan note instead of a legacy row note', () => {

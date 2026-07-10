@@ -111,6 +111,81 @@ test('mergeAppStorage reconciles divergent replay buckets by snapshot ID', () =>
   assert.equal(snapshots.find((snapshot) => snapshot.id === sharedId).predictedClose, 5.1);
 });
 
+test('replay reconciliation keeps valid siblings when either array contains malformed entries', () => {
+  const { mergeAppStorage } = loadStorageModule();
+  const replayKey = 'prediction-ma:replay:000166:month:v1';
+  const persistedId = '000166:month:plan-a:2026-06-30:2026-10-31:MA40';
+  const rendererId = '000166:month:plan-b:2026-06-30:2026-11-30:MA40';
+
+  const merged = JSON.parse(
+    mergeAppStorage(
+      {
+        [replayKey]: JSON.stringify([
+          makeReplaySnapshot(persistedId, '2026-07-10T00:00:00.000Z', 4.8),
+          null,
+        ]),
+      },
+      {
+        [replayKey]: JSON.stringify([
+          makeReplaySnapshot(rendererId, '2026-07-11T00:00:00.000Z', 5.1),
+        ]),
+      },
+    )[replayKey],
+  );
+
+  assert.deepEqual(
+    merged.map((snapshot) => snapshot.id).sort(),
+    [persistedId, rendererId].sort(),
+  );
+});
+
+test('replay reconciliation preserves a valid persisted array when renderer JSON is invalid', () => {
+  const { mergeAppStorage } = loadStorageModule();
+  const replayKey = 'prediction-ma:replay:000166:month:v1';
+  const persisted = makeReplaySnapshot(
+    '000166:month:plan-a:2026-06-30:2026-10-31:MA40',
+    '2026-07-10T00:00:00.000Z',
+    4.8,
+  );
+
+  const merged = mergeAppStorage(
+    { [replayKey]: JSON.stringify([persisted]) },
+    { [replayKey]: '{invalid-renderer-json' },
+  );
+
+  assert.deepEqual(JSON.parse(merged[replayKey]), [persisted]);
+});
+
+test('replay reconciliation preserves a valid renderer array when persisted JSON is invalid', () => {
+  const { mergeAppStorage } = loadStorageModule();
+  const replayKey = 'prediction-ma:replay:000166:month:v1';
+  const renderer = makeReplaySnapshot(
+    '000166:month:plan-b:2026-06-30:2026-11-30:MA40',
+    '2026-07-11T00:00:00.000Z',
+    5.1,
+  );
+
+  const merged = mergeAppStorage(
+    { [replayKey]: '{invalid-persisted-json' },
+    { [replayKey]: JSON.stringify([renderer]) },
+  );
+
+  assert.deepEqual(JSON.parse(merged[replayKey]), [renderer]);
+});
+
+test('replay reconciliation deterministically preserves persisted data when both sides are malformed', () => {
+  const { mergeAppStorage } = loadStorageModule();
+  const replayKey = 'prediction-ma:replay:000166:month:v1';
+  const persisted = '{invalid-persisted-json';
+
+  const merged = mergeAppStorage(
+    { [replayKey]: persisted },
+    { [replayKey]: '{invalid-renderer-json' },
+  );
+
+  assert.equal(merged[replayKey], persisted);
+});
+
 test('replay reconciliation prefers valid timestamps and has an order-independent fallback', () => {
   const { mergeAppStorage } = loadStorageModule();
   const replayKey = 'prediction-ma:replay:000166:month:v1';
@@ -142,7 +217,7 @@ test('replay reconciliation treats the supported no-plan ID as its canonical leg
   const { mergeAppStorage } = loadStorageModule();
   const replayKey = 'prediction-ma:replay:000166:month:v1';
   const legacyId = '000166:month:2026-06-30:2026-10-31:MA40';
-  const canonicalId = '000166:month:legacy:2026-06-30:2026-10-31:MA40';
+  const canonicalId = '000166:month:owner~legacy:2026-06-30:2026-10-31:MA40';
   const fields = {
     stockCode: '000166',
     period: 'month',
@@ -179,6 +254,102 @@ test('replay reconciliation treats the supported no-plan ID as its canonical leg
   assert.equal(merged.length, 1);
   assert.equal(merged[0].id, canonicalId);
   assert.equal(merged[0].predictedClose, 5.3);
+});
+
+test('identical legacy replay buckets are still migrated to canonical owner IDs', () => {
+  const { mergeAppStorage } = loadStorageModule();
+  const replayKey = 'prediction-ma:replay:000166:month:v1';
+  const snapshot = {
+    id: '000166:month:legacy:2026-06-30:2026-10-31:MA40',
+    stockCode: '000166',
+    period: 'month',
+    baseDate: '2026-06-30',
+    targetDate: '2026-10-31',
+    inputMaWindow: 40,
+    updatedAt: '2026-07-10T00:00:00.000Z',
+  };
+  const value = JSON.stringify([snapshot]);
+
+  const merged = mergeAppStorage({ [replayKey]: value }, { [replayKey]: value });
+
+  assert.equal(
+    JSON.parse(merged[replayKey])[0].id,
+    '000166:month:owner~legacy:2026-06-30:2026-10-31:MA40',
+  );
+});
+
+test('a replay bucket present on only one side is still migrated to canonical owner IDs', () => {
+  const { mergeAppStorage } = loadStorageModule();
+  const replayKey = 'prediction-ma:replay:000166:month:v1';
+  const snapshot = {
+    id: '000166:month:legacy:2026-06-30:2026-10-31:MA40',
+    stockCode: '000166',
+    period: 'month',
+    baseDate: '2026-06-30',
+    targetDate: '2026-10-31',
+    inputMaWindow: 40,
+    updatedAt: '2026-07-10T00:00:00.000Z',
+  };
+  const value = JSON.stringify([snapshot]);
+
+  const persistedOnly = mergeAppStorage({ [replayKey]: value }, {});
+  const rendererOnly = mergeAppStorage({}, { [replayKey]: value });
+
+  assert.equal(
+    JSON.parse(persistedOnly[replayKey])[0].id,
+    '000166:month:owner~legacy:2026-06-30:2026-10-31:MA40',
+  );
+  assert.equal(
+    JSON.parse(rendererOnly[replayKey])[0].id,
+    '000166:month:owner~legacy:2026-06-30:2026-10-31:MA40',
+  );
+});
+
+test('a plan literally named legacy cannot collide with a no-plan replay snapshot', () => {
+  const { mergeAppStorage } = loadStorageModule();
+  const replayKey = 'prediction-ma:replay:000166:month:v1';
+  const collidingOldId = '000166:month:legacy:2026-06-30:2026-10-31:MA40';
+  const fields = {
+    stockCode: '000166',
+    period: 'month',
+    baseDate: '2026-06-30',
+    targetDate: '2026-10-31',
+    inputMaWindow: 40,
+  };
+
+  const merged = JSON.parse(
+    mergeAppStorage(
+      {
+        [replayKey]: JSON.stringify([
+          {
+            ...fields,
+            id: collidingOldId,
+            planId: 'legacy',
+            updatedAt: '2026-07-10T00:00:00.000Z',
+            predictedClose: 4.8,
+          },
+        ]),
+      },
+      {
+        [replayKey]: JSON.stringify([
+          {
+            ...fields,
+            id: collidingOldId,
+            updatedAt: '2026-07-11T00:00:00.000Z',
+            predictedClose: 5.1,
+          },
+        ]),
+      },
+    )[replayKey],
+  );
+
+  assert.deepEqual(
+    merged.map((snapshot) => snapshot.id).sort(),
+    [
+      '000166:month:owner~legacy:2026-06-30:2026-10-31:MA40',
+      '000166:month:owner~plan~legacy:2026-06-30:2026-10-31:MA40',
+    ].sort(),
+  );
 });
 
 test('app storage store persists snapshots and keeps rolling backups', async (t) => {

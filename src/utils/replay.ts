@@ -440,16 +440,15 @@ function normalizeReplaySnapshot(
     candidate.inputMaWindow,
     planId,
   );
-  const supportedLegacyId = planId
-    ? null
-    : buildLegacyNoPlanSnapshotId(
-        stockCode,
-        period,
-        candidate.baseDate,
-        candidate.targetDate,
-        candidate.inputMaWindow,
-      );
-  if (candidate.id !== canonicalId && candidate.id !== supportedLegacyId) {
+  const supportedIds = getSupportedReplaySnapshotIds(
+    stockCode,
+    period,
+    candidate.baseDate,
+    candidate.targetDate,
+    candidate.inputMaWindow,
+    planId,
+  );
+  if (!supportedIds.includes(candidate.id)) {
     return { snapshot: null, reason: 'id' };
   }
 
@@ -671,18 +670,39 @@ function buildReplaySnapshotId(
   planId?: string | null,
 ) {
   const normalizedCode = normalizeStockCode(stockCode);
-  const ownerId = normalizeReplayPlanId(planId) ?? 'legacy';
+  const normalizedPlanId = normalizeReplayPlanId(planId);
+  const ownerId = normalizedPlanId
+    ? `owner~plan~${encodeURIComponent(normalizedPlanId)}`
+    : 'owner~legacy';
   return `${normalizedCode}:${period}:${ownerId}:${baseDate}:${targetDate}:MA${inputMaWindow}`;
 }
 
-function buildLegacyNoPlanSnapshotId(
+function getSupportedReplaySnapshotIds(
   stockCode: string,
   period: PeriodType,
   baseDate: string,
   targetDate: string,
   inputMaWindow: MaWindow,
+  planId?: string | null,
 ) {
-  return `${normalizeStockCode(stockCode)}:${period}:${baseDate}:${targetDate}:MA${inputMaWindow}`;
+  const normalizedCode = normalizeStockCode(stockCode);
+  const normalizedPlanId = normalizeReplayPlanId(planId);
+  const suffix = `${baseDate}:${targetDate}:MA${inputMaWindow}`;
+  const canonicalId = buildReplaySnapshotId(
+    normalizedCode,
+    period,
+    baseDate,
+    targetDate,
+    inputMaWindow,
+    normalizedPlanId,
+  );
+  return normalizedPlanId
+    ? [canonicalId, `${normalizedCode}:${period}:${normalizedPlanId}:${suffix}`]
+    : [
+        canonicalId,
+        `${normalizedCode}:${period}:legacy:${suffix}`,
+        `${normalizedCode}:${period}:${suffix}`,
+      ];
 }
 
 function compareSnapshots(a: ReplaySnapshot, b: ReplaySnapshot) {
