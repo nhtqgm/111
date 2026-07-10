@@ -110,6 +110,7 @@ export function savePredictionPlans(
   plans: PredictionPlan[],
 ) {
   const normalizedStockCode = normalizeStockCode(stockCode);
+  plans.forEach((plan) => assertPredictionPlanOwnership(plan, normalizedStockCode, period));
   const normalizedPlans = plans.map((plan) =>
     normalizePredictionPlan(plan, normalizedStockCode, period, plan.predictions),
   );
@@ -376,7 +377,11 @@ function normalizePlanList(
   rows: PredictionPoint[],
 ) {
   const normalized = plans
-    .filter((plan) => !hasConflictingPlanOwnership(plan, stockCode, period))
+    .filter(
+      (plan) =>
+        isPlainPredictionPlanObject(plan) &&
+        !hasConflictingPlanOwnership(plan, stockCode, period),
+    )
     .map((plan) => normalizePredictionPlan(plan, stockCode, period, rows))
     .filter((plan) => plan.stockCode === stockCode && plan.period === period);
   return deduplicatePlanIds(normalized);
@@ -447,9 +452,18 @@ function assertPredictionPlanOwnership(
   stockCode: string,
   period: PeriodType,
 ) {
+  if (!isPlainPredictionPlanObject(value)) {
+    throw new Error('Prediction plan must be a plain object');
+  }
   if (hasConflictingPlanOwnership(value, stockCode, period)) {
     throw new Error(`Prediction plan ownership conflicts with ${stockCode}/${period}`);
   }
+}
+
+function isPlainPredictionPlanObject(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }
 
 function hasConflictingPlanOwnership(
@@ -457,20 +471,18 @@ function hasConflictingPlanOwnership(
   stockCode: string,
   period: PeriodType,
 ) {
-  if (!value || typeof value !== 'object') return false;
+  if (!isPlainPredictionPlanObject(value)) return false;
 
-  const candidate = value as Record<string, unknown>;
-  const hasStockCode = Object.prototype.hasOwnProperty.call(candidate, 'stockCode');
+  const hasStockCode = Object.prototype.hasOwnProperty.call(value, 'stockCode');
   if (
     hasStockCode &&
-    (typeof candidate.stockCode !== 'string' ||
-      normalizeStockCode(candidate.stockCode) !== stockCode)
+    (typeof value.stockCode !== 'string' || normalizeStockCode(value.stockCode) !== stockCode)
   ) {
     return true;
   }
 
-  const hasPeriod = Object.prototype.hasOwnProperty.call(candidate, 'period');
-  return hasPeriod && (!isPeriodType(candidate.period) || candidate.period !== period);
+  const hasPeriod = Object.prototype.hasOwnProperty.call(value, 'period');
+  return hasPeriod && (!isPeriodType(value.period) || value.period !== period);
 }
 
 function queuePredictionPlanStorageSync() {

@@ -103,6 +103,20 @@ test('loadPredictionPlans rejects wrong-period stored plans instead of reassigni
   assert.equal(result.plans[0].period, 'month');
 });
 
+test('loadPredictionPlans rejects malformed stored entries without fabricating plans', () => {
+  const storage = new MemoryStorage();
+  installStorage(storage);
+  const ownedPlan = makePlan(0);
+  storage.setItem(
+    getPredictionPlansKey('000166', 'month'),
+    JSON.stringify([ownedPlan, null, 'not-a-plan', 42, true, []]),
+  );
+
+  const result = loadPredictionPlans('000166', 'month', '2026-01-31', [], 0);
+
+  assert.deepEqual(result.plans, [ownedPlan]);
+});
+
 test('loadPredictionPlans preserves all existing plans beyond the creation limit', () => {
   const storage = new MemoryStorage();
   installStorage(storage);
@@ -114,7 +128,9 @@ test('loadPredictionPlans preserves all existing plans beyond the creation limit
 
   const result = loadPredictionPlans('000166', 'month', '2026-01-31', [], 0);
 
-  assert.equal(result.plans.length, 31);
+  assert.equal(result.plans.length, PLAN_LIMIT + 1);
+  assert.deepEqual(result.plans, storedPlans);
+  assert.equal(hasPredictionPlanCapacity(result.plans.slice(0, PLAN_LIMIT - 1)), true);
   assert.equal(hasPredictionPlanCapacity(result.plans.slice(0, PLAN_LIMIT)), false);
   assert.equal(hasPredictionPlanCapacity(result.plans), false);
 });
@@ -189,36 +205,65 @@ test('plan and active-plan saves queue complete Electron snapshots', async () =>
 test('savePredictionPlans writes every supplied plan beyond the creation limit', async () => {
   const storage = new MemoryStorage();
   installStorage(storage);
-  const plans = Array.from({ length: 31 }, (_, index) => makePlan(index));
+  const plans = Array.from({ length: PLAN_LIMIT + 1 }, (_, index) => makePlan(index));
   const planKey = getPredictionPlansKey('000166', 'month');
 
   await savePredictionPlans('000166', 'month', plans);
 
-  assert.equal(JSON.parse(storage.getItem(planKey) ?? '[]').length, 31);
+  const savedPlans = JSON.parse(storage.getItem(planKey) ?? '[]');
+  assert.equal(savedPlans.length, PLAN_LIMIT + 1);
+  assert.deepEqual(savedPlans, plans);
 });
 
 test('savePredictionPlans rejects conflicting supplied ownership without writing', () => {
   const storage = new MemoryStorage();
   installStorage(storage);
   const planKey = getPredictionPlansKey('000166', 'month');
+  const existingRaw = JSON.stringify([makePlan(1)]);
+  storage.setItem(planKey, existingRaw);
   const foreignPlan = makePlan(0, { stockCode: '600000' });
 
   assert.throws(
     () => savePredictionPlans('000166', 'month', [foreignPlan]),
     /ownership/i,
   );
-  assert.equal(storage.getItem(planKey), null);
+  assert.equal(storage.getItem(planKey), existingRaw);
 });
 
 test('savePredictionPlans rejects a conflicting supplied period without writing', () => {
   const storage = new MemoryStorage();
   installStorage(storage);
   const planKey = getPredictionPlansKey('000166', 'month');
+  const existingRaw = JSON.stringify([makePlan(1)]);
+  storage.setItem(planKey, existingRaw);
   const wrongPeriodPlan = makePlan(0, { period: 'day' });
 
   assert.throws(
     () => savePredictionPlans('000166', 'month', [wrongPeriodPlan]),
     /ownership/i,
   );
-  assert.equal(storage.getItem(planKey), null);
+  assert.equal(storage.getItem(planKey), existingRaw);
+});
+
+test('savePredictionPlans rejects malformed entries without changing existing storage', () => {
+  const malformedEntries: unknown[] = [null, 'not-a-plan', 42, true, []];
+
+  for (const malformedEntry of malformedEntries) {
+    const storage = new MemoryStorage();
+    installStorage(storage);
+    const planKey = getPredictionPlansKey('000166', 'month');
+    const existingRaw = JSON.stringify([makePlan(1)]);
+    storage.setItem(planKey, existingRaw);
+
+    assert.throws(
+      () =>
+        savePredictionPlans(
+          '000166',
+          'month',
+          [malformedEntry] as unknown as PredictionPlan[],
+        ),
+      /plain object/i,
+    );
+    assert.equal(storage.getItem(planKey), existingRaw);
+  }
 });
