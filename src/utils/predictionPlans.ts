@@ -1,4 +1,5 @@
 import type { KLinePoint, PeriodType, PredictionPoint } from '../types.ts';
+import { queueElectronStorageSync } from './electronStorage.ts';
 import { MA40_WINDOW, MA_WINDOWS, type MaWindow } from './movingAverage.ts';
 import {
   generatePredictionRows,
@@ -43,6 +44,10 @@ const PLAN_STORAGE_VERSION = 'v1';
 const DEFAULT_PLAN_NAME = '默认方案';
 export const PLAN_LIMIT = 30;
 
+export function hasPredictionPlanCapacity(plans: PredictionPlan[]) {
+  return plans.length < PLAN_LIMIT;
+}
+
 export function getPredictionPlansKey(stockCode: string, period: PeriodType) {
   return `prediction-ma:plans:${normalizeStockCode(stockCode)}:${period}:${PLAN_STORAGE_VERSION}`;
 }
@@ -72,19 +77,18 @@ export function loadPredictionPlans(
   const resolvedPlans = plans.length
     ? plans
     : [createDefaultPlan(normalizedStockCode, period, rows, 'manual')];
-  const limitedPlans = limitPlans(resolvedPlans);
   const activePlanId = resolveActivePlanId(
-    limitedPlans,
+    resolvedPlans,
     loadActivePlanId(normalizedStockCode, period),
   );
 
   if (migrated) {
-    savePredictionPlans(normalizedStockCode, period, limitedPlans);
-    saveActivePlanId(normalizedStockCode, period, activePlanId);
+    void savePredictionPlans(normalizedStockCode, period, resolvedPlans);
+    void saveActivePlanId(normalizedStockCode, period, activePlanId);
   }
 
   return {
-    plans: limitedPlans,
+    plans: resolvedPlans,
     activePlanId,
     migrated,
   };
@@ -97,6 +101,7 @@ export function loadActivePlanId(stockCode: string, period: PeriodType) {
 
 export function saveActivePlanId(stockCode: string, period: PeriodType, activePlanId: string) {
   localStorage.setItem(getActivePlanKey(stockCode, period), activePlanId);
+  return queuePredictionPlanStorageSync();
 }
 
 export function savePredictionPlans(
@@ -105,14 +110,15 @@ export function savePredictionPlans(
   plans: PredictionPlan[],
 ) {
   const normalizedStockCode = normalizeStockCode(stockCode);
-  const normalizedPlans = plans
-    .filter((plan) => plan.stockCode === normalizedStockCode && plan.period === period)
-    .map((plan) => normalizePredictionPlan(plan, normalizedStockCode, period, plan.predictions));
+  const normalizedPlans = plans.map((plan) =>
+    normalizePredictionPlan(plan, normalizedStockCode, period, plan.predictions),
+  );
 
   localStorage.setItem(
     getPredictionPlansKey(normalizedStockCode, period),
-    JSON.stringify(limitPlans(normalizedPlans)),
+    JSON.stringify(normalizedPlans),
   );
+  return queuePredictionPlanStorageSync();
 }
 
 export function createDefaultPlan(
@@ -225,6 +231,8 @@ export function normalizePredictionPlan(
   period: PeriodType,
   rows: PredictionPoint[],
 ): PredictionPlan {
+  const normalizedStockCode = normalizeStockCode(stockCode);
+  assertPredictionPlanOwnership(value, normalizedStockCode, period);
   const candidate = value as Partial<PredictionPlan> | null;
   const now = new Date().toISOString();
   const inputMaWindow = normalizeMaWindow(candidate?.inputMaWindow);
@@ -233,7 +241,7 @@ export function normalizePredictionPlan(
   return {
     id: typeof candidate?.id === 'string' && candidate.id.trim() ? candidate.id : createPlanId(),
     name: normalizePlanName(candidate?.name ?? DEFAULT_PLAN_NAME),
-    stockCode: normalizeStockCode(stockCode),
+    stockCode: normalizedStockCode,
     period,
     inputMaWindow,
     predictions: syncPredictionRows(savedRows, rows),
@@ -293,8 +301,15 @@ export function normalizePredictionPlanExport(value: unknown): PredictionPlanExp
     typeof candidate.stockCode !== 'string' ||
     !isPeriodType(candidate.period) ||
     typeof candidate.baseDate !== 'string' ||
-    !candidate.plan
+    !candidate.plan ||
+    typeof candidate.plan !== 'object' ||
+    Array.isArray(candidate.plan)
   ) {
+    return null;
+  }
+
+  const normalizedStockCode = normalizeStockCode(candidate.stockCode);
+  if (hasConflictingPlanOwnership(candidate.plan, normalizedStockCode, candidate.period)) {
     return null;
   }
 
@@ -304,12 +319,16 @@ export function normalizePredictionPlanExport(value: unknown): PredictionPlanExp
       typeof candidate.exportedAt === 'string'
         ? candidate.exportedAt
         : new Date().toISOString(),
-    stockCode: normalizeStockCode(candidate.stockCode),
+    stockCode: normalizedStockCode,
     stockName: typeof candidate.stockName === 'string' ? candidate.stockName : undefined,
     period: candidate.period,
     baseDate: candidate.baseDate,
     appVersion: typeof candidate.appVersion === 'string' ? candidate.appVersion : undefined,
-    plan: candidate.plan as PredictionPlan,
+    plan: {
+      ...candidate.plan,
+      stockCode: normalizedStockCode,
+      period: candidate.period,
+    },
   };
 }
 
@@ -357,6 +376,7 @@ function normalizePlanList(
   rows: PredictionPoint[],
 ) {
   const normalized = plans
+    .filter((plan) => !hasConflictingPlanOwnership(plan, stockCode, period))
     .map((plan) => normalizePredictionPlan(plan, stockCode, period, rows))
     .filter((plan) => plan.stockCode === stockCode && plan.period === period);
   return deduplicatePlanIds(normalized);
@@ -422,11 +442,40 @@ function deduplicatePlanIds(plans: PredictionPlan[]) {
   });
 }
 
-function limitPlans(plans: PredictionPlan[]) {
-  return [...plans]
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-    .slice(0, PLAN_LIMIT)
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+function assertPredictionPlanOwnership(
+  value: unknown,
+  stockCode: string,
+  period: PeriodType,
+) {
+  if (hasConflictingPlanOwnership(value, stockCode, period)) {
+    throw new Error(`Prediction plan ownership conflicts with ${stockCode}/${period}`);
+  }
+}
+
+function hasConflictingPlanOwnership(
+  value: unknown,
+  stockCode: string,
+  period: PeriodType,
+) {
+  if (!value || typeof value !== 'object') return false;
+
+  const candidate = value as Record<string, unknown>;
+  const hasStockCode = Object.prototype.hasOwnProperty.call(candidate, 'stockCode');
+  if (
+    hasStockCode &&
+    (typeof candidate.stockCode !== 'string' ||
+      normalizeStockCode(candidate.stockCode) !== stockCode)
+  ) {
+    return true;
+  }
+
+  const hasPeriod = Object.prototype.hasOwnProperty.call(candidate, 'period');
+  return hasPeriod && (!isPeriodType(candidate.period) || candidate.period !== period);
+}
+
+function queuePredictionPlanStorageSync() {
+  if (typeof window === 'undefined') return Promise.resolve();
+  return queueElectronStorageSync(localStorage, window.appStorageApi);
 }
 
 function legacyPredictionPlanKey(stockCode: string, period: PeriodType, baseDate: string) {
