@@ -774,6 +774,46 @@ test('saving replay snapshots queues Electron persistence', async () => {
   ]);
 });
 
+test('legacy replay label defaults and saves per stock and period', async () => {
+  const storage = new MemoryStorage();
+  installStorage(storage);
+
+  assert.equal(replay.loadLegacyReplayLabel('000166', 'month'), '未归属历史');
+
+  await replay.saveLegacyReplayLabel('000166', 'month', '  早期预测  ');
+
+  assert.equal(replay.loadLegacyReplayLabel('000166', 'month'), '早期预测');
+  assert.equal(replay.loadLegacyReplayLabel('000166', 'week'), '未归属历史');
+  assert.equal(replay.loadLegacyReplayLabel('600000', 'month'), '未归属历史');
+});
+
+test('legacy replay label normalization rejects blank values and limits display length', () => {
+  assert.equal(replay.normalizeLegacyReplayLabel('   '), '未归属历史');
+  assert.equal(replay.normalizeLegacyReplayLabel(null), '未归属历史');
+  assert.equal(replay.normalizeLegacyReplayLabel('123456789012345678901234567890123'), '123456789012345678901234567890');
+});
+
+test('saving a legacy replay label queues Electron persistence', async () => {
+  const storage = new MemoryStorage();
+  const saved: Record<string, string>[] = [];
+  installStorage(storage, {
+    async bootstrap(snapshot) {
+      return snapshot;
+    },
+    async save(snapshot) {
+      saved.push(snapshot);
+    },
+  });
+
+  await replay.saveLegacyReplayLabel('000166', 'month', '历史方案组');
+
+  assert.equal(saved.length, 1);
+  assert.equal(
+    saved[0]['prediction-ma:replay-legacy-label:000166:month:v1'],
+    '历史方案组',
+  );
+});
+
 test('snapshot captures the plan note instead of a legacy row note', () => {
   const snapshots = replay.createReplaySnapshotsFromProjection({
     stockCode: '000166',

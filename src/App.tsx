@@ -52,10 +52,13 @@ import {
 import {
   buildReplayReviewRows,
   createReplaySnapshotsFromProjection,
+  DEFAULT_LEGACY_REPLAY_LABEL,
   filterReplayRowsByPlan,
+  loadLegacyReplayLabel,
   loadReplaySnapshots,
   mergeReplaySnapshots,
   resolveReplayPlanFilter,
+  saveLegacyReplayLabel,
   saveReplaySnapshots,
   summarizeReplayRows,
   type ReplayPlanFilter,
@@ -154,6 +157,7 @@ export default function App() {
   const [error, setError] = useState('');
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [replaySnapshots, setReplaySnapshots] = useState<ReplaySnapshot[]>([]);
+  const [legacyReplayLabel, setLegacyReplayLabel] = useState(DEFAULT_LEGACY_REPLAY_LABEL);
   const [updateState, setUpdateState] = useState<UpdateState>({
     status: 'idle',
     currentVersion: appVersion,
@@ -217,6 +221,7 @@ export default function App() {
     setPlansWorkspaceKey(null);
     setActivePlanId(null);
     setReplaySnapshots([]);
+    setLegacyReplayLabel(DEFAULT_LEGACY_REPLAY_LABEL);
 
     if (!cached) {
       setBaseDate(todayDate);
@@ -316,10 +321,12 @@ export default function App() {
       dataWorkspaceKey !== requestedWorkspaceKey
     ) {
       setReplaySnapshots([]);
+      setLegacyReplayLabel(DEFAULT_LEGACY_REPLAY_LABEL);
       return;
     }
 
     setReplaySnapshots(loadReplaySnapshots(data.code, period));
+    setLegacyReplayLabel(loadLegacyReplayLabel(data.code, period));
   }, [data, dataWorkspaceKey, period, requestedWorkspaceKey]);
 
   useEffect(() => {
@@ -473,6 +480,7 @@ export default function App() {
     setPlansWorkspaceKey(null);
     setActivePlanId(null);
     setReplaySnapshots([]);
+    setLegacyReplayLabel(DEFAULT_LEGACY_REPLAY_LABEL);
     setDetailTargetDate(null);
     setReplayDetailId(null);
     setHasUnsavedChanges(false);
@@ -779,6 +787,28 @@ export default function App() {
     const renamed = renamePredictionPlan(activePlan, name, plans);
     setPlans((current) => current.map((plan) => (plan.id === activePlan.id ? renamed : plan)));
     showToast(`方案已重命名：${renamed.name}`, 'success');
+  }
+
+  async function renameLegacyReplayGroup() {
+    if (
+      backupRestoreInProgressRef.current ||
+      !loadedWorkspaceReady ||
+      !data ||
+      !hasLegacyReplayRows
+    ) {
+      return;
+    }
+
+    const name = window.prompt('请输入未归属历史的新名称', legacyReplayLabel);
+    if (name === null || !name.trim()) return;
+
+    try {
+      const savedLabel = await saveLegacyReplayLabel(data.code, period, name);
+      setLegacyReplayLabel(savedLabel);
+      showToast(`已重命名为：${savedLabel}`, 'success');
+    } catch {
+      showToast('名称保存失败，请重试', 'warning');
+    }
   }
 
   function deleteActivePlan() {
@@ -1522,7 +1552,9 @@ export default function App() {
           planOptions={replayPlanOptions}
           activePlanId={replayActivePlanId}
           hasLegacyRows={hasLegacyReplayRows}
+          legacyReplayLabel={legacyReplayLabel}
           onPlanFilterChange={setReplayPlanFilter}
+          onRenameLegacyReplayLabel={renameLegacyReplayGroup}
           selectedRow={replayDetailRow}
           onSelectRow={setReplayDetailId}
           onClose={() => {
@@ -1639,7 +1671,9 @@ function ReplayReviewModal({
   planOptions,
   activePlanId,
   hasLegacyRows,
+  legacyReplayLabel,
   onPlanFilterChange,
+  onRenameLegacyReplayLabel,
   selectedRow,
   onSelectRow,
   onClose,
@@ -1651,7 +1685,9 @@ function ReplayReviewModal({
   planOptions: Array<{ id: string; name: string }>;
   activePlanId: string | null;
   hasLegacyRows: boolean;
+  legacyReplayLabel: string;
   onPlanFilterChange: (filter: ReplayPlanFilter) => void;
+  onRenameLegacyReplayLabel: () => void;
   selectedRow: ReplayReviewRow | null;
   onSelectRow: (id: string | null) => void;
   onClose: () => void;
@@ -1673,22 +1709,33 @@ function ReplayReviewModal({
 
         <div className="replay-modal-body">
           <div className="replay-filter-bar">
-            <label className="replay-filter-field">
-              <span>复盘范围</span>
-              <select
-                value={planFilter}
-                onChange={(event) => onPlanFilterChange(event.target.value as ReplayPlanFilter)}
-              >
-                <option value="active">当前方案：{activePlanName}</option>
-                <option value="all">全部方案</option>
-                {planOptions.map((plan) => (
-                  <option key={plan.id} value={`plan:${plan.id}`}>
-                    {plan.name}
-                  </option>
-                ))}
-                {hasLegacyRows ? <option value="legacy">未归属历史</option> : null}
-              </select>
-            </label>
+            <div className="replay-filter-controls">
+              <label className="replay-filter-field">
+                <span>复盘范围</span>
+                <select
+                  value={planFilter}
+                  onChange={(event) => onPlanFilterChange(event.target.value as ReplayPlanFilter)}
+                >
+                  <option value="active">当前方案：{activePlanName}</option>
+                  <option value="all">全部方案</option>
+                  {planOptions.map((plan) => (
+                    <option key={plan.id} value={`plan:${plan.id}`}>
+                      {plan.name}
+                    </option>
+                  ))}
+                  {hasLegacyRows ? <option value="legacy">{legacyReplayLabel}</option> : null}
+                </select>
+              </label>
+              {hasLegacyRows ? (
+                <button
+                  type="button"
+                  className="ghost replay-legacy-rename"
+                  onClick={onRenameLegacyReplayLabel}
+                >
+                  重命名
+                </button>
+              ) : null}
+            </div>
             <div className="replay-filter-note">
               当前显示 {summary.total} 条 / 全部 {totalSummary.total} 条
             </div>
@@ -1737,7 +1784,7 @@ function ReplayReviewModal({
               rows.map((row) => (
                 <div className="replay-row" key={row.id}>
                   <span className="date-cell">{row.targetDate}</span>
-                  <span>{formatReplaySource(row)}</span>
+                  <span>{formatReplaySource(row, legacyReplayLabel)}</span>
                   <span className={`replay-status ${row.status}`}>
                     {row.status === 'ready' ? '已复盘' : '待真实K线'}
                   </span>
@@ -1858,8 +1905,8 @@ function sumCalculationValues(values: Array<{ value: number }>) {
   return values.length ? values.reduce((total, item) => total + item.value, 0) : null;
 }
 
-function formatReplaySource(row: ReplayReviewRow) {
-  const planName = row.planName?.trim() || (row.planId ? '历史方案' : '未归属历史');
+function formatReplaySource(row: ReplayReviewRow, legacyReplayLabel: string) {
+  const planName = row.planId ? row.planName?.trim() || '历史方案' : legacyReplayLabel;
   return `${planName} / MA${row.inputMaWindow} / ${row.baseDate}`;
 }
 

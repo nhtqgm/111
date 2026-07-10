@@ -964,6 +964,13 @@ h2 {
   padding: 10px 12px;
 }
 
+.replay-filter-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .replay-filter-field {
   display: flex;
   align-items: center;
@@ -982,6 +989,12 @@ h2 {
   color: #0b1a21;
   padding: 7px 10px;
   font-weight: 900;
+}
+
+.replay-legacy-rename {
+  flex: 0 0 auto;
+  min-height: 34px;
+  padding: 6px 10px;
 }
 
 .replay-filter-note {
@@ -1414,6 +1427,26 @@ h2 {
   .replay-close-card,
   .replay-ma-grid {
     grid-template-columns: 1fr;
+  }
+
+  .replay-filter-bar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .replay-filter-controls,
+  .replay-filter-field {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .replay-filter-field select {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .replay-filter-note {
+    text-align: left;
   }
 
   .metric {

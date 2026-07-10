@@ -8,6 +8,9 @@ import {
 } from './movingAverage.ts';
 
 export const REPLAY_SNAPSHOT_SCHEMA = 'gupiao-replay-snapshots/v1';
+export const DEFAULT_LEGACY_REPLAY_LABEL = '未归属历史';
+
+const MAX_LEGACY_REPLAY_LABEL_LENGTH = 30;
 
 export type ReplayDirection = 'up' | 'down' | 'flat';
 export type ReplayStatus = 'ready' | 'pending';
@@ -96,6 +99,24 @@ export function filterReplayRowsByPlan(
 
   const planId = filter.slice('plan:'.length);
   return rows.filter((row) => row.planId === planId);
+}
+
+export function normalizeLegacyReplayLabel(value: unknown) {
+  const normalized =
+    typeof value === 'string' ? value.trim().slice(0, MAX_LEGACY_REPLAY_LABEL_LENGTH) : '';
+  return normalized || DEFAULT_LEGACY_REPLAY_LABEL;
+}
+
+export function loadLegacyReplayLabel(stockCode: string, period: PeriodType) {
+  return normalizeLegacyReplayLabel(
+    localStorage.getItem(legacyReplayLabelStorageKey(stockCode, period)),
+  );
+}
+
+export function saveLegacyReplayLabel(stockCode: string, period: PeriodType, label: string) {
+  const normalized = normalizeLegacyReplayLabel(label);
+  localStorage.setItem(legacyReplayLabelStorageKey(stockCode, period), normalized);
+  return queueElectronStorageSync().then(() => normalized);
 }
 
 /**
@@ -565,6 +586,10 @@ function averageAbsolute(values: number[]) {
 
 function replayStorageKey(stockCode: string, period: PeriodType) {
   return `prediction-ma:replay:${normalizeStockCode(stockCode)}:${period}:v1`;
+}
+
+function legacyReplayLabelStorageKey(stockCode: string, period: PeriodType) {
+  return `prediction-ma:replay-legacy-label:${normalizeStockCode(stockCode)}:${period}:v1`;
 }
 
 interface ReplayCalendarDate {
