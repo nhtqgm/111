@@ -1,5 +1,6 @@
 const { app, BrowserWindow, ipcMain, shell, net } = require('electron');
 const path = require('node:path');
+const { createAppStorageStore } = require('./app-storage.cjs');
 
 const KLT = {
   day: 101,
@@ -20,6 +21,7 @@ const DEFAULT_BEGIN = {
 };
 
 const REMOTE_APP_URL = 'https://nhtqgm.github.io/111/';
+let appStorageStore = null;
 
 const QUOTE_SOURCES = [
   { name: '腾讯不复权', provider: 'tencent', adjust: 'bfq' },
@@ -275,8 +277,32 @@ async function fetchKLines(_event, rawCode, period) {
   throw new Error(`Quote data request failed after ${QUOTE_SOURCES.length} sources: ${errors.join('; ')}`);
 }
 
-function createWindow() {
+async function migrateLegacyBundledStorage(mainWindow, localIndex) {
+  if (!appStorageStore || !(await appStorageStore.needsLegacyMigration())) return true;
+
+  try {
+    await mainWindow.loadFile(localIndex);
+    const snapshot = await mainWindow.webContents.executeJavaScript(`(() => {
+      const result = {};
+      for (let index = 0; index < localStorage.length; index += 1) {
+        const key = localStorage.key(index);
+        if (!key || (!key.startsWith('prediction-ma40:') && !key.startsWith('prediction-ma:'))) continue;
+        const value = localStorage.getItem(key);
+        if (value !== null) result[key] = value;
+      }
+      return result;
+    })()`);
+    await appStorageStore.completeLegacyMigration(snapshot);
+    return true;
+  } catch (error) {
+    console.error('Legacy app storage migration failed:', error);
+    return false;
+  }
+}
+
+async function createWindow() {
   const mainWindow = new BrowserWindow({
+    show: false,
     width: 1440,
     height: 960,
     minWidth: 1180,
@@ -290,18 +316,25 @@ function createWindow() {
   });
 
   mainWindow.removeMenu();
-  loadApp(mainWindow);
-
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
     return { action: 'deny' };
   });
+
+  await loadApp(mainWindow);
+  mainWindow.show();
 }
 
 async function loadApp(mainWindow) {
   const localIndex = path.join(__dirname, '..', 'dist', 'index.html');
 
   if (!app.isPackaged) {
+    await mainWindow.loadFile(localIndex);
+    return;
+  }
+
+  const migrationReady = await migrateLegacyBundledStorage(mainWindow, localIndex);
+  if (!migrationReady) {
     await mainWindow.loadFile(localIndex);
     return;
   }
@@ -319,7 +352,14 @@ async function loadApp(mainWindow) {
   await mainWindow.loadFile(localIndex);
 }
 
-app.whenReady().then(() => {
+function assertTrustedRenderer(event) {
+  const rendererUrl = event.senderFrame?.url || event.sender.getURL();
+  if (rendererUrl.startsWith('file://') || rendererUrl.startsWith(REMOTE_APP_URL)) return;
+  throw new Error('Untrusted renderer cannot access application storage.');
+}
+
+app.whenReady().then(async () => {
+  appStorageStore = createAppStorageStore(path.join(app.getPath('userData'), 'app-data'));
   ipcMain.handle('eastmoney:fetchKLines', fetchKLines);
   ipcMain.handle('app:getVersion', () => app.getVersion());
   ipcMain.handle('app:openExternal', (_event, url) => {
@@ -329,10 +369,18 @@ app.whenReady().then(() => {
     }
     return shell.openExternal(target);
   });
-  createWindow();
+  ipcMain.handle('app-storage:bootstrap', async (event, storage) => {
+    assertTrustedRenderer(event);
+    return appStorageStore.bootstrap(storage);
+  });
+  ipcMain.handle('app-storage:save', async (event, storage) => {
+    assertTrustedRenderer(event);
+    await appStorageStore.replace(storage);
+  });
+  await createWindow();
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    if (BrowserWindow.getAllWindows().length === 0) void createWindow();
   });
 });
 

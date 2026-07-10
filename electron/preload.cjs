@@ -8,3 +8,8 @@ contextBridge.exposeInMainWorld('appUpdateApi', {
   getCurrentVersion: () => ipcRenderer.invoke('app:getVersion'),
   openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
 });
+
+contextBridge.exposeInMainWorld('appStorageApi', {
+  bootstrap: (storage) => ipcRenderer.invoke('app-storage:bootstrap', storage),
+  save: (storage) => ipcRenderer.invoke('app-storage:save', storage),
+});

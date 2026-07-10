@@ -1,4 +1,5 @@
 import type { KLinePoint, PeriodType, PredictionPoint, StockKLineResponse } from '../types';
+import { queueElectronStorageSync } from './electronStorage.ts';
 
 export interface WorkspaceCache {
   stockCode: string;
@@ -28,6 +29,7 @@ export function loadPredictions(key: string): PredictionPoint[] | null {
 
 export function savePredictions(key: string, rows: PredictionPoint[]) {
   localStorage.setItem(key, JSON.stringify(rows));
+  void queueElectronStorageSync();
 }
 
 export function loadPredictionRows(
@@ -82,6 +84,7 @@ export function loadWorkspaceCache(): WorkspaceCache | null {
 
 export function saveWorkspaceCache(cache: WorkspaceCache) {
   localStorage.setItem(WORKSPACE_CACHE_KEY, JSON.stringify(cache));
+  void queueElectronStorageSync();
 }
 
 export interface KLineDataCache {
@@ -121,6 +124,7 @@ export function saveKLineCache(data: StockKLineResponse, period: PeriodType) {
   };
 
   localStorage.setItem(kLineCacheKey(data.code, period), JSON.stringify(cache));
+  void queueElectronStorageSync();
 }
 
 export function generatePredictionRows(

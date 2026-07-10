@@ -7,6 +7,7 @@ import KLineChart, {
 import { fetchKLines } from './services/eastmoney';
 import type { PeriodType, PredictionPoint, StockKLineResponse } from './types';
 import { filterCompletedKLineData } from './utils/completedPeriods';
+import { persistElectronStorage } from './utils/electronStorage';
 import { compareProjectionRows, formatNumber, summarizeComparisons } from './utils/metrics';
 import {
   buildMa40Projection,
@@ -559,6 +560,7 @@ export default function App() {
       const backup = normalizeFullBackupFile(rawFile);
       if (backup) {
         restoreAppStorage(backup.storage);
+        await persistElectronStorage();
         showToast(`已导入全部本地数据：${Object.keys(backup.storage).length}项，正在刷新`, 'success');
         window.setTimeout(() => window.location.reload(), 500);
         return;

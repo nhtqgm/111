@@ -11,5 +11,9 @@ declare global {
       getCurrentVersion: () => Promise<string>;
       openExternal: (url: string) => Promise<void>;
     };
+    appStorageApi?: {
+      bootstrap: (storage: Record<string, string>) => Promise<Record<string, string>>;
+      save: (storage: Record<string, string>) => Promise<void>;
+    };
   }
 }
