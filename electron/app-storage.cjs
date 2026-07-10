@@ -81,7 +81,38 @@ function chooseReplaySnapshot(existingSnapshot, incomingSnapshot) {
     : existingSnapshot;
 }
 
+function encodeReplayPlanId(value) {
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const nextCodeUnit = value.charCodeAt(index + 1);
+      if (
+        index + 1 >= value.length ||
+        nextCodeUnit < 0xdc00 ||
+        nextCodeUnit > 0xdfff
+      ) {
+        return null;
+      }
+      index += 1;
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      return null;
+    }
+  }
+
+  try {
+    return encodeURIComponent(value);
+  } catch {
+    return null;
+  }
+}
+
 function getReplaySnapshotIdentity(snapshot) {
+  const planId = typeof snapshot.planId === 'string' && snapshot.planId.trim()
+    ? snapshot.planId.trim()
+    : null;
+  const encodedPlanId = planId ? encodeReplayPlanId(planId) : null;
+  if (planId && encodedPlanId === null) return null;
+
   if (
     typeof snapshot.stockCode !== 'string' ||
     !['day', 'week', 'month'].includes(snapshot.period) ||
@@ -95,11 +126,8 @@ function getReplaySnapshotIdentity(snapshot) {
   }
 
   const stockCode = snapshot.stockCode.replace(/\D/g, '').slice(0, 6);
-  const planId = typeof snapshot.planId === 'string' && snapshot.planId.trim()
-    ? snapshot.planId.trim()
-    : null;
   const suffix = `${snapshot.baseDate}:${snapshot.targetDate}:MA${snapshot.inputMaWindow}`;
-  const ownerId = planId ? `owner~plan~${encodeURIComponent(planId)}` : 'owner~legacy';
+  const ownerId = encodedPlanId ? `owner~plan~${encodedPlanId}` : 'owner~legacy';
   const canonicalId = `${stockCode}:${snapshot.period}:${ownerId}:${suffix}`;
   const supportedIds = planId
     ? [`${stockCode}:${snapshot.period}:${planId}:${suffix}`]
@@ -137,6 +165,7 @@ function reconcileReplayStorage(existingValue, incomingValue) {
   const byId = new Map();
   snapshots.forEach((snapshot) => {
     const id = getReplaySnapshotIdentity(snapshot);
+    if (id === null) return;
     const normalizedSnapshot = id === snapshot.id ? snapshot : { ...snapshot, id };
     const current = byId.get(id);
     byId.set(id, current ? chooseReplaySnapshot(current, normalizedSnapshot) : normalizedSnapshot);

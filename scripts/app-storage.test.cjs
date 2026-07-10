@@ -352,6 +352,64 @@ test('a plan literally named legacy cannot collide with a no-plan replay snapsho
   );
 });
 
+test('replay reconciliation rejects only a sibling with an unpaired-surrogate plan ID', () => {
+  const { mergeAppStorage } = loadStorageModule();
+  const replayKey = 'prediction-ma:replay:000166:month:v1';
+  const malformedPlanId = `broken-${String.fromCharCode(0xd800)}`;
+  const valid = {
+    id: '000166:month:plan-a:2026-06-30:2026-10-31:MA40',
+    stockCode: '000166',
+    period: 'month',
+    planId: 'plan-a',
+    baseDate: '2026-06-30',
+    targetDate: '2026-10-31',
+    inputMaWindow: 40,
+    updatedAt: '2026-07-10T00:00:00.000Z',
+  };
+  const malformed = {
+    ...valid,
+    id: `000166:month:${malformedPlanId}:2026-06-30:2026-11-30:MA40`,
+    planId: malformedPlanId,
+    targetDate: '2026-11-30',
+  };
+
+  const merged = mergeAppStorage(
+    { [replayKey]: JSON.stringify([valid, malformed]) },
+    { [replayKey]: '[]' },
+  );
+  const snapshots = JSON.parse(merged[replayKey]);
+
+  assert.equal(snapshots.length, 1);
+  assert.equal(snapshots[0].targetDate, '2026-10-31');
+  assert.equal(
+    snapshots[0].id,
+    '000166:month:owner~plan~plan-a:2026-06-30:2026-10-31:MA40',
+  );
+});
+
+test('unpaired-surrogate plan IDs are rejected before incomplete identity fields are used', () => {
+  const { mergeAppStorage } = loadStorageModule();
+  const replayKey = 'prediction-ma:replay:000166:month:v1';
+  const malformedPlanId = `broken-${String.fromCharCode(0xd800)}`;
+  const valid = makeReplaySnapshot(
+    '000166:month:plan-a:2026-06-30:2026-10-31:MA40',
+    '2026-07-10T00:00:00.000Z',
+    4.8,
+  );
+  const malformed = {
+    id: 'malformed-incomplete-snapshot',
+    planId: malformedPlanId,
+    updatedAt: '2026-07-11T00:00:00.000Z',
+  };
+
+  const merged = mergeAppStorage(
+    { [replayKey]: JSON.stringify([valid, malformed]) },
+    { [replayKey]: '[]' },
+  );
+
+  assert.deepEqual(JSON.parse(merged[replayKey]), [valid]);
+});
+
 test('app storage store persists snapshots and keeps rolling backups', async (t) => {
   const { createAppStorageStore } = loadStorageModule();
   assert.equal(typeof createAppStorageStore, 'function');

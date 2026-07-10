@@ -430,6 +430,28 @@ test('plan owner IDs encode plan identifiers inside the canonical segment', () =
   );
 });
 
+test('load rejects only the snapshot whose plan ID has an unpaired surrogate', () => {
+  const storage = new MemoryStorage();
+  installStorage(storage);
+  const malformedPlanId = `broken-${String.fromCharCode(0xd800)}`;
+  const valid = makeSnapshot();
+  const malformed = makeSnapshot({
+    id: `000166:month:${malformedPlanId}:2026-06-30:2026-11-30:MA40`,
+    planId: malformedPlanId,
+    targetDate: '2026-11-30',
+  });
+  storage.setItem(getReplayStorageKey(), JSON.stringify([valid, malformed]));
+
+  const loaded = replay.loadReplaySnapshots('000166', 'month');
+
+  assert.equal(loaded.length, 1);
+  assert.equal(loaded[0].targetDate, '2026-10-31');
+  assert.equal(
+    loaded[0].id,
+    '000166:month:owner~plan~plan-a:2026-06-30:2026-10-31:MA40',
+  );
+});
+
 test('load deduplicates canonical snapshot IDs by valid updatedAt regardless of array order', () => {
   const older = makeSnapshot({
     predictedClose: 4.8,

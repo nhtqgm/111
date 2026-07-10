@@ -432,6 +432,9 @@ function normalizeReplaySnapshot(
   }
 
   const planId = normalizeReplayPlanId(candidate.planId);
+  if (planId && encodeReplayPlanId(planId) === null) {
+    return { snapshot: null, reason: 'invalid' };
+  }
   const canonicalId = buildReplaySnapshotId(
     stockCode,
     period,
@@ -661,6 +664,31 @@ function normalizeReplayPlanId(value: unknown) {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
+function encodeReplayPlanId(value: string) {
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const nextCodeUnit = value.charCodeAt(index + 1);
+      if (
+        index + 1 >= value.length ||
+        nextCodeUnit < 0xdc00 ||
+        nextCodeUnit > 0xdfff
+      ) {
+        return null;
+      }
+      index += 1;
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      return null;
+    }
+  }
+
+  try {
+    return encodeURIComponent(value);
+  } catch {
+    return null;
+  }
+}
+
 function buildReplaySnapshotId(
   stockCode: string,
   period: PeriodType,
@@ -671,9 +699,11 @@ function buildReplaySnapshotId(
 ) {
   const normalizedCode = normalizeStockCode(stockCode);
   const normalizedPlanId = normalizeReplayPlanId(planId);
-  const ownerId = normalizedPlanId
-    ? `owner~plan~${encodeURIComponent(normalizedPlanId)}`
-    : 'owner~legacy';
+  const encodedPlanId = normalizedPlanId ? encodeReplayPlanId(normalizedPlanId) : null;
+  if (normalizedPlanId && encodedPlanId === null) {
+    throw new Error('Invalid replay plan ID');
+  }
+  const ownerId = encodedPlanId ? `owner~plan~${encodedPlanId}` : 'owner~legacy';
   return `${normalizedCode}:${period}:${ownerId}:${baseDate}:${targetDate}:MA${inputMaWindow}`;
 }
 
