@@ -33,6 +33,12 @@ async function loadStorageModule() {
   }
 }
 
+const integratedPlanReplaySnapshot = {
+  'prediction-ma:plans:000166:month:v1': '[{"id":"plan-a"}]',
+  'prediction-ma:active-plan:000166:month:v1': 'plan-a',
+  'prediction-ma:replay:000166:month:v1': '[{"id":"replay-a"}]',
+};
+
 test('collect and restore use only application storage keys', async () => {
   const { collectAppStorage, restoreAppStorage } = await loadStorageModule();
   assert.equal(typeof collectAppStorage, 'function');
@@ -49,6 +55,21 @@ test('collect and restore use only application storage keys', async () => {
 
   assert.deepEqual(collectAppStorage(storage), { 'prediction-ma:new': 'new' });
   assert.equal(storage.getItem('prediction-ma:old'), null);
+  assert.equal(storage.getItem('unrelated'), 'keep');
+});
+
+test('plan and replay buckets survive collection and restore together', async () => {
+  const { collectAppStorage, restoreAppStorage } = await loadStorageModule();
+  const storage = new MemoryStorage();
+  Object.entries(integratedPlanReplaySnapshot).forEach(([key, value]) =>
+    storage.setItem(key, value),
+  );
+  storage.setItem('unrelated', 'keep');
+
+  assert.deepEqual(collectAppStorage(storage), integratedPlanReplaySnapshot);
+  restoreAppStorage(storage, integratedPlanReplaySnapshot);
+
+  assert.deepEqual(collectAppStorage(storage), integratedPlanReplaySnapshot);
   assert.equal(storage.getItem('unrelated'), 'keep');
 });
 

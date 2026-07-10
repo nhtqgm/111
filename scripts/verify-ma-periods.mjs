@@ -31,6 +31,7 @@ function main() {
   verifyProjectionMathForAllWindows();
   verifyPredictionPlanMigration();
   verifyPredictionPlanIsolationAndActiveSelection();
+  verifyPlanProjectionConsistency();
   verifyReplayReviewSnapshots();
   console.log('MA period verification passed.');
 }
@@ -226,6 +227,32 @@ function verifyPredictionPlanIsolationAndActiveSelection() {
   assert.equal(loadedWeek.plans[0].period, 'week');
 }
 
+function verifyPlanProjectionConsistency() {
+  const baseDate = '2026-06-30';
+  const points = makeMonthEndsEnding(baseDate, 80);
+  const rows = generatePredictionRows(points, 'month', baseDate, 1).map((row) => ({
+    ...row,
+    predictedMaValues: { 40: '4.8300' },
+  }));
+  const planA = createDefaultPlan('000166', 'month', rows, 'manual');
+  const planB = copyPredictionPlan(planA, [planA]);
+  const projectionA = buildMa40Projection(points, planA.predictions, baseDate, 40);
+  const projectionB = buildMa40Projection(points, planB.predictions, baseDate, 40);
+
+  assertAlmostEqual(
+    projectionA.rows[0].derivedClose,
+    projectionB.rows[0].derivedClose,
+    'plan identity must not change reverse close math',
+  );
+  for (const windowSize of MA_WINDOWS) {
+    assertAlmostEqual(
+      projectionA.rows[0].maValues[windowSize],
+      projectionB.rows[0].maValues[windowSize],
+      `plan identity must not change MA${windowSize}`,
+    );
+  }
+}
+
 function verifyProjectionCase(period, points, baseDate, inputWindow) {
   const targetRows = generatePredictionRows(points, period, baseDate, 2);
   const predictions = targetRows.map((row, index) => ({
@@ -326,6 +353,7 @@ function verifyReplayReviewSnapshots() {
     period: 'day',
     planId: 'plan-a',
     planName: 'Plan A',
+    planNote: 'Plan A note',
     baseDate,
     points: historical,
     rows: projection.rows,
@@ -337,15 +365,25 @@ function verifyReplayReviewSnapshots() {
   assert.equal(snapshots.length, 2);
   assert.equal(snapshots[0].planId, 'plan-a');
   assert.equal(snapshots[0].planName, 'Plan A');
+  assert.equal(snapshots[0].note, 'Plan A note');
   assert.equal(snapshots[0].targetDate, '2026-07-08');
   assert.equal(snapshots[0].inputMaWindow, 40);
-  assert.equal(snapshots[0].predictedMaValues['40'], projection.rows[0].maValues[40]);
+  for (const [rowIndex, snapshot] of snapshots.entries()) {
+    for (const windowSize of MA_WINDOWS) {
+      assertAlmostEqual(
+        snapshot.predictedMaValues[String(windowSize)],
+        projection.rows[rowIndex].maValues[windowSize],
+        `saved replay MA${windowSize} at ${snapshot.targetDate}`,
+      );
+    }
+  }
   const otherPlanSnapshots = createReplaySnapshotsFromProjection({
     stockCode: '000166',
     stockName: 'test',
     period: 'day',
     planId: 'plan-b',
     planName: 'Plan B',
+    planNote: 'Plan B note',
     baseDate,
     points: historical,
     rows: projection.rows,
@@ -354,18 +392,22 @@ function verifyReplayReviewSnapshots() {
     now: '2026-07-08T12:10:00.000Z',
   });
   assert.equal(
-    mergeReplaySnapshots(snapshots, otherPlanSnapshots).length,
+    mergeReplaySnapshots(snapshots, otherPlanSnapshots, historical).length,
     4,
     'replay snapshots from different plans should not overwrite each other',
   );
   assert.equal(
-    mergeReplaySnapshots(snapshots, [
-      {
-        ...snapshots[0],
-        predictedClose: snapshots[0].predictedClose + 1,
-        updatedAt: '2026-07-08T13:00:00.000Z',
-      },
-    ]).length,
+    mergeReplaySnapshots(
+      snapshots,
+      [
+        {
+          ...snapshots[0],
+          predictedClose: snapshots[0].predictedClose + 1,
+          updatedAt: '2026-07-08T13:00:00.000Z',
+        },
+      ],
+      historical,
+    ).length,
     2,
   );
 
@@ -398,15 +440,19 @@ function verifyReplayReviewSnapshots() {
   assert.equal(typeof summary.closeMae, 'number');
 
   const mergedRows = buildReplayReviewRows(
-    mergeReplaySnapshots(snapshots, [
-      ...otherPlanSnapshots,
-      {
-        ...snapshots[0],
-        id: '000166:day:legacy:2026-07-07:2026-07-08:MA40',
-        planId: undefined,
-        planName: undefined,
-      },
-    ]),
+    mergeReplaySnapshots(
+      snapshots,
+      [
+        ...otherPlanSnapshots,
+        {
+          ...snapshots[0],
+          id: '000166:day:legacy:2026-07-07:2026-07-08:MA40',
+          planId: undefined,
+          planName: undefined,
+        },
+      ],
+      [...historical, ...future],
+    ),
     [...historical, ...future],
   );
   assert.equal(filterReplayRowsByPlan(mergedRows, 'all', 'plan-a').length, 5);

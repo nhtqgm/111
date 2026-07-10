@@ -20,6 +20,12 @@ function makeReplaySnapshot(id, updatedAt, predictedClose) {
   };
 }
 
+const integratedPlanReplaySnapshot = {
+  'prediction-ma:plans:000166:month:v1': '[{"id":"plan-a"}]',
+  'prediction-ma:active-plan:000166:month:v1': 'plan-a',
+  'prediction-ma:replay:000166:month:v1': '[{"id":"replay-a"}]',
+};
+
 test('filterAppStorage keeps only application string values', () => {
   const { filterAppStorage } = loadStorageModule();
   assert.equal(typeof filterAppStorage, 'function');
@@ -434,6 +440,17 @@ test('app storage store persists snapshots and keeps rolling backups', async (t)
   assert.deepEqual(await store.load(), second);
   assert.equal(fs.existsSync(path.join(directory, 'app-cache-v1.json')), true);
   assert.equal(fs.readdirSync(path.join(directory, 'backups')).length, 1);
+});
+
+test('Electron store persists plan and replay buckets in one snapshot', async (t) => {
+  const { createAppStorageStore } = loadStorageModule();
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'gupiao-plan-replay-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+
+  const store = createAppStorageStore(directory);
+  await store.replace(integratedPlanReplaySnapshot);
+
+  assert.deepEqual(await store.load(), integratedPlanReplaySnapshot);
 });
 
 test('legacy migration merges old local storage only once', async (t) => {
