@@ -1,4 +1,5 @@
 import { type CSSProperties, useEffect, useMemo, useRef, useState } from 'react';
+import packageJson from '../package.json';
 import KLineChart, {
   type ChartLineSeries,
   type ChartPointSeries,
@@ -6,6 +7,7 @@ import KLineChart, {
 import { fetchKLines } from './services/eastmoney';
 import type { PeriodType, PredictionPoint, StockKLineResponse } from './types';
 import { filterCompletedKLineData } from './utils/completedPeriods';
+import { persistElectronStorage } from './utils/electronStorage';
 import { compareProjectionRows, formatNumber, summarizeComparisons } from './utils/metrics';
 import {
   buildMa40Projection,
@@ -60,6 +62,8 @@ const forecastRowCount = 40;
 const minHistoryCount = 60;
 const todayDate = formatDate(new Date());
 const initialWorkspace = loadWorkspaceCache();
+const appVersion = packageJson.version;
+const updateManifestUrl = 'https://nhtqgm.github.io/111/update.json';
 const lineColors: Record<MaWindow, string> = {
   5: '#2f7893',
   10: '#a87935',
@@ -91,6 +95,22 @@ interface FullBackupFileV1 {
   storage: Record<string, string>;
 }
 
+interface UpdateManifest {
+  app: 'gupiao-ma40';
+  version: string;
+  url: string;
+  notes?: string;
+  publishedAt?: string;
+}
+
+interface UpdateState {
+  status: 'idle' | 'checking' | 'current' | 'available' | 'error';
+  currentVersion: string;
+  latestVersion?: string;
+  downloadUrl?: string;
+  notes?: string;
+}
+
 export default function App() {
   const [stockCode, setStockCode] = useState(initialWorkspace?.stockCode ?? '000166');
   const [queryCode, setQueryCode] = useState(initialWorkspace?.stockCode ?? '000166');
@@ -110,6 +130,10 @@ export default function App() {
   const [error, setError] = useState('');
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [replaySnapshots, setReplaySnapshots] = useState<ReplaySnapshot[]>([]);
+  const [updateState, setUpdateState] = useState<UpdateState>({
+    status: 'idle',
+    currentVersion: appVersion,
+  });
   const [toast, setToast] = useState<{ message: string; type: 'info' | 'success' | 'warning' } | null>(
     null,
   );
@@ -133,6 +157,14 @@ export default function App() {
     },
     [],
   );
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      checkAppUpdate({ silent: true });
+    }, 1500);
+
+    return () => window.clearTimeout(timer);
+  }, []);
 
   useEffect(() => {
     const cached = loadKLineCache(queryCode, period);
@@ -345,6 +377,12 @@ export default function App() {
   const filledCount = predictions.filter(
     (row) => getPredictionInputValue(row, inputMaWindow).trim() !== '',
   ).length;
+  const updateButtonText =
+    updateState.status === 'checking'
+      ? '检查中'
+      : updateState.status === 'available'
+        ? `下载更新 ${updateState.latestVersion}`
+        : '检查更新';
   const predictionTableStyle = {
     gridTemplateColumns: `132px 112px 104px 86px 62px repeat(${visibleMaWindows.length}, 72px)`,
     minWidth: `${526 + visibleMaWindows.length * 80}px`,
@@ -535,6 +573,77 @@ export default function App() {
     setToast(null);
   }
 
+  async function checkAppUpdate({ silent = false }: { silent?: boolean } = {}) {
+    const currentVersion = await getCurrentAppVersion();
+    setUpdateState((current) => ({
+      ...current,
+      status: 'checking',
+      currentVersion,
+    }));
+
+    try {
+      const response = await fetch(`${updateManifestUrl}?_=${Date.now()}`, {
+        cache: 'no-store',
+      });
+      if (!response.ok) {
+        throw new Error(`Update check failed: ${response.status}`);
+      }
+
+      const manifest = normalizeUpdateManifest(await response.json());
+      if (!manifest) {
+        throw new Error('Update manifest is invalid');
+      }
+
+      const hasNewVersion = compareVersions(manifest.version, currentVersion) > 0;
+      if (hasNewVersion) {
+        setUpdateState({
+          status: 'available',
+          currentVersion,
+          latestVersion: manifest.version,
+          downloadUrl: manifest.url,
+          notes: manifest.notes,
+        });
+        showToast(`发现新版本 ${manifest.version}，点击“下载更新”获取新版 exe`, 'success');
+        return;
+      }
+
+      setUpdateState({
+        status: 'current',
+        currentVersion,
+        latestVersion: manifest.version,
+        downloadUrl: manifest.url,
+        notes: manifest.notes,
+      });
+      if (!silent) {
+        showToast(`当前已是最新版本：${currentVersion}`, 'success');
+      }
+    } catch (err) {
+      setUpdateState({
+        status: 'error',
+        currentVersion,
+      });
+      if (!silent) {
+        showToast(err instanceof Error ? err.message : '检查更新失败', 'warning');
+      }
+    }
+  }
+
+  function openUpdateDownload() {
+    if (!updateState.downloadUrl) {
+      checkAppUpdate();
+      return;
+    }
+
+    if (window.appUpdateApi?.openExternal) {
+      window.appUpdateApi.openExternal(updateState.downloadUrl).catch(() => {
+        window.open(updateState.downloadUrl, '_blank', 'noopener,noreferrer');
+      });
+      return;
+    }
+
+    window.open(updateState.downloadUrl, '_blank', 'noopener,noreferrer');
+  }
+
   async function refreshHistoricalData() {
     setIsLoading(true);
     setError('');
@@ -594,7 +703,7 @@ export default function App() {
       return;
     }
 
-    const fileData = createPredictionPlanExport(activePlan, data.name, baseDate, '0.2.6');
+    const fileData = createPredictionPlanExport(activePlan, data.name, baseDate, appVersion);
     const blob = new Blob([JSON.stringify(fileData, null, 2)], {
       type: 'application/json;charset=utf-8',
     });
@@ -623,14 +732,14 @@ export default function App() {
 
     const storage = collectAppStorage();
     if (!Object.keys(storage).length) {
-      showToast('No local data to export', 'warning');
+      showToast('暂无可导出的本地数据', 'warning');
       return;
     }
 
     const fileData: FullBackupFileV1 = {
       schema: 'gupiao-ma40-full-backup/v1',
       exportedAt: new Date().toISOString(),
-      appVersion: '0.2.6',
+      appVersion,
       storage,
     };
     const blob = new Blob([JSON.stringify(fileData, null, 2)], {
@@ -644,7 +753,7 @@ export default function App() {
     link.click();
     link.remove();
     URL.revokeObjectURL(url);
-    showToast(`Exported all local data: ${Object.keys(storage).length} items`, 'success');
+    showToast(`已导出全部本地数据：${Object.keys(storage).length}项`, 'success');
   }
 
   async function importPredictions(file: File | undefined) {
@@ -656,7 +765,8 @@ export default function App() {
       const backup = normalizeFullBackupFile(rawFile);
       if (backup) {
         restoreAppStorage(backup.storage);
-        showToast(`Imported all local data: ${Object.keys(backup.storage).length} items. Reloading...`, 'success');
+        await persistElectronStorage();
+        showToast(`已导入全部本地数据：${Object.keys(backup.storage).length}项，正在刷新`, 'success');
         window.setTimeout(() => window.location.reload(), 500);
         return;
       }
@@ -782,6 +892,13 @@ export default function App() {
           <button type="submit">读取缓存</button>
           <button type="button" onClick={refreshHistoricalData} disabled={isLoading}>
             {isLoading ? '更新中' : '联网更新'}
+          </button>
+          <button
+            type="button"
+            onClick={updateState.status === 'available' ? openUpdateDownload : () => checkAppUpdate()}
+            disabled={updateState.status === 'checking'}
+          >
+            {updateButtonText}
           </button>
         </form>
       </section>
@@ -1367,6 +1484,55 @@ function getDiffClass(value: number | null) {
 function getDirectionHitClass(value: boolean | null) {
   if (value === null) return '';
   return value ? 'hit' : 'miss';
+}
+
+async function getCurrentAppVersion() {
+  try {
+    return (await window.appUpdateApi?.getCurrentVersion?.()) ?? appVersion;
+  } catch {
+    return appVersion;
+  }
+}
+
+function normalizeUpdateManifest(value: unknown): UpdateManifest | null {
+  const candidate = value as UpdateManifest;
+  if (
+    candidate?.app !== 'gupiao-ma40' ||
+    typeof candidate.version !== 'string' ||
+    typeof candidate.url !== 'string' ||
+    !/^https:\/\/(github\.com|nhtqgm\.github\.io)\//.test(candidate.url)
+  ) {
+    return null;
+  }
+
+  return {
+    app: candidate.app,
+    version: candidate.version,
+    url: candidate.url,
+    notes: typeof candidate.notes === 'string' ? candidate.notes : undefined,
+    publishedAt: typeof candidate.publishedAt === 'string' ? candidate.publishedAt : undefined,
+  };
+}
+
+function compareVersions(a: string, b: string) {
+  const left = normalizeVersionParts(a);
+  const right = normalizeVersionParts(b);
+  const length = Math.max(left.length, right.length);
+
+  for (let index = 0; index < length; index += 1) {
+    const diff = (left[index] ?? 0) - (right[index] ?? 0);
+    if (diff !== 0) return diff;
+  }
+
+  return 0;
+}
+
+function normalizeVersionParts(value: string) {
+  return value
+    .replace(/^v/i, '')
+    .split('.')
+    .map((part) => Number(part.replace(/\D.*$/, '')))
+    .map((part) => (Number.isFinite(part) ? part : 0));
 }
 
 function collectAppStorage() {

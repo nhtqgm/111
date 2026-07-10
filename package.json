@@ -1,12 +1,13 @@
 {
   "name": "gupiao-forecast-compare",
-  "version": "0.2.6",
+  "version": "0.2.8",
   "private": true,
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "tsc -b && vite build",
+    "test:storage": "node --test scripts/app-storage.test.cjs scripts/electron-storage.test.ts",
     "verify:ma": "node scripts/verify-ma-periods.mjs",
     "preview": "vite preview --host 0.0.0.0",
     "electron:dev": "npm run build && electron .",
