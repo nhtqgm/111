@@ -32,6 +32,7 @@ import {
   importPredictionPlan,
   loadPredictionPlans,
   normalizePredictionPlanExport,
+  normalizeStockCode,
   renamePredictionPlan,
   resolveActivePlanId,
   saveActivePlanId,
@@ -51,6 +52,7 @@ import {
   type ReplaySummary,
   type ReplaySnapshot,
 } from './utils/replay';
+import { createStableAutosave, runWorkspaceTransition } from './utils/stableAutosave';
 
 const periods: Array<{ value: PeriodType; label: string; unit: string }> = [
   { value: 'day', label: '日K', unit: '日' },
@@ -141,6 +143,7 @@ export default function App() {
   const importedPlanRef = useRef<ImportedPredictionPlan | null>(null);
   const toastTimerRef = useRef<number | null>(null);
   const lastSavedSignatureRef = useRef('');
+  const autosaveRef = useRef<ReturnType<typeof createStableAutosave> | null>(null);
 
   const activePlan = useMemo(
     () => plans.find((plan) => plan.id === activePlanId) ?? null,
@@ -248,19 +251,32 @@ export default function App() {
   }, [activePlanId, baseDate, data, period, plans, replaySnapshots]);
 
   useEffect(() => {
-    const timer = window.setInterval(() => {
-      saveCurrentWorkspace({ notice: 'auto' });
-    }, 30000);
+    const scheduler = createStableAutosave(
+      () => saveCurrentWorkspace({ notice: 'auto' }),
+      30000,
+      {
+        setInterval: (callback, delay) => window.setInterval(callback, delay),
+        clearInterval: (id) => window.clearInterval(id as number),
+      },
+    );
+    autosaveRef.current = scheduler;
 
-    return () => window.clearInterval(timer);
-  }, [activePlanId, baseDate, data, hasUnsavedChanges, period, plans, replaySnapshots]);
+    return () => {
+      scheduler.dispose();
+      if (autosaveRef.current === scheduler) autosaveRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    autosaveRef.current?.update(() => saveCurrentWorkspace({ notice: 'auto' }));
+  });
 
   function saveCurrentWorkspace({
     force = false,
     notice,
   }: {
     force?: boolean;
-    notice: 'auto' | 'manual';
+    notice: 'auto' | 'manual' | 'silent';
   }) {
     if (!data || !baseDate || !plans.length || !activePlanId) {
       if (notice === 'manual') {
@@ -322,6 +338,8 @@ export default function App() {
     lastSavedSignatureRef.current = signature;
     setHasUnsavedChanges(false);
 
+    if (notice === 'silent') return;
+
     if (replaySnapshotFailed && notice === 'manual') {
       showToast('预测已保存；复盘快照保存失败，不影响原预测数据', 'warning');
     } else {
@@ -334,6 +352,26 @@ export default function App() {
         'success',
       );
     }
+  }
+
+  function flushCurrentWorkspace() {
+    saveCurrentWorkspace({ force: true, notice: 'silent' });
+  }
+
+  function loadStockCode() {
+    if (normalizeStockCode(stockCode) === normalizeStockCode(queryCode)) return;
+
+    runWorkspaceTransition(hasUnsavedChanges, flushCurrentWorkspace, () => {
+      setQueryCode(stockCode);
+    });
+  }
+
+  function changePeriod(nextPeriod: PeriodType) {
+    if (nextPeriod === period) return;
+
+    runWorkspaceTransition(hasUnsavedChanges, flushCurrentWorkspace, () => {
+      setPeriod(nextPeriod);
+    });
   }
 
   const projection = useMemo(
@@ -493,16 +531,20 @@ export default function App() {
     if (!data || !baseDate) return;
     const rows = generatePredictionRows(data.points, period, baseDate, forecastRowCount);
     const nextPlan = createEmptyPlan(data.code, period, rows, plans);
-    setPlans((current) => [...current, nextPlan]);
-    setActivePlanId(nextPlan.id);
+    runWorkspaceTransition(hasUnsavedChanges, flushCurrentWorkspace, () => {
+      setPlans((current) => [...current, nextPlan]);
+      setActivePlanId(nextPlan.id);
+    });
     showToast(`已新建方案：${nextPlan.name}`, 'success');
   }
 
   function duplicatePlan() {
     if (!activePlan) return;
     const nextPlan = copyPredictionPlan(activePlan, plans);
-    setPlans((current) => [...current, nextPlan]);
-    setActivePlanId(nextPlan.id);
+    runWorkspaceTransition(hasUnsavedChanges, flushCurrentWorkspace, () => {
+      setPlans((current) => [...current, nextPlan]);
+      setActivePlanId(nextPlan.id);
+    });
     showToast(`已复制方案：${nextPlan.name}`, 'success');
   }
 
@@ -527,15 +569,20 @@ export default function App() {
 
     const remainingPlans = plans.filter((plan) => plan.id !== activePlan.id);
     const nextActivePlanId = resolveActivePlanId(remainingPlans, null);
-    setPlans(remainingPlans);
-    setActivePlanId(nextActivePlanId);
+    runWorkspaceTransition(hasUnsavedChanges, flushCurrentWorkspace, () => {
+      setPlans(remainingPlans);
+      setActivePlanId(nextActivePlanId);
+    });
     showToast('方案已删除', 'success');
   }
 
   function selectActivePlan(planId: string) {
-    if (!plans.some((plan) => plan.id === planId)) return;
-    setActivePlanId(planId);
-    if (data) saveActivePlanId(data.code, period, planId);
+    if (!plans.some((plan) => plan.id === planId) || planId === activePlanId) return;
+
+    runWorkspaceTransition(hasUnsavedChanges, flushCurrentWorkspace, () => {
+      setActivePlanId(planId);
+      if (data) void saveActivePlanId(data.code, period, planId);
+    });
   }
 
   function formatPredictionInput(targetDate: string) {
@@ -649,7 +696,13 @@ export default function App() {
     window.open(updateState.downloadUrl, '_blank', 'noopener,noreferrer');
   }
 
-  async function refreshHistoricalData() {
+  function refreshHistoricalData() {
+    runWorkspaceTransition(hasUnsavedChanges, flushCurrentWorkspace, () => {
+      void fetchHistoricalData();
+    });
+  }
+
+  async function fetchHistoricalData() {
     setIsLoading(true);
     setError('');
     showToast('正在联网更新历史收盘价...', 'info');
@@ -801,15 +854,17 @@ export default function App() {
         return;
       }
 
-      importedPlanRef.current = parsed;
-      setStockCode(parsed.stockCode);
-      setQueryCode(parsed.stockCode);
-      setPeriod(parsed.period);
-      saveWorkspaceCache({
-        stockCode: parsed.stockCode,
-        period: parsed.period,
-        baseDate,
-        updatedAt: new Date().toISOString(),
+      runWorkspaceTransition(hasUnsavedChanges, flushCurrentWorkspace, () => {
+        importedPlanRef.current = parsed;
+        setStockCode(parsed.stockCode);
+        setQueryCode(parsed.stockCode);
+        setPeriod(parsed.period);
+        saveWorkspaceCache({
+          stockCode: parsed.stockCode,
+          period: parsed.period,
+          baseDate,
+          updatedAt: new Date().toISOString(),
+        });
       });
       showToast(`已选择文件：${file.name}`, 'success');
     } catch (err) {
@@ -883,7 +938,7 @@ export default function App() {
           className="stock-search"
           onSubmit={(event) => {
             event.preventDefault();
-            setQueryCode(stockCode);
+            loadStockCode();
           }}
         >
           <label htmlFor="stockCode">股票代码</label>
@@ -915,7 +970,7 @@ export default function App() {
               key={item.value}
               type="button"
               className={period === item.value ? 'active' : ''}
-              onClick={() => setPeriod(item.value)}
+              onClick={() => changePeriod(item.value)}
             >
               {item.label}
             </button>
