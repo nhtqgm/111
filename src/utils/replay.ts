@@ -95,15 +95,18 @@ export function loadReplaySnapshots(stockCode: string, period: PeriodType): Repl
   try {
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed
-      .filter(
-        (item) =>
-          isPlainReplaySnapshotObject(item) &&
-          !hasConflictingReplayOwnership(item, normalizedStockCode, period),
-      )
-      .map((item) => normalizeReplaySnapshot(item, normalizedStockCode, period))
-      .filter((item): item is ReplaySnapshot => item !== null)
-      .sort(compareSnapshots);
+    const snapshots = parsed.flatMap((item) => {
+      if (
+        !isPlainReplaySnapshotObject(item) ||
+        hasConflictingReplayOwnership(item, normalizedStockCode, period)
+      ) {
+        return [];
+      }
+
+      const result = normalizeReplaySnapshot(item, normalizedStockCode, period);
+      return result.snapshot ? [result.snapshot] : [];
+    });
+    return deduplicateReplaySnapshots(snapshots);
   } catch {
     return [];
   }
@@ -122,14 +125,15 @@ export function saveReplaySnapshots(
     assertReplaySnapshotOwnership(snapshot, normalizedStockCode, period),
   );
   const normalizedSnapshots = snapshots.map((snapshot) => {
-    const normalized = normalizeReplaySnapshot(snapshot, normalizedStockCode, period);
-    if (!normalized) throw new Error('Invalid replay snapshot');
-    return normalized;
+    const result = normalizeReplaySnapshot(snapshot, normalizedStockCode, period);
+    if (!result.snapshot) throw new Error(getReplayNormalizationError(result.reason));
+    return result.snapshot;
   });
+  const deduplicatedSnapshots = deduplicateReplaySnapshots(normalizedSnapshots);
 
   localStorage.setItem(
     replayStorageKey(normalizedStockCode, period),
-    JSON.stringify(normalizedSnapshots),
+    JSON.stringify(deduplicatedSnapshots),
   );
   return queueElectronStorageSync();
 }
@@ -164,10 +168,16 @@ export function createReplaySnapshotsFromProjection({
   existingSnapshots: ReplaySnapshot[];
   now: string;
 }): ReplaySnapshot[] {
-  const closeByDate = new Map(points.map((point) => [point.date, point.close]));
+  requireReplayCalendarDate(baseDate, 'base');
+  const normalizedStockCode = normalizeStockCode(stockCode);
+  const normalizedPlanId = normalizeReplayPlanId(planId);
+  const validPoints = filterValidReplayPoints(points);
+  const closeByDate = new Map(validPoints.map((point) => [point.date, point.close]));
   const baseClose = closeByDate.get(baseDate) ?? null;
-  const baseMaValues = getMaValuesAtDate(points, baseDate);
-  const existingById = new Map(existingSnapshots.map((snapshot) => [snapshot.id, snapshot]));
+  const baseMaValues = getMaValuesAtDate(validPoints, baseDate);
+  const existingById = new Map(
+    deduplicateReplaySnapshots(existingSnapshots).map((snapshot) => [snapshot.id, snapshot]),
+  );
 
   return rows
     .filter(
@@ -177,23 +187,24 @@ export function createReplaySnapshotsFromProjection({
         Number.isFinite(row.derivedClose),
     )
     .map((row) => {
+      requireReplayCalendarDate(row.targetDate, 'target');
       const id = buildReplaySnapshotId(
-        stockCode,
+        normalizedStockCode,
         period,
         baseDate,
         row.targetDate,
         inputMaWindow,
-        planId,
+        normalizedPlanId,
       );
       const existing = existingById.get(id);
 
       return {
         schema: REPLAY_SNAPSHOT_SCHEMA,
         id,
-        stockCode,
+        stockCode: normalizedStockCode,
         stockName,
         period,
-        planId: planId ?? undefined,
+        planId: normalizedPlanId,
         planName: planName ?? undefined,
         baseDate,
         targetDate: row.targetDate,
@@ -218,8 +229,10 @@ export function mergeReplaySnapshots(
   incomingSnapshots: ReplaySnapshot[],
   points: KLinePoint[] = [],
 ) {
-  const byId = new Map(existingSnapshots.map((snapshot) => [snapshot.id, snapshot]));
-  for (const incoming of incomingSnapshots) {
+  const byId = new Map(
+    deduplicateReplaySnapshots(existingSnapshots).map((snapshot) => [snapshot.id, snapshot]),
+  );
+  for (const incoming of deduplicateReplaySnapshots(incomingSnapshots)) {
     const existing = byId.get(incoming.id);
     if (existing && findReplayActualPoint(existing, points)) continue;
 
@@ -239,10 +252,11 @@ export function buildReplayReviewRows(
   snapshots: ReplaySnapshot[],
   points: KLinePoint[],
 ): ReplayReviewRow[] {
-  const actualMaByWindow = getMaValueMaps(points);
+  const validPoints = filterValidReplayPoints(points);
+  const actualMaByWindow = getMaValueMaps(validPoints);
 
   return snapshots.map((snapshot) => {
-    const actualPoint = findReplayActualPoint(snapshot, points);
+    const actualPoint = findReplayActualPoint(snapshot, validPoints);
     const actualClose = actualPoint?.close ?? null;
     const closeDiff = calculateDiff(snapshot.predictedClose, actualClose);
     const predictedCloseDirection = getDirection(snapshot.baseClose, snapshot.predictedClose);
@@ -288,12 +302,18 @@ export function buildReplayReviewRows(
 }
 
 export function findReplayActualPoint(
-  snapshot: Pick<ReplaySnapshot, 'period' | 'targetDate'>,
+  snapshot: Pick<ReplaySnapshot, 'period' | 'targetDate'> &
+    Partial<Pick<ReplaySnapshot, 'baseDate'>>,
   points: KLinePoint[],
 ) {
-  const matches = points.filter((point) =>
-    isSameReplayPeriod(point.date, snapshot.targetDate, snapshot.period),
-  );
+  const targetDate = parseReplayCalendarDate(snapshot.targetDate);
+  if (!targetDate) return null;
+  if (snapshot.baseDate !== undefined && !parseReplayCalendarDate(snapshot.baseDate)) return null;
+
+  const matches = points.filter((point) => {
+    const actualDate = parseReplayCalendarDate(point.date);
+    return actualDate && isSameReplayPeriod(actualDate, targetDate, snapshot.period);
+  });
   return matches.sort((a, b) => a.date.localeCompare(b.date)).at(-1) ?? null;
 }
 
@@ -337,6 +357,10 @@ function getMaValuesAtDate(points: KLinePoint[], targetDate: string) {
   );
 }
 
+function filterValidReplayPoints(points: KLinePoint[]) {
+  return points.filter((point) => parseReplayCalendarDate(point.date) !== null);
+}
+
 function getMaValueMaps(points: KLinePoint[]) {
   return Object.fromEntries(
     MA_WINDOWS.map((windowSize) => [
@@ -372,45 +396,134 @@ function getDirectionHit(
   return predictedDirection === actualDirection;
 }
 
+type ReplayNormalizationReason = 'invalid' | 'date' | 'id';
+
+type ReplayNormalizationResult =
+  | { snapshot: ReplaySnapshot; reason?: never }
+  | { snapshot: null; reason: ReplayNormalizationReason };
+
 function normalizeReplaySnapshot(
   value: unknown,
   stockCode: string,
   period: PeriodType,
-): ReplaySnapshot | null {
-  if (!isPlainReplaySnapshotObject(value)) return null;
+): ReplayNormalizationResult {
+  if (!isPlainReplaySnapshotObject(value)) return { snapshot: null, reason: 'invalid' };
   const candidate = value as unknown as ReplaySnapshot;
   if (
     candidate?.schema !== REPLAY_SNAPSHOT_SCHEMA ||
     typeof candidate.id !== 'string' ||
     typeof candidate.baseDate !== 'string' ||
     typeof candidate.targetDate !== 'string' ||
+    (candidate.planId !== undefined &&
+      candidate.planId !== null &&
+      typeof candidate.planId !== 'string') ||
     !MA_WINDOWS.includes(candidate.inputMaWindow) ||
     !Number.isFinite(candidate.inputMaValue) ||
     !Number.isFinite(candidate.predictedClose)
   ) {
-    return null;
+    return { snapshot: null, reason: 'invalid' };
+  }
+
+  if (
+    !parseReplayCalendarDate(candidate.baseDate) ||
+    !parseReplayCalendarDate(candidate.targetDate)
+  ) {
+    return { snapshot: null, reason: 'date' };
+  }
+
+  const planId = normalizeReplayPlanId(candidate.planId);
+  const canonicalId = buildReplaySnapshotId(
+    stockCode,
+    period,
+    candidate.baseDate,
+    candidate.targetDate,
+    candidate.inputMaWindow,
+    planId,
+  );
+  const supportedLegacyId = planId
+    ? null
+    : buildLegacyNoPlanSnapshotId(
+        stockCode,
+        period,
+        candidate.baseDate,
+        candidate.targetDate,
+        candidate.inputMaWindow,
+      );
+  if (candidate.id !== canonicalId && candidate.id !== supportedLegacyId) {
+    return { snapshot: null, reason: 'id' };
   }
 
   return {
-    schema: REPLAY_SNAPSHOT_SCHEMA,
-    id: candidate.id,
-    stockCode,
-    stockName: typeof candidate.stockName === 'string' ? candidate.stockName : undefined,
-    period,
-    planId: typeof candidate.planId === 'string' ? candidate.planId : undefined,
-    planName: typeof candidate.planName === 'string' ? candidate.planName : undefined,
-    baseDate: candidate.baseDate,
-    targetDate: candidate.targetDate,
-    inputMaWindow: candidate.inputMaWindow,
-    inputMaValue: candidate.inputMaValue,
-    predictedClose: candidate.predictedClose,
-    predictedMaValues: normalizeMaNumberRecord(candidate.predictedMaValues),
-    baseClose: normalizeOptionalNumber(candidate.baseClose),
-    baseMaValues: normalizeMaNumberRecord(candidate.baseMaValues),
-    note: typeof candidate.note === 'string' ? candidate.note : '',
-    createdAt: typeof candidate.createdAt === 'string' ? candidate.createdAt : '',
-    updatedAt: typeof candidate.updatedAt === 'string' ? candidate.updatedAt : '',
+    snapshot: {
+      schema: REPLAY_SNAPSHOT_SCHEMA,
+      id: canonicalId,
+      stockCode,
+      stockName: typeof candidate.stockName === 'string' ? candidate.stockName : undefined,
+      period,
+      planId,
+      planName: typeof candidate.planName === 'string' ? candidate.planName : undefined,
+      baseDate: candidate.baseDate,
+      targetDate: candidate.targetDate,
+      inputMaWindow: candidate.inputMaWindow,
+      inputMaValue: candidate.inputMaValue,
+      predictedClose: candidate.predictedClose,
+      predictedMaValues: normalizeMaNumberRecord(candidate.predictedMaValues),
+      baseClose: normalizeOptionalNumber(candidate.baseClose),
+      baseMaValues: normalizeMaNumberRecord(candidate.baseMaValues),
+      note: typeof candidate.note === 'string' ? candidate.note : '',
+      createdAt: typeof candidate.createdAt === 'string' ? candidate.createdAt : '',
+      updatedAt: typeof candidate.updatedAt === 'string' ? candidate.updatedAt : '',
+    },
   };
+}
+
+function getReplayNormalizationError(reason: ReplayNormalizationReason) {
+  if (reason === 'date') return 'Replay snapshot contains an invalid date';
+  if (reason === 'id') return 'Replay snapshot ID conflicts with its normalized fields';
+  return 'Invalid replay snapshot';
+}
+
+function deduplicateReplaySnapshots(snapshots: ReplaySnapshot[]) {
+  const byId = new Map<string, ReplaySnapshot>();
+  for (const snapshot of snapshots) {
+    const existing = byId.get(snapshot.id);
+    byId.set(snapshot.id, existing ? chooseReplaySnapshot(existing, snapshot) : snapshot);
+  }
+  return Array.from(byId.values()).sort(compareSnapshots);
+}
+
+function chooseReplaySnapshot(existing: ReplaySnapshot, incoming: ReplaySnapshot) {
+  const existingUpdatedAt = getValidTimestamp(existing.updatedAt);
+  const incomingUpdatedAt = getValidTimestamp(incoming.updatedAt);
+  if (existingUpdatedAt !== null || incomingUpdatedAt !== null) {
+    if (existingUpdatedAt === null) return incoming;
+    if (incomingUpdatedAt === null) return existing;
+    if (existingUpdatedAt !== incomingUpdatedAt) {
+      return incomingUpdatedAt > existingUpdatedAt ? incoming : existing;
+    }
+  }
+
+  // Equal or unusable timestamps use stable content ordering, never array order.
+  return stableSerializeReplayValue(incoming) > stableSerializeReplayValue(existing)
+    ? incoming
+    : existing;
+}
+
+function getValidTimestamp(value: string) {
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function stableSerializeReplayValue(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableSerializeReplayValue).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableSerializeReplayValue(record[key])}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'undefined';
 }
 
 function normalizeMaNumberRecord(value: unknown) {
@@ -438,22 +551,23 @@ function replayStorageKey(stockCode: string, period: PeriodType) {
   return `prediction-ma:replay:${normalizeStockCode(stockCode)}:${period}:v1`;
 }
 
-function isSameReplayPeriod(actualDate: string, targetDate: string, period: PeriodType) {
-  if (period === 'day') return actualDate === targetDate;
-  if (period === 'month') return actualDate.slice(0, 7) === targetDate.slice(0, 7);
-
-  const actualWeek = getIsoWeekKey(actualDate);
-  return actualWeek !== null && actualWeek === getIsoWeekKey(targetDate);
+interface ReplayCalendarDate {
+  value: string;
+  year: number;
+  month: number;
+  day: number;
+  timestamp: number;
 }
 
-function getIsoWeekKey(value: string) {
+function parseReplayCalendarDate(value: unknown): ReplayCalendarDate | null {
+  if (typeof value !== 'string') return null;
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
   if (!match) return null;
 
   const year = Number(match[1]);
   const month = Number(match[2]);
   const day = Number(match[3]);
-  const date = new Date(Date.UTC(year, month - 1, day));
+  const date = createUtcDate(year, month - 1, day);
   if (
     date.getUTCFullYear() !== year ||
     date.getUTCMonth() !== month - 1 ||
@@ -462,10 +576,40 @@ function getIsoWeekKey(value: string) {
     return null;
   }
 
+  return { value, year, month, day, timestamp: date.getTime() };
+}
+
+function requireReplayCalendarDate(value: string, label: 'base' | 'target') {
+  const parsed = parseReplayCalendarDate(value);
+  if (!parsed) throw new Error(`Invalid replay ${label} date`);
+  return parsed;
+}
+
+function createUtcDate(year: number, monthIndex: number, day: number) {
+  const date = new Date(0);
+  date.setUTCHours(0, 0, 0, 0);
+  date.setUTCFullYear(year, monthIndex, day);
+  return date;
+}
+
+function isSameReplayPeriod(
+  actualDate: ReplayCalendarDate,
+  targetDate: ReplayCalendarDate,
+  period: PeriodType,
+) {
+  if (period === 'day') return actualDate.timestamp === targetDate.timestamp;
+  if (period === 'month') {
+    return actualDate.year === targetDate.year && actualDate.month === targetDate.month;
+  }
+  return getIsoWeekKey(actualDate) === getIsoWeekKey(targetDate);
+}
+
+function getIsoWeekKey(value: ReplayCalendarDate) {
+  const date = new Date(value.timestamp);
   const isoDay = date.getUTCDay() || 7;
   date.setUTCDate(date.getUTCDate() + 4 - isoDay);
   const isoYear = date.getUTCFullYear();
-  const yearStart = new Date(Date.UTC(isoYear, 0, 1));
+  const yearStart = createUtcDate(isoYear, 0, 1);
   const week = Math.ceil(((date.getTime() - yearStart.getTime()) / 86_400_000 + 1) / 7);
   return `${isoYear}-W${String(week).padStart(2, '0')}`;
 }
@@ -514,6 +658,10 @@ function normalizeStockCode(value: string) {
   return value.replace(/\D/g, '').slice(0, 6);
 }
 
+function normalizeReplayPlanId(value: unknown) {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
 function buildReplaySnapshotId(
   stockCode: string,
   period: PeriodType,
@@ -522,15 +670,26 @@ function buildReplaySnapshotId(
   inputMaWindow: MaWindow,
   planId?: string | null,
 ) {
-  const normalizedCode = stockCode.replace(/\D/g, '').slice(0, 6);
-  const normalizedPlanId = planId ? `:${planId}` : '';
-  return `${normalizedCode}:${period}${normalizedPlanId}:${baseDate}:${targetDate}:MA${inputMaWindow}`;
+  const normalizedCode = normalizeStockCode(stockCode);
+  const ownerId = normalizeReplayPlanId(planId) ?? 'legacy';
+  return `${normalizedCode}:${period}:${ownerId}:${baseDate}:${targetDate}:MA${inputMaWindow}`;
+}
+
+function buildLegacyNoPlanSnapshotId(
+  stockCode: string,
+  period: PeriodType,
+  baseDate: string,
+  targetDate: string,
+  inputMaWindow: MaWindow,
+) {
+  return `${normalizeStockCode(stockCode)}:${period}:${baseDate}:${targetDate}:MA${inputMaWindow}`;
 }
 
 function compareSnapshots(a: ReplaySnapshot, b: ReplaySnapshot) {
   return (
     a.targetDate.localeCompare(b.targetDate) ||
     a.baseDate.localeCompare(b.baseDate) ||
-    a.inputMaWindow - b.inputMaWindow
+    a.inputMaWindow - b.inputMaWindow ||
+    a.id.localeCompare(b.id)
   );
 }

@@ -45,8 +45,103 @@ function getPredictionScore(value) {
   }, 0);
 }
 
+function getReplaySnapshotUpdatedAt(snapshot) {
+  if (typeof snapshot.updatedAt !== 'string') return null;
+  const timestamp = Date.parse(snapshot.updatedAt);
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function stableSerialize(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableSerialize).join(',')}]`;
+  }
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableSerialize(value[key])}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function chooseReplaySnapshot(existingSnapshot, incomingSnapshot) {
+  const existingUpdatedAt = getReplaySnapshotUpdatedAt(existingSnapshot);
+  const incomingUpdatedAt = getReplaySnapshotUpdatedAt(incomingSnapshot);
+  if (existingUpdatedAt !== null || incomingUpdatedAt !== null) {
+    if (existingUpdatedAt === null) return incomingSnapshot;
+    if (incomingUpdatedAt === null) return existingSnapshot;
+    if (incomingUpdatedAt !== existingUpdatedAt) {
+      return incomingUpdatedAt > existingUpdatedAt ? incomingSnapshot : existingSnapshot;
+    }
+  }
+
+  // Equal or unusable timestamps use stable content ordering, never source order.
+  return stableSerialize(incomingSnapshot) > stableSerialize(existingSnapshot)
+    ? incomingSnapshot
+    : existingSnapshot;
+}
+
+function getReplaySnapshotIdentity(snapshot) {
+  if (
+    typeof snapshot.stockCode !== 'string' ||
+    !['day', 'week', 'month'].includes(snapshot.period) ||
+    typeof snapshot.baseDate !== 'string' ||
+    typeof snapshot.targetDate !== 'string' ||
+    !/^\d{4}-\d{2}-\d{2}$/.test(snapshot.baseDate) ||
+    !/^\d{4}-\d{2}-\d{2}$/.test(snapshot.targetDate) ||
+    !Number.isInteger(snapshot.inputMaWindow)
+  ) {
+    return snapshot.id;
+  }
+
+  const stockCode = snapshot.stockCode.replace(/\D/g, '').slice(0, 6);
+  const planId = typeof snapshot.planId === 'string' && snapshot.planId.trim()
+    ? snapshot.planId.trim()
+    : null;
+  const ownerId = planId ?? 'legacy';
+  const canonicalId = `${stockCode}:${snapshot.period}:${ownerId}:${snapshot.baseDate}:${snapshot.targetDate}:MA${snapshot.inputMaWindow}`;
+  const legacyId = `${stockCode}:${snapshot.period}:${snapshot.baseDate}:${snapshot.targetDate}:MA${snapshot.inputMaWindow}`;
+  if (snapshot.id === canonicalId || (!planId && snapshot.id === legacyId)) return canonicalId;
+  return snapshot.id;
+}
+
+function reconcileReplayStorage(existingValue, incomingValue) {
+  const existing = parseStoredJson(existingValue);
+  const incoming = parseStoredJson(incomingValue);
+  if (!Array.isArray(existing) || !Array.isArray(incoming)) return null;
+
+  const snapshots = [...existing, ...incoming];
+  if (
+    snapshots.some(
+      (snapshot) =>
+        !snapshot ||
+        typeof snapshot !== 'object' ||
+        Array.isArray(snapshot) ||
+        typeof snapshot.id !== 'string' ||
+        !snapshot.id.trim(),
+    )
+  ) {
+    return null;
+  }
+
+  const byId = new Map();
+  snapshots.forEach((snapshot) => {
+    const id = getReplaySnapshotIdentity(snapshot);
+    const normalizedSnapshot = id === snapshot.id ? snapshot : { ...snapshot, id };
+    const current = byId.get(id);
+    byId.set(id, current ? chooseReplaySnapshot(current, normalizedSnapshot) : normalizedSnapshot);
+  });
+
+  return JSON.stringify([...byId.values()].sort((a, b) => a.id.localeCompare(b.id)));
+}
+
 function chooseStoredValue(key, existingValue, incomingValue) {
   if (existingValue === incomingValue) return existingValue;
+
+  if (key.startsWith('prediction-ma:replay:')) {
+    const reconciled = reconcileReplayStorage(existingValue, incomingValue);
+    if (reconciled !== null) return reconciled;
+  }
 
   const existingUpdatedAt = getUpdatedAt(existingValue);
   const incomingUpdatedAt = getUpdatedAt(incomingValue);

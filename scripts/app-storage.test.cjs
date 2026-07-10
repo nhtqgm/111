@@ -12,6 +12,14 @@ function loadStorageModule() {
   }
 }
 
+function makeReplaySnapshot(id, updatedAt, predictedClose) {
+  return {
+    id,
+    updatedAt,
+    predictedClose,
+  };
+}
+
 test('filterAppStorage keeps only application string values', () => {
   const { filterAppStorage } = loadStorageModule();
   assert.equal(typeof filterAppStorage, 'function');
@@ -71,6 +79,106 @@ test('mergeAppStorage preserves filled predictions and newer timestamped caches'
   assert.equal(merged[predictionKey], existingPredictions);
   assert.deepEqual(JSON.parse(merged[cacheKey]).data.points, [1]);
   assert.equal(JSON.parse(merged['prediction-ma40:last-workspace']).stockCode, '000166');
+});
+
+test('mergeAppStorage reconciles divergent replay buckets by snapshot ID', () => {
+  const { mergeAppStorage } = loadStorageModule();
+  const replayKey = 'prediction-ma:replay:000166:month:v1';
+  const sharedId = '000166:month:plan-a:2026-06-30:2026-10-31:MA40';
+  const persistedOnlyId = '000166:month:plan-a:2026-06-30:2026-11-30:MA40';
+  const rendererOnlyId = '000166:month:plan-b:2026-06-30:2026-12-31:MA40';
+
+  const merged = mergeAppStorage(
+    {
+      [replayKey]: JSON.stringify([
+        makeReplaySnapshot(sharedId, '2026-07-10T00:00:00.000Z', 4.8),
+        makeReplaySnapshot(persistedOnlyId, '2026-07-10T00:00:00.000Z', 4.9),
+      ]),
+    },
+    {
+      [replayKey]: JSON.stringify([
+        makeReplaySnapshot(sharedId, '2026-07-11T00:00:00.000Z', 5.1),
+        makeReplaySnapshot(rendererOnlyId, '2026-07-11T00:00:00.000Z', 5.2),
+      ]),
+    },
+  );
+  const snapshots = JSON.parse(merged[replayKey]);
+
+  assert.deepEqual(
+    snapshots.map((snapshot) => snapshot.id).sort(),
+    [persistedOnlyId, rendererOnlyId, sharedId].sort(),
+  );
+  assert.equal(snapshots.find((snapshot) => snapshot.id === sharedId).predictedClose, 5.1);
+});
+
+test('replay reconciliation prefers valid timestamps and has an order-independent fallback', () => {
+  const { mergeAppStorage } = loadStorageModule();
+  const replayKey = 'prediction-ma:replay:000166:month:v1';
+  const validId = '000166:month:plan-a:2026-06-30:2026-10-31:MA40';
+  const fallbackId = '000166:month:plan-a:2026-06-30:2026-11-30:MA40';
+  const valid = makeReplaySnapshot(validId, '2026-07-10T00:00:00.000Z', 4.8);
+  const invalid = makeReplaySnapshot(validId, 'not-a-timestamp', 5.1);
+  const fallbackA = makeReplaySnapshot(fallbackId, 'invalid-a', 4.9);
+  const fallbackB = makeReplaySnapshot(fallbackId, 'invalid-b', 5.2);
+
+  const forward = JSON.parse(
+    mergeAppStorage(
+      { [replayKey]: JSON.stringify([invalid, fallbackA]) },
+      { [replayKey]: JSON.stringify([valid, fallbackB]) },
+    )[replayKey],
+  );
+  const reverse = JSON.parse(
+    mergeAppStorage(
+      { [replayKey]: JSON.stringify([valid, fallbackB]) },
+      { [replayKey]: JSON.stringify([invalid, fallbackA]) },
+    )[replayKey],
+  );
+
+  assert.deepEqual(forward, reverse);
+  assert.equal(forward.find((snapshot) => snapshot.id === validId).predictedClose, 4.8);
+});
+
+test('replay reconciliation treats the supported no-plan ID as its canonical legacy ID', () => {
+  const { mergeAppStorage } = loadStorageModule();
+  const replayKey = 'prediction-ma:replay:000166:month:v1';
+  const legacyId = '000166:month:2026-06-30:2026-10-31:MA40';
+  const canonicalId = '000166:month:legacy:2026-06-30:2026-10-31:MA40';
+  const fields = {
+    stockCode: '000166',
+    period: 'month',
+    baseDate: '2026-06-30',
+    targetDate: '2026-10-31',
+    inputMaWindow: 40,
+  };
+
+  const merged = JSON.parse(
+    mergeAppStorage(
+      {
+        [replayKey]: JSON.stringify([
+          {
+            ...fields,
+            id: legacyId,
+            updatedAt: '2026-07-12T00:00:00.000Z',
+            predictedClose: 5.3,
+          },
+        ]),
+      },
+      {
+        [replayKey]: JSON.stringify([
+          {
+            ...fields,
+            id: canonicalId,
+            updatedAt: '2026-07-11T00:00:00.000Z',
+            predictedClose: 5.1,
+          },
+        ]),
+      },
+    )[replayKey],
+  );
+
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].id, canonicalId);
+  assert.equal(merged[0].predictedClose, 5.3);
 });
 
 test('app storage store persists snapshots and keeps rolling backups', async (t) => {
@@ -140,5 +248,38 @@ test('bootstrap returns canonical data when an online UI arrives with an empty t
 
   assert.equal(canonical[predictionKey], filled);
   assert.equal(JSON.parse(canonical['prediction-ma40:last-workspace']).stockCode, '000166');
+  assert.deepEqual(await store.load(), canonical);
+});
+
+test('bootstrap persists the union of divergent renderer and Electron replay history', async (t) => {
+  const { createAppStorageStore } = loadStorageModule();
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'gupiao-replay-bootstrap-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+
+  const store = createAppStorageStore(directory);
+  const replayKey = 'prediction-ma:replay:000166:month:v1';
+  const sharedId = '000166:month:plan-a:2026-06-30:2026-10-31:MA40';
+  const persistedOnlyId = '000166:month:plan-a:2026-06-30:2026-11-30:MA40';
+  const rendererOnlyId = '000166:month:plan-b:2026-06-30:2026-12-31:MA40';
+  await store.completeLegacyMigration({
+    [replayKey]: JSON.stringify([
+      makeReplaySnapshot(sharedId, '2026-07-12T00:00:00.000Z', 5.3),
+      makeReplaySnapshot(persistedOnlyId, '2026-07-10T00:00:00.000Z', 4.9),
+    ]),
+  });
+
+  const canonical = await store.bootstrap({
+    [replayKey]: JSON.stringify([
+      makeReplaySnapshot(sharedId, '2026-07-11T00:00:00.000Z', 5.1),
+      makeReplaySnapshot(rendererOnlyId, '2026-07-11T00:00:00.000Z', 5.2),
+    ]),
+  });
+  const snapshots = JSON.parse(canonical[replayKey]);
+
+  assert.deepEqual(
+    snapshots.map((snapshot) => snapshot.id).sort(),
+    [persistedOnlyId, rendererOnlyId, sharedId].sort(),
+  );
+  assert.equal(snapshots.find((snapshot) => snapshot.id === sharedId).predictedClose, 5.3);
   assert.deepEqual(await store.load(), canonical);
 });

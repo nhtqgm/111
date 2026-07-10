@@ -242,8 +242,13 @@ test('load rejects replay snapshots with explicit conflicting ownership', () => 
 test('load rejects malformed entries while migrating legacy plain snapshots', () => {
   const storage = new MemoryStorage();
   installStorage(storage);
-  const owned = makeSnapshot({ id: 'owned' });
-  const legacy = { ...makeSnapshot({ id: 'legacy' }) } as Partial<ReplaySnapshot>;
+  const owned = makeSnapshot();
+  const legacy = {
+    ...makeSnapshot({
+      id: '000166:month:plan-a:2026-06-30:2026-11-30:MA40',
+      targetDate: '2026-11-30',
+    }),
+  } as Partial<ReplaySnapshot>;
   delete legacy.stockCode;
   delete legacy.period;
   storage.setItem(
@@ -255,10 +260,151 @@ test('load rejects malformed entries while migrating legacy plain snapshots', ()
 
   assert.deepEqual(
     loaded.map((snapshot) => snapshot.id).sort(),
-    ['legacy', 'owned'],
+    [
+      '000166:month:plan-a:2026-06-30:2026-10-31:MA40',
+      '000166:month:plan-a:2026-06-30:2026-11-30:MA40',
+    ],
   );
-  assert.equal(loaded.find((snapshot) => snapshot.id === 'legacy')?.stockCode, '000166');
-  assert.equal(loaded.find((snapshot) => snapshot.id === 'legacy')?.period, 'month');
+  const migrated = loaded.find((snapshot) => snapshot.targetDate === '2026-11-30');
+  assert.equal(migrated?.stockCode, '000166');
+  assert.equal(migrated?.period, 'month');
+});
+
+test('load and save reject snapshot IDs that conflict with normalized fields', () => {
+  const storage = new MemoryStorage();
+  installStorage(storage);
+  const key = getReplayStorageKey();
+  const conflictingId = makeSnapshot({
+    id: '000166:month:plan-b:2026-06-30:2026-10-31:MA40',
+  });
+  const existingRaw = JSON.stringify([conflictingId]);
+  storage.setItem(key, existingRaw);
+
+  assert.deepEqual(replay.loadReplaySnapshots('000166', 'month'), []);
+  assert.throws(
+    () => replay.saveReplaySnapshots('000166', 'month', [conflictingId]),
+    /id/i,
+  );
+  assert.equal(storage.getItem(key), existingRaw);
+});
+
+test('load migrates the supported legacy no-plan snapshot ID to its canonical form', () => {
+  const storage = new MemoryStorage();
+  installStorage(storage);
+  const legacy = makeSnapshot({
+    id: '000166:month:2026-06-30:2026-10-31:MA40',
+    planId: undefined,
+    planName: undefined,
+  });
+  storage.setItem(getReplayStorageKey(), JSON.stringify([legacy]));
+
+  const loaded = replay.loadReplaySnapshots('000166', 'month');
+
+  assert.equal(loaded.length, 1);
+  assert.equal(
+    loaded[0].id,
+    '000166:month:legacy:2026-06-30:2026-10-31:MA40',
+  );
+  assert.equal(loaded[0].planId, undefined);
+});
+
+test('save migrates the supported legacy no-plan snapshot ID', async () => {
+  const storage = new MemoryStorage();
+  installStorage(storage);
+  const legacy = makeSnapshot({
+    id: '000166:month:2026-06-30:2026-10-31:MA40',
+    planId: undefined,
+    planName: undefined,
+  });
+
+  await replay.saveReplaySnapshots('000166', 'month', [legacy]);
+
+  const saved = JSON.parse(storage.getItem(getReplayStorageKey()) ?? '[]');
+  assert.equal(saved.length, 1);
+  assert.equal(
+    saved[0].id,
+    '000166:month:legacy:2026-06-30:2026-10-31:MA40',
+  );
+});
+
+test('new no-plan snapshots use the canonical legacy ID form', () => {
+  const snapshots = replay.createReplaySnapshotsFromProjection({
+    stockCode: '000166',
+    period: 'month',
+    planId: null,
+    planName: null,
+    planNote: '',
+    baseDate: '2026-06-30',
+    points: [makePoint('2026-06-30', 4.6)],
+    rows: [makeProjectionRow()],
+    inputMaWindow: 40,
+    existingSnapshots: [],
+    now: '2026-07-10T00:00:00.000Z',
+  });
+
+  assert.equal(
+    snapshots[0].id,
+    '000166:month:legacy:2026-06-30:2026-07-31:MA40',
+  );
+});
+
+test('load deduplicates canonical snapshot IDs by valid updatedAt regardless of array order', () => {
+  const older = makeSnapshot({
+    predictedClose: 4.8,
+    updatedAt: '2026-07-10T00:00:00.000Z',
+  });
+  const newer = makeSnapshot({
+    predictedClose: 5.1,
+    updatedAt: '2026-07-11T00:00:00.000Z',
+  });
+
+  const load = (snapshots: ReplaySnapshot[]) => {
+    const storage = new MemoryStorage();
+    installStorage(storage);
+    storage.setItem(getReplayStorageKey(), JSON.stringify(snapshots));
+    return replay.loadReplaySnapshots('000166', 'month');
+  };
+  const forward = load([older, newer]);
+  const reverse = load([newer, older]);
+
+  assert.equal(forward.length, 1);
+  assert.equal(reverse.length, 1);
+  assert.equal(forward[0].predictedClose, 5.1);
+  assert.deepEqual(forward, reverse);
+});
+
+test('save deduplicates canonical snapshot IDs by valid updatedAt', async () => {
+  const storage = new MemoryStorage();
+  installStorage(storage);
+  const older = makeSnapshot({
+    predictedClose: 4.8,
+    updatedAt: '2026-07-10T00:00:00.000Z',
+  });
+  const newer = makeSnapshot({
+    predictedClose: 5.1,
+    updatedAt: '2026-07-11T00:00:00.000Z',
+  });
+
+  await replay.saveReplaySnapshots('000166', 'month', [newer, older]);
+
+  const saved = JSON.parse(storage.getItem(getReplayStorageKey()) ?? '[]');
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].predictedClose, 5.1);
+});
+
+test('duplicate IDs with unusable updatedAt values have an order-independent fallback', () => {
+  const first = makeSnapshot({ predictedClose: 4.8, updatedAt: 'invalid-a' });
+  const second = makeSnapshot({ predictedClose: 5.1, updatedAt: 'invalid-b' });
+
+  const load = (snapshots: ReplaySnapshot[]) => {
+    const storage = new MemoryStorage();
+    installStorage(storage);
+    storage.setItem(getReplayStorageKey(), JSON.stringify(snapshots));
+    return replay.loadReplaySnapshots('000166', 'month');
+  };
+
+  assert.deepEqual(load([first, second]), load([second, first]));
+  assert.equal(load([first, second]).length, 1);
 });
 
 test('save rejects conflicting replay ownership without changing storage', () => {
@@ -303,6 +449,168 @@ test('save rejects malformed replay entries without changing storage', () => {
     );
     assert.equal(storage.getItem(key), existingRaw);
   }
+});
+
+test('invalid calendar dates never resolve or freeze snapshots for any period', () => {
+  for (const period of ['day', 'week', 'month'] as const) {
+    const existing = makeSnapshot({
+      period,
+      baseDate: '2026-02-28',
+      targetDate: '2026-02-29',
+      predictedClose: 4.8,
+    });
+    const incoming = makeSnapshot({
+      period,
+      baseDate: '2026-02-28',
+      targetDate: '2026-02-29',
+      predictedClose: 5.1,
+    });
+    const invalidPoint = makePoint('2026-02-29', 4.75);
+
+    assert.equal(getActualPointResolver()(existing, [invalidPoint]), null);
+    assert.equal(
+      replay.mergeReplaySnapshots([existing], [incoming], [invalidPoint])[0].predictedClose,
+      5.1,
+    );
+  }
+});
+
+test('an invalid base date prevents a snapshot from resolving or freezing', () => {
+  const existing = makeSnapshot({
+    period: 'day',
+    baseDate: '2026-02-29',
+    targetDate: '2026-03-02',
+    predictedClose: 4.8,
+  });
+  const incoming = makeSnapshot({
+    period: 'day',
+    baseDate: '2026-02-29',
+    targetDate: '2026-03-02',
+    predictedClose: 5.1,
+  });
+  const point = makePoint('2026-03-02', 4.75);
+
+  assert.equal(getActualPointResolver()(existing, [point]), null);
+  assert.equal(
+    replay.mergeReplaySnapshots([existing], [incoming], [point])[0].predictedClose,
+    5.1,
+  );
+});
+
+test('invalid actual dates are ignored even when their month or ISO week would match', () => {
+  const monthly = makeSnapshot({
+    period: 'month',
+    baseDate: '2026-01-31',
+    targetDate: '2026-02-28',
+  });
+  const weekly = makeSnapshot({
+    period: 'week',
+    baseDate: '2026-02-22',
+    targetDate: '2026-03-01',
+  });
+
+  assert.equal(
+    getActualPointResolver()(monthly, [makePoint('2026-02-30', 4.75)]),
+    null,
+  );
+  assert.equal(
+    getActualPointResolver()(weekly, [makePoint('2026-02-29', 4.75)]),
+    null,
+  );
+});
+
+test('invalid-dated actual points do not contaminate resolved MA values', () => {
+  const snapshot = makeSnapshot({
+    period: 'day',
+    baseDate: '2026-02-20',
+    targetDate: '2026-02-27',
+  });
+  const points = [
+    makePoint('2026-02-23', 1),
+    makePoint('2026-02-24', 2),
+    makePoint('2026-02-29', 100),
+    makePoint('2026-02-25', 3),
+    makePoint('2026-02-26', 4),
+    makePoint('2026-02-27', 5),
+  ];
+
+  const row = replay.buildReplayReviewRows([snapshot], points)[0];
+
+  assert.equal(row.actualClose, 5);
+  assert.equal(row.maComparisons[5].actual, 3);
+});
+
+test('valid leap-day dates resolve normally', () => {
+  const snapshot = makeSnapshot({
+    period: 'day',
+    baseDate: '2024-02-28',
+    targetDate: '2024-02-29',
+  });
+  const point = makePoint('2024-02-29', 4.75);
+
+  assert.equal(getActualPointResolver()(snapshot, [point])?.date, '2024-02-29');
+  assert.equal(replay.buildReplayReviewRows([snapshot], [point])[0].status, 'ready');
+});
+
+test('load and save reject snapshots with invalid base or target dates', () => {
+  const invalidSnapshots = [
+    makeSnapshot({
+      id: '000166:day:plan-a:2026-02-29:2026-03-02:MA40',
+      period: 'day',
+      baseDate: '2026-02-29',
+      targetDate: '2026-03-02',
+    }),
+    makeSnapshot({
+      id: '000166:day:plan-a:2026-02-28:2026-02-29:MA40',
+      period: 'day',
+      baseDate: '2026-02-28',
+      targetDate: '2026-02-29',
+    }),
+  ];
+
+  for (const snapshot of invalidSnapshots) {
+    const storage = new MemoryStorage();
+    installStorage(storage);
+    const key = getReplayStorageKey('000166', 'day');
+    const existingRaw = JSON.stringify([snapshot]);
+    storage.setItem(key, existingRaw);
+
+    assert.deepEqual(replay.loadReplaySnapshots('000166', 'day'), []);
+    assert.throws(
+      () => replay.saveReplaySnapshots('000166', 'day', [snapshot]),
+      /date/i,
+    );
+    assert.equal(storage.getItem(key), existingRaw);
+  }
+});
+
+test('snapshot creation rejects invalid base and target calendar dates', () => {
+  const args = {
+    stockCode: '000166',
+    period: 'month' as const,
+    planId: 'plan-a',
+    planName: 'Plan A',
+    planNote: '',
+    points: [makePoint('2026-01-31', 4.6)],
+    rows: [makeProjectionRow()],
+    inputMaWindow: 40 as const,
+    existingSnapshots: [],
+    now: '2026-01-10T00:00:00.000Z',
+  };
+
+  assert.throws(
+    () => replay.createReplaySnapshotsFromProjection({ ...args, baseDate: '2026-02-29' }),
+    /date/i,
+  );
+  assert.throws(
+    () =>
+      replay.createReplaySnapshotsFromProjection({
+        ...args,
+        baseDate: '2026-01-31',
+        rows: [{ ...makeProjectionRow(), targetDate: '2026-02-29' }],
+      }),
+    /date/i,
+  );
 });
 
 test('saving replay snapshots queues Electron persistence', async () => {
