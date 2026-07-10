@@ -1,4 +1,5 @@
 import type { KLinePoint, PeriodType } from '../types';
+import { queueElectronStorageSync } from './electronStorage.ts';
 import {
   calculateMovingAverage,
   MA_WINDOWS,
@@ -76,7 +77,7 @@ export function filterReplayRowsByPlan(
   if (filter === 'all') return rows;
   if (filter === 'legacy') return rows.filter((row) => !row.planId);
   if (filter === 'active') {
-    return activePlanId ? rows.filter((row) => row.planId === activePlanId) : rows;
+    return activePlanId ? rows.filter((row) => row.planId === activePlanId) : [];
   }
 
   const planId = filter.slice('plan:'.length);
@@ -87,14 +88,20 @@ export function filterReplayRowsByPlan(
  * Read saved forecast snapshots used for later replay/review.
  */
 export function loadReplaySnapshots(stockCode: string, period: PeriodType): ReplaySnapshot[] {
-  const raw = localStorage.getItem(replayStorageKey(stockCode, period));
+  const normalizedStockCode = normalizeStockCode(stockCode);
+  const raw = localStorage.getItem(replayStorageKey(normalizedStockCode, period));
   if (!raw) return [];
 
   try {
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
     return parsed
-      .map(normalizeReplaySnapshot)
+      .filter(
+        (item) =>
+          isPlainReplaySnapshotObject(item) &&
+          !hasConflictingReplayOwnership(item, normalizedStockCode, period),
+      )
+      .map((item) => normalizeReplaySnapshot(item, normalizedStockCode, period))
       .filter((item): item is ReplaySnapshot => item !== null)
       .sort(compareSnapshots);
   } catch {
@@ -110,7 +117,21 @@ export function saveReplaySnapshots(
   period: PeriodType,
   snapshots: ReplaySnapshot[],
 ) {
-  localStorage.setItem(replayStorageKey(stockCode, period), JSON.stringify(snapshots));
+  const normalizedStockCode = normalizeStockCode(stockCode);
+  snapshots.forEach((snapshot) =>
+    assertReplaySnapshotOwnership(snapshot, normalizedStockCode, period),
+  );
+  const normalizedSnapshots = snapshots.map((snapshot) => {
+    const normalized = normalizeReplaySnapshot(snapshot, normalizedStockCode, period);
+    if (!normalized) throw new Error('Invalid replay snapshot');
+    return normalized;
+  });
+
+  localStorage.setItem(
+    replayStorageKey(normalizedStockCode, period),
+    JSON.stringify(normalizedSnapshots),
+  );
+  return queueElectronStorageSync();
 }
 
 /**
@@ -122,6 +143,7 @@ export function createReplaySnapshotsFromProjection({
   period,
   planId,
   planName,
+  planNote,
   baseDate,
   points,
   rows,
@@ -134,6 +156,7 @@ export function createReplaySnapshotsFromProjection({
   period: PeriodType;
   planId?: string | null;
   planName?: string | null;
+  planNote?: string | null;
   baseDate: string;
   points: KLinePoint[];
   rows: Ma40ProjectionRow[];
@@ -180,7 +203,7 @@ export function createReplaySnapshotsFromProjection({
         predictedMaValues: normalizeMaNumberRecord(row.maValues),
         baseClose,
         baseMaValues,
-        note: row.note,
+        note: planNote ?? '',
         createdAt: existing?.createdAt ?? now,
         updatedAt: now,
       };
@@ -193,12 +216,16 @@ export function createReplaySnapshotsFromProjection({
 export function mergeReplaySnapshots(
   existingSnapshots: ReplaySnapshot[],
   incomingSnapshots: ReplaySnapshot[],
+  points: KLinePoint[] = [],
 ) {
   const byId = new Map(existingSnapshots.map((snapshot) => [snapshot.id, snapshot]));
-  for (const snapshot of incomingSnapshots) {
-    byId.set(snapshot.id, {
-      ...snapshot,
-      createdAt: byId.get(snapshot.id)?.createdAt ?? snapshot.createdAt,
+  for (const incoming of incomingSnapshots) {
+    const existing = byId.get(incoming.id);
+    if (existing && findReplayActualPoint(existing, points)) continue;
+
+    byId.set(incoming.id, {
+      ...incoming,
+      createdAt: existing?.createdAt ?? incoming.createdAt,
     });
   }
 
@@ -212,18 +239,20 @@ export function buildReplayReviewRows(
   snapshots: ReplaySnapshot[],
   points: KLinePoint[],
 ): ReplayReviewRow[] {
-  const actualCloseByDate = new Map(points.map((point) => [point.date, point.close]));
   const actualMaByWindow = getMaValueMaps(points);
 
   return snapshots.map((snapshot) => {
-    const actualClose = actualCloseByDate.get(snapshot.targetDate) ?? null;
+    const actualPoint = findReplayActualPoint(snapshot, points);
+    const actualClose = actualPoint?.close ?? null;
     const closeDiff = calculateDiff(snapshot.predictedClose, actualClose);
     const predictedCloseDirection = getDirection(snapshot.baseClose, snapshot.predictedClose);
     const actualCloseDirection = getDirection(snapshot.baseClose, actualClose);
     const maComparisons = Object.fromEntries(
       MA_WINDOWS.map((windowSize) => {
         const predicted = snapshot.predictedMaValues[String(windowSize)] ?? null;
-        const actual = actualMaByWindow[windowSize].get(snapshot.targetDate) ?? null;
+        const actual = actualPoint
+          ? actualMaByWindow[windowSize].get(actualPoint.date) ?? null
+          : null;
         const base = snapshot.baseMaValues[String(windowSize)] ?? null;
         const predictedDirection = getDirection(base, predicted);
         const actualDirection = getDirection(base, actual);
@@ -256,6 +285,16 @@ export function buildReplayReviewRows(
       maComparisons,
     };
   });
+}
+
+export function findReplayActualPoint(
+  snapshot: Pick<ReplaySnapshot, 'period' | 'targetDate'>,
+  points: KLinePoint[],
+) {
+  const matches = points.filter((point) =>
+    isSameReplayPeriod(point.date, snapshot.targetDate, snapshot.period),
+  );
+  return matches.sort((a, b) => a.date.localeCompare(b.date)).at(-1) ?? null;
 }
 
 /**
@@ -333,13 +372,16 @@ function getDirectionHit(
   return predictedDirection === actualDirection;
 }
 
-function normalizeReplaySnapshot(value: unknown): ReplaySnapshot | null {
-  const candidate = value as ReplaySnapshot;
+function normalizeReplaySnapshot(
+  value: unknown,
+  stockCode: string,
+  period: PeriodType,
+): ReplaySnapshot | null {
+  if (!isPlainReplaySnapshotObject(value)) return null;
+  const candidate = value as unknown as ReplaySnapshot;
   if (
     candidate?.schema !== REPLAY_SNAPSHOT_SCHEMA ||
     typeof candidate.id !== 'string' ||
-    typeof candidate.stockCode !== 'string' ||
-    !['day', 'week', 'month'].includes(candidate.period) ||
     typeof candidate.baseDate !== 'string' ||
     typeof candidate.targetDate !== 'string' ||
     !MA_WINDOWS.includes(candidate.inputMaWindow) ||
@@ -352,9 +394,9 @@ function normalizeReplaySnapshot(value: unknown): ReplaySnapshot | null {
   return {
     schema: REPLAY_SNAPSHOT_SCHEMA,
     id: candidate.id,
-    stockCode: candidate.stockCode,
+    stockCode,
     stockName: typeof candidate.stockName === 'string' ? candidate.stockName : undefined,
-    period: candidate.period,
+    period,
     planId: typeof candidate.planId === 'string' ? candidate.planId : undefined,
     planName: typeof candidate.planName === 'string' ? candidate.planName : undefined,
     baseDate: candidate.baseDate,
@@ -393,8 +435,83 @@ function averageAbsolute(values: number[]) {
 }
 
 function replayStorageKey(stockCode: string, period: PeriodType) {
-  const normalizedCode = stockCode.replace(/\D/g, '').slice(0, 6);
-  return `prediction-ma:replay:${normalizedCode}:${period}:v1`;
+  return `prediction-ma:replay:${normalizeStockCode(stockCode)}:${period}:v1`;
+}
+
+function isSameReplayPeriod(actualDate: string, targetDate: string, period: PeriodType) {
+  if (period === 'day') return actualDate === targetDate;
+  if (period === 'month') return actualDate.slice(0, 7) === targetDate.slice(0, 7);
+
+  const actualWeek = getIsoWeekKey(actualDate);
+  return actualWeek !== null && actualWeek === getIsoWeekKey(targetDate);
+}
+
+function getIsoWeekKey(value: string) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return null;
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
+  ) {
+    return null;
+  }
+
+  const isoDay = date.getUTCDay() || 7;
+  date.setUTCDate(date.getUTCDate() + 4 - isoDay);
+  const isoYear = date.getUTCFullYear();
+  const yearStart = new Date(Date.UTC(isoYear, 0, 1));
+  const week = Math.ceil(((date.getTime() - yearStart.getTime()) / 86_400_000 + 1) / 7);
+  return `${isoYear}-W${String(week).padStart(2, '0')}`;
+}
+
+function assertReplaySnapshotOwnership(
+  value: unknown,
+  stockCode: string,
+  period: PeriodType,
+) {
+  if (!isPlainReplaySnapshotObject(value)) {
+    throw new Error('Replay snapshot must be a plain object');
+  }
+  if (hasConflictingReplayOwnership(value, stockCode, period)) {
+    throw new Error(`Replay snapshot ownership conflicts with ${stockCode}/${period}`);
+  }
+}
+
+function hasConflictingReplayOwnership(
+  value: Record<string, unknown>,
+  stockCode: string,
+  period: PeriodType,
+) {
+  const hasStockCode = Object.prototype.hasOwnProperty.call(value, 'stockCode');
+  if (
+    hasStockCode &&
+    (typeof value.stockCode !== 'string' || normalizeStockCode(value.stockCode) !== stockCode)
+  ) {
+    return true;
+  }
+
+  const hasPeriod = Object.prototype.hasOwnProperty.call(value, 'period');
+  return hasPeriod && (!isPeriodType(value.period) || value.period !== period);
+}
+
+function isPlainReplaySnapshotObject(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function isPeriodType(value: unknown): value is PeriodType {
+  return value === 'day' || value === 'week' || value === 'month';
+}
+
+function normalizeStockCode(value: string) {
+  return value.replace(/\D/g, '').slice(0, 6);
 }
 
 function buildReplaySnapshotId(

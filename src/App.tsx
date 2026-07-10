@@ -299,6 +299,7 @@ export default function App() {
         baseDate,
         planId: activePlan?.id ?? null,
         planName: activePlan?.name ?? null,
+        planNote: activePlan?.note ?? null,
         points: data.points,
         rows: projection.rows,
         inputMaWindow,
@@ -307,8 +308,12 @@ export default function App() {
       });
       replaySnapshotCount = incomingReplaySnapshots.length;
       if (incomingReplaySnapshots.length) {
-        const mergedSnapshots = mergeReplaySnapshots(replaySnapshots, incomingReplaySnapshots);
-        saveReplaySnapshots(data.code, period, mergedSnapshots);
+        const mergedSnapshots = mergeReplaySnapshots(
+          replaySnapshots,
+          incomingReplaySnapshots,
+          data.points,
+        );
+        void saveReplaySnapshots(data.code, period, mergedSnapshots).catch(() => {});
         setReplaySnapshots(mergedSnapshots);
       }
     } catch {
