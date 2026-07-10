@@ -533,6 +533,10 @@ h2 {
   gap: 6px;
 }
 
+.panel-actions .ghost {
+  white-space: nowrap;
+}
+
 .ghost {
   height: 34px;
   padding: 0 12px;
@@ -586,7 +590,7 @@ h2 {
 
 .plan-manager {
   display: grid;
-  grid-template-columns: minmax(190px, 1fr) auto;
+  grid-template-columns: minmax(160px, 1fr) minmax(0, 1.35fr);
   align-items: end;
   gap: 8px;
   margin-top: 10px;
@@ -622,11 +626,18 @@ h2 {
   flex-wrap: wrap;
   justify-content: flex-end;
   align-self: end;
+  min-width: 0;
   gap: 6px;
 }
 
 .plan-actions .ghost {
   height: 34px;
+  white-space: nowrap;
+}
+
+.plan-actions .ghost.compact {
+  padding: 0 9px;
+  font-size: 12px;
 }
 
 .history-status {

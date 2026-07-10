@@ -7,7 +7,13 @@ import KLineChart, {
 import { fetchKLines } from './services/eastmoney';
 import type { PeriodType, PredictionPoint, StockKLineResponse } from './types';
 import { filterCompletedKLineData } from './utils/completedPeriods';
-import { persistElectronStorage } from './utils/electronStorage';
+import {
+  collectAppStorage,
+  isAppStorageKey,
+  persistElectronStorage,
+  queueElectronStorageSync,
+  restoreAppStorage,
+} from './utils/electronStorage';
 import { compareProjectionRows, formatNumber, summarizeComparisons } from './utils/metrics';
 import {
   buildMa40Projection,
@@ -30,9 +36,11 @@ import {
   createEmptyPlan,
   createPredictionPlanExport,
   importPredictionPlan,
+  hasPredictionPlanCapacity,
   loadPredictionPlans,
   normalizePredictionPlanExport,
   normalizeStockCode,
+  PLAN_LIMIT,
   renamePredictionPlan,
   resolveActivePlanId,
   saveActivePlanId,
@@ -45,6 +53,7 @@ import {
   filterReplayRowsByPlan,
   loadReplaySnapshots,
   mergeReplaySnapshots,
+  resolveReplayPlanFilter,
   saveReplaySnapshots,
   summarizeReplayRows,
   type ReplayPlanFilter,
@@ -65,6 +74,8 @@ const minHistoryCount = 60;
 const todayDate = formatDate(new Date());
 const initialWorkspace = loadWorkspaceCache();
 const appVersion = packageJson.version;
+const planLimitWarning = `每只股票的每个周期最多保留 ${PLAN_LIMIT} 个方案，请先删除一个方案`;
+const electronPersistenceWarning = '数据已保存在当前页面，但 EXE 持久化失败，请再次点击保存';
 const updateManifestUrl = 'https://nhtqgm.github.io/111/update.json';
 const lineColors: Record<MaWindow, string> = {
   5: '#2f7893',
@@ -198,6 +209,11 @@ export default function App() {
     if (!data || !baseDate) return;
 
     const loaded = loadPredictionPlans(data.code, period, baseDate, data.points, forecastRowCount);
+    if (loaded.migrated) {
+      void queueElectronStorageSync().catch(() => {
+        showToast(electronPersistenceWarning, 'warning');
+      });
+    }
     let nextPlans = loaded.plans;
     let nextActivePlanId = loaded.activePlanId;
     const importedPlan = importedPlanRef.current;
@@ -206,20 +222,26 @@ export default function App() {
       importedPlan.stockCode === data.code &&
       importedPlan.period === period
     ) {
-      const rows = generatePredictionRows(data.points, period, baseDate, forecastRowCount);
-      const imported = importPredictionPlan(
-        importedPlan.plan,
-        data.code,
-        period,
-        rows,
-        nextPlans,
-      );
-      nextPlans = [...nextPlans, imported];
-      nextActivePlanId = imported.id;
-      savePredictionPlans(data.code, period, nextPlans);
-      saveActivePlanId(data.code, period, nextActivePlanId);
       importedPlanRef.current = null;
-      showToast('预测文件已加载', 'success');
+      if (!hasPredictionPlanCapacity(nextPlans)) {
+        showToast(planLimitWarning, 'warning');
+      } else {
+        const rows = generatePredictionRows(data.points, period, baseDate, forecastRowCount);
+        const imported = importPredictionPlan(
+          importedPlan.plan,
+          data.code,
+          period,
+          rows,
+          nextPlans,
+        );
+        nextPlans = [...nextPlans, imported];
+        nextActivePlanId = imported.id;
+        void Promise.all([
+          savePredictionPlans(data.code, period, nextPlans),
+          saveActivePlanId(data.code, period, nextActivePlanId),
+        ]).catch(() => showToast(electronPersistenceWarning, 'warning'));
+        showToast('预测文件已加载', 'success');
+      }
     }
 
     setPlans(nextPlans);
@@ -288,7 +310,7 @@ export default function App() {
     if (!force && !hasUnsavedChanges) return;
 
     const signature = createWorkspaceSignature(data.code, period, baseDate, plans, activePlanId);
-    if (signature === lastSavedSignatureRef.current) {
+    if (!force && signature === lastSavedSignatureRef.current) {
       setHasUnsavedChanges(false);
       if (notice === 'manual') {
         showToast(`已保存：${new Date().toLocaleTimeString()}`, 'success');
@@ -297,8 +319,10 @@ export default function App() {
     }
 
     const now = new Date().toISOString();
-    savePredictionPlans(data.code, period, plans);
-    saveActivePlanId(data.code, period, activePlanId);
+    const persistenceWrites = [
+      savePredictionPlans(data.code, period, plans),
+      saveActivePlanId(data.code, period, activePlanId),
+    ];
     saveWorkspaceCache({
       stockCode: data.code,
       period,
@@ -329,12 +353,15 @@ export default function App() {
           incomingReplaySnapshots,
           data.points,
         );
-        void saveReplaySnapshots(data.code, period, mergedSnapshots).catch(() => {});
+        persistenceWrites.push(saveReplaySnapshots(data.code, period, mergedSnapshots));
         setReplaySnapshots(mergedSnapshots);
       }
     } catch {
       replaySnapshotFailed = true;
     }
+    void Promise.all(persistenceWrites).catch(() => {
+      showToast(electronPersistenceWarning, 'warning');
+    });
     lastSavedSignatureRef.current = signature;
     setHasUnsavedChanges(false);
 
@@ -386,30 +413,65 @@ export default function App() {
           },
     [baseDate, data, inputMaWindow, predictions],
   );
-  const replayRows = useMemo(
-    () => (data ? buildReplayReviewRows(replaySnapshots, data.points) : []),
-    [data, replaySnapshots],
+  const replayWorkspaceStockCode = normalizeStockCode(queryCode);
+  const replayRows = useMemo(() => {
+    if (!data || normalizeStockCode(data.code) !== replayWorkspaceStockCode) return [];
+
+    const currentSnapshots = replaySnapshots.filter(
+      (snapshot) =>
+        normalizeStockCode(snapshot.stockCode) === replayWorkspaceStockCode &&
+        snapshot.period === period,
+    );
+    return buildReplayReviewRows(currentSnapshots, data.points);
+  }, [data, period, replaySnapshots, replayWorkspaceStockCode]);
+  const replayCurrentPlans = useMemo(
+    () =>
+      plans.filter(
+        (plan) =>
+          normalizeStockCode(plan.stockCode) === replayWorkspaceStockCode && plan.period === period,
+      ),
+    [period, plans, replayWorkspaceStockCode],
   );
   const replayPlanOptions = useMemo(() => {
-    const namesByPlanId = new Map<string, string>();
-    for (const plan of plans) {
-      namesByPlanId.set(plan.id, plan.name);
-    }
+    const namesByPlanId = new Map(replayCurrentPlans.map((plan) => [plan.id, plan.name]));
     for (const row of replayRows) {
-      if (row.planId) {
-        namesByPlanId.set(row.planId, row.planName || namesByPlanId.get(row.planId) || '历史方案');
+      if (row.planId && !namesByPlanId.has(row.planId)) {
+        namesByPlanId.set(row.planId, row.planName?.trim() || '历史方案');
       }
     }
 
     return Array.from(namesByPlanId, ([id, name]) => ({ id, name }));
-  }, [plans, replayRows]);
+  }, [replayCurrentPlans, replayRows]);
+  const knownReplayPlanIds = useMemo(
+    () => new Set(replayPlanOptions.map((plan) => plan.id)),
+    [replayPlanOptions],
+  );
+  const replayActivePlanId =
+    activePlanId && replayCurrentPlans.some((plan) => plan.id === activePlanId)
+      ? activePlanId
+      : null;
+  const hasLegacyReplayRows = useMemo(() => replayRows.some((row) => !row.planId), [replayRows]);
+  const resolvedReplayPlanFilter = useMemo(
+    () =>
+      resolveReplayPlanFilter(
+        replayPlanFilter,
+        replayActivePlanId,
+        knownReplayPlanIds,
+        hasLegacyReplayRows,
+      ),
+    [hasLegacyReplayRows, knownReplayPlanIds, replayActivePlanId, replayPlanFilter],
+  );
+  useEffect(() => {
+    if (resolvedReplayPlanFilter !== replayPlanFilter) {
+      setReplayPlanFilter(resolvedReplayPlanFilter);
+    }
+  }, [period, replayPlanFilter, replayWorkspaceStockCode, resolvedReplayPlanFilter]);
   const filteredReplayRows = useMemo(
-    () => filterReplayRowsByPlan(replayRows, replayPlanFilter, activePlanId),
-    [activePlanId, replayPlanFilter, replayRows],
+    () => filterReplayRowsByPlan(replayRows, resolvedReplayPlanFilter, replayActivePlanId),
+    [replayActivePlanId, replayRows, resolvedReplayPlanFilter],
   );
   const replaySummary = useMemo(() => summarizeReplayRows(filteredReplayRows), [filteredReplayRows]);
   const replayTotalSummary = useMemo(() => summarizeReplayRows(replayRows), [replayRows]);
-  const hasLegacyReplayRows = useMemo(() => replayRows.some((row) => !row.planId), [replayRows]);
   const predictionComparisons = useMemo(
     () => compareProjectionRows(projection.rows),
     [projection.rows],
@@ -528,6 +590,10 @@ export default function App() {
   }
 
   function createPlan() {
+    if (!hasPredictionPlanCapacity(plans)) {
+      showToast(planLimitWarning, 'warning');
+      return;
+    }
     if (!data || !baseDate) return;
     const rows = generatePredictionRows(data.points, period, baseDate, forecastRowCount);
     const nextPlan = createEmptyPlan(data.code, period, rows, plans);
@@ -539,6 +605,10 @@ export default function App() {
   }
 
   function duplicatePlan() {
+    if (!hasPredictionPlanCapacity(plans)) {
+      showToast(planLimitWarning, 'warning');
+      return;
+    }
     if (!activePlan) return;
     const nextPlan = copyPredictionPlan(activePlan, plans);
     runWorkspaceTransition(hasUnsavedChanges, flushCurrentWorkspace, () => {
@@ -581,7 +651,11 @@ export default function App() {
 
     runWorkspaceTransition(hasUnsavedChanges, flushCurrentWorkspace, () => {
       setActivePlanId(planId);
-      if (data) void saveActivePlanId(data.code, period, planId);
+      if (data) {
+        void saveActivePlanId(data.code, period, planId).catch(() => {
+          showToast(electronPersistenceWarning, 'warning');
+        });
+      }
     });
   }
 
@@ -711,6 +785,9 @@ export default function App() {
       const result = await fetchKLines(stockCode, period);
       const completed = filterCompletedKLineData(markAsOnlineResult(result), period);
       saveKLineCache(completed.data, period);
+      void queueElectronStorageSync().catch(() => {
+        showToast(electronPersistenceWarning, 'warning');
+      });
       setData(completed.data);
       setBaseDate(completed.lastCompletedDate ?? todayDate);
       setStockCode(completed.data.code);
@@ -741,7 +818,6 @@ export default function App() {
     updateActivePlan((plan) => ({
       ...plan,
       note: value,
-      predictions: plan.predictions.map((row) => ({ ...row, note: value })),
     }));
   }
 
@@ -750,7 +826,7 @@ export default function App() {
     const rows = generatePredictionRows(data.points, period, baseDate, forecastRowCount);
     updateActivePlan((plan) => ({
       ...plan,
-      predictions: rows.map((row) => ({ ...row, note: plan.note })),
+      predictions: rows,
     }));
     showToast('已重置当前预测表', 'success');
   }
@@ -761,7 +837,12 @@ export default function App() {
       return;
     }
 
-    const fileData = createPredictionPlanExport(activePlan, data.name, baseDate, appVersion);
+    const fileData = createPredictionPlanExport(
+      activePlan,
+      data.name,
+      baseDate,
+      packageJson.version,
+    );
     const blob = new Blob([JSON.stringify(fileData, null, 2)], {
       type: 'application/json;charset=utf-8',
     });
@@ -773,13 +854,15 @@ export default function App() {
     link.click();
     link.remove();
     URL.revokeObjectURL(url);
-    showToast('预测文件已导出', 'success');
+    showToast('当前方案已导出', 'success');
   }
 
   function exportAllData() {
     if (data && baseDate && plans.length && activePlanId) {
-      savePredictionPlans(data.code, period, plans);
-      saveActivePlanId(data.code, period, activePlanId);
+      void Promise.all([
+        savePredictionPlans(data.code, period, plans),
+        saveActivePlanId(data.code, period, activePlanId),
+      ]).catch(() => showToast(electronPersistenceWarning, 'warning'));
       saveWorkspaceCache({
         stockCode: data.code,
         period,
@@ -788,7 +871,7 @@ export default function App() {
       });
     }
 
-    const storage = collectAppStorage();
+    const storage = collectAppStorage(localStorage);
     if (!Object.keys(storage).length) {
       showToast('暂无可导出的本地数据', 'warning');
       return;
@@ -797,7 +880,7 @@ export default function App() {
     const fileData: FullBackupFileV1 = {
       schema: 'gupiao-ma40-full-backup/v1',
       exportedAt: new Date().toISOString(),
-      appVersion,
+      appVersion: packageJson.version,
       storage,
     };
     const blob = new Blob([JSON.stringify(fileData, null, 2)], {
@@ -822,8 +905,12 @@ export default function App() {
       const rawFile = JSON.parse(text);
       const backup = normalizeFullBackupFile(rawFile);
       if (backup) {
-        restoreAppStorage(backup.storage);
-        await persistElectronStorage();
+        restoreAppStorage(localStorage, backup.storage);
+        try {
+          await persistElectronStorage();
+        } catch {
+          throw new Error(electronPersistenceWarning);
+        }
         showToast(`已导入全部本地数据：${Object.keys(backup.storage).length}项，正在刷新`, 'success');
         window.setTimeout(() => window.location.reload(), 500);
         return;
@@ -835,12 +922,18 @@ export default function App() {
       }
 
       if (data && baseDate && parsed.stockCode === data.code && parsed.period === period) {
+        if (!hasPredictionPlanCapacity(plans)) {
+          showToast(planLimitWarning, 'warning');
+          return;
+        }
         runWorkspaceTransition(hasUnsavedChanges, flushCurrentWorkspace, () => {
           const rows = generatePredictionRows(data.points, period, baseDate, forecastRowCount);
           const imported = importPredictionPlan(parsed.plan, data.code, period, rows, plans);
           const nextPlans = [...plans, imported];
-          savePredictionPlans(data.code, period, nextPlans);
-          saveActivePlanId(data.code, period, imported.id);
+          void Promise.all([
+            savePredictionPlans(data.code, period, nextPlans),
+            saveActivePlanId(data.code, period, imported.id),
+          ]).catch(() => showToast(electronPersistenceWarning, 'warning'));
           setPlans(nextPlans);
           setActivePlanId(imported.id);
           lastSavedSignatureRef.current = createWorkspaceSignature(
@@ -866,6 +959,9 @@ export default function App() {
           period: parsed.period,
           baseDate,
           updatedAt: new Date().toISOString(),
+        });
+        void queueElectronStorageSync().catch(() => {
+          showToast(electronPersistenceWarning, 'warning');
         });
       });
       showToast(`已选择文件：${file.name}`, 'success');
@@ -1058,7 +1154,7 @@ export default function App() {
             </div>
             <div className="panel-actions">
               <button type="button" className="ghost" onClick={exportAllData}>
-                导出
+                导出全部数据
               </button>
               <button
                 type="button"
@@ -1110,6 +1206,14 @@ export default function App() {
               </button>
               <button type="button" className="ghost" onClick={renameActivePlan} disabled={!activePlan}>
                 重命名
+              </button>
+              <button
+                type="button"
+                className="ghost compact"
+                onClick={exportPredictions}
+                disabled={!activePlan}
+              >
+                导出当前方案
               </button>
               <button
                 type="button"
@@ -1171,9 +1275,9 @@ export default function App() {
           rows={filteredReplayRows}
           summary={replaySummary}
           totalSummary={replayTotalSummary}
-          planFilter={replayPlanFilter}
+          planFilter={resolvedReplayPlanFilter}
           planOptions={replayPlanOptions}
-          activePlanId={activePlanId}
+          activePlanId={replayActivePlanId}
           hasLegacyRows={hasLegacyReplayRows}
           onPlanFilterChange={setReplayPlanFilter}
           selectedRow={replayDetailRow}
@@ -1597,27 +1701,6 @@ function normalizeVersionParts(value: string) {
     .map((part) => (Number.isFinite(part) ? part : 0));
 }
 
-function collectAppStorage() {
-  const storage: Record<string, string> = {};
-  for (let index = 0; index < localStorage.length; index += 1) {
-    const key = localStorage.key(index);
-    if (!key || !isAppStorageKey(key)) continue;
-
-    const value = localStorage.getItem(key);
-    if (value !== null) storage[key] = value;
-  }
-
-  return storage;
-}
-
-function restoreAppStorage(storage: Record<string, string>) {
-  Object.entries(storage).forEach(([key, value]) => {
-    if (isAppStorageKey(key) && typeof value === 'string') {
-      localStorage.setItem(key, value);
-    }
-  });
-}
-
 function normalizeFullBackupFile(value: unknown): FullBackupFileV1 | null {
   if (!isFullBackupFileV1(value)) return null;
 
@@ -1643,10 +1726,6 @@ function isFullBackupFileV1(value: unknown): value is FullBackupFileV1 {
     typeof candidate.storage === 'object' &&
     !Array.isArray(candidate.storage)
   );
-}
-
-function isAppStorageKey(key: string) {
-  return key.startsWith('prediction-ma40:') || key.startsWith('prediction-ma:');
 }
 
 function normalizePredictionFile(value: unknown): ImportedPredictionPlan | null {

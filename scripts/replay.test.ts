@@ -197,6 +197,40 @@ test('active filter with no active plan returns no rows', () => {
   assert.deepEqual(replay.filterReplayRowsByPlan(rows, 'active', null), []);
 });
 
+test('stale explicit replay filter falls back to active when an active plan exists', () => {
+  assert.equal(
+    replay.resolveReplayPlanFilter('plan:deleted', 'plan-active', new Set(['plan-active']), false),
+    'active',
+  );
+});
+
+test('stale explicit replay filter falls back to all when no active plan exists', () => {
+  assert.equal(replay.resolveReplayPlanFilter('plan:deleted', null, new Set(), false), 'all');
+});
+
+test('active replay filter resolves to all when there is no active plan', () => {
+  assert.equal(replay.resolveReplayPlanFilter('active', null, new Set(['plan-a']), false), 'all');
+});
+
+test('legacy replay filter remains only while legacy rows exist', () => {
+  const knownPlanIds = new Set(['plan-a']);
+  assert.equal(replay.resolveReplayPlanFilter('legacy', 'plan-a', knownPlanIds, true), 'legacy');
+  assert.equal(replay.resolveReplayPlanFilter('legacy', 'plan-a', knownPlanIds, false), 'active');
+  assert.equal(replay.resolveReplayPlanFilter('legacy', null, knownPlanIds, false), 'all');
+});
+
+test('valid explicit replay filter remains selected', () => {
+  assert.equal(
+    replay.resolveReplayPlanFilter(
+      'plan:plan-a',
+      'plan-b',
+      new Set(['plan-a', 'plan-b']),
+      false,
+    ),
+    'plan:plan-a',
+  );
+});
+
 test('a resolved snapshot cannot be overwritten by a later save', () => {
   const existing = makeSnapshot({ predictedClose: 4.8, targetDate: '2026-10-31' });
   const incoming = makeSnapshot({

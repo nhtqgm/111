@@ -66,6 +66,20 @@ export interface ReplaySummary {
   ma40Mae: number | null;
 }
 
+export function resolveReplayPlanFilter(
+  filter: ReplayPlanFilter,
+  activePlanId: string | null,
+  knownPlanIds: ReadonlySet<string>,
+  hasLegacyRows: boolean,
+): ReplayPlanFilter {
+  const fallback: ReplayPlanFilter = activePlanId ? 'active' : 'all';
+  if (filter === 'all') return filter;
+  if (filter === 'active') return activePlanId ? filter : 'all';
+  if (filter === 'legacy') return hasLegacyRows ? filter : fallback;
+
+  return knownPlanIds.has(filter.slice('plan:'.length)) ? filter : fallback;
+}
+
 /**
  * Filter replay rows by prediction plan without changing the underlying stock+period cache bucket.
  */
