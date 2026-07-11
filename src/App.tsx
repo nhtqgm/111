@@ -19,6 +19,7 @@ import {
   type ForecastHistoryRow,
 } from './utils/forecastHistory';
 import { compareProjectionRows, formatNumber, summarizeComparisons } from './utils/metrics';
+import { mergeLineValuePoints, mergeLineValuePointsPreservingEarlier } from './utils/linePoints';
 import {
   buildMa40Projection,
   type LineValuePoint,
@@ -330,7 +331,7 @@ export default function App() {
       ...visibleMaWindows.map((windowSize) => ({
           label: `预测MA${windowSize}`,
           color: lineColors[windowSize],
-          rows: mergeLineValuePoints(
+          rows: mergeLineValuePointsPreservingEarlier(
             visibleHistoryRows.map((row) => ({
               targetDate: row.actualDate ?? row.targetDate,
               value: row.predictedMaValues[windowSize],
@@ -1177,16 +1178,6 @@ function ValueList({
 
 function sumCalculationValues(values: Array<{ value: number }>) {
   return values.length ? values.reduce((total, item) => total + item.value, 0) : null;
-}
-
-function mergeLineValuePoints(...groups: LineValuePoint[][]) {
-  const values = new Map<string, number | null>();
-  groups.flat().forEach((row) => {
-    if (row.value !== null) values.set(row.targetDate, row.value);
-  });
-  return Array.from(values, ([targetDate, value]) => ({ targetDate, value })).sort((left, right) =>
-    left.targetDate.localeCompare(right.targetDate),
-  );
 }
 
 function formatSignedNumber(value: number | null) {
