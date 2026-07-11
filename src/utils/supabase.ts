@@ -1,5 +1,19 @@
 import { createClient, type SupabaseClient, type User } from '@supabase/supabase-js';
 import type { PredictionEvent } from './cloudPredictions.ts';
+import type { CloudWorkspace } from './cloudWorkspace.ts';
+
+export type CloudRole = 'user' | 'admin';
+
+export interface CloudProfile {
+  userId: string;
+  role: CloudRole;
+}
+
+export interface CloudWorkspaceRecord {
+  revision: number;
+  payload: CloudWorkspace;
+  updatedAt: string;
+}
 
 const projectUrl = import.meta.env.VITE_SUPABASE_URL ?? 'https://svupnipcyekyvdhhpbec.supabase.co';
 const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY ?? '';
@@ -63,6 +77,57 @@ export async function replaceCloudPredictionEvents(_user: User, events: Predicti
     })),
   });
   if (error) throw error;
+}
+
+export async function getCloudProfile(): Promise<CloudProfile | null> {
+  const api = requireCloudClient();
+  const { data, error } = await api.rpc('get_my_profile');
+  if (error) throw error;
+  const row = Array.isArray(data) ? data[0] : null;
+  if (!row || typeof row.user_id !== 'string' || (row.role !== 'user' && row.role !== 'admin')) return null;
+  return { userId: row.user_id, role: row.role };
+}
+
+export async function loadMyCloudWorkspace(): Promise<CloudWorkspaceRecord | null> {
+  const api = requireCloudClient();
+  const { data, error } = await api.rpc('get_my_workspace');
+  if (error) throw error;
+  const row = Array.isArray(data) ? data[0] : null;
+  if (!row) return null;
+  if (
+    typeof row.revision !== 'number' ||
+    !row.payload ||
+    typeof row.payload !== 'object' ||
+    (row.payload as CloudWorkspace).schema !== 'gupiao-cloud-workspace/v1'
+  ) {
+    throw new Error('Cloud workspace payload is invalid.');
+  }
+  return {
+    revision: row.revision,
+    payload: row.payload as CloudWorkspace,
+    updatedAt: typeof row.updated_at === 'string' ? row.updated_at : '',
+  };
+}
+
+export async function saveMyCloudWorkspace(
+  payload: CloudWorkspace,
+  expectedRevision: number,
+): Promise<CloudWorkspaceRecord> {
+  const api = requireCloudClient();
+  const { data, error } = await api.rpc('save_my_workspace', {
+    p_payload: payload,
+    p_expected_revision: expectedRevision,
+  });
+  if (error) throw error;
+  const row = Array.isArray(data) ? data[0] : null;
+  if (!row || typeof row.revision !== 'number' || !row.payload || typeof row.payload !== 'object') {
+    throw new Error('Cloud workspace save returned an invalid response.');
+  }
+  return {
+    revision: row.revision,
+    payload: row.payload as CloudWorkspace,
+    updatedAt: typeof row.updated_at === 'string' ? row.updated_at : '',
+  };
 }
 
 export async function downloadPredictionEvents(user: User) {

@@ -7,23 +7,14 @@ import KLineChart, {
 import { fetchKLines } from './services/eastmoney';
 import type { PeriodType, PredictionPoint, StockKLineResponse } from './types';
 import { filterCompletedKLineData } from './utils/completedPeriods';
-import { persistElectronStorage } from './utils/electronStorage';
 import {
-  applyPredictionEventsToRows,
-  createPredictionEventsFromStorageSnapshot,
-  foldPredictionEvents,
-  listPredictionStockCodes,
-  type PredictionEvent,
-} from './utils/cloudPredictions';
-import { clearCloudOutbox, getCloudDeviceId } from './utils/cloudOutbox';
-import {
-  downloadPredictionEvents,
+  getCloudProfile,
   getCloudUser,
   isCloudSyncConfigured,
-  replaceCloudPredictionEvents,
+  loadMyCloudWorkspace,
+  saveMyCloudWorkspace,
   signInToCloud,
   signOutOfCloud,
-  signUpForCloud,
 } from './utils/supabase';
 import type { User } from '@supabase/supabase-js';
 import {
@@ -31,12 +22,21 @@ import {
   createForecastHistorySnapshots,
   filterForecastHistorySnapshots,
   getPendingForecastRows,
-  loadForecastHistory,
   mergeForecastHistory,
-  recoverForecastHistoryFromBackupStorage,
-  saveForecastHistory,
+  type ForecastHistorySnapshot,
   type ForecastHistoryRow,
 } from './utils/forecastHistory';
+import {
+  createEmptyCloudWorkspace,
+  createCloudWorkspaceFromLegacyBackup,
+  createWorkspaceSaveQueue,
+  getWorkspaceForecastHistory,
+  getWorkspacePredictions,
+  setWorkspaceForecastHistory,
+  setWorkspacePredictions,
+  type CloudWorkspace,
+  type CloudWorkspaceSaveStatus,
+} from './utils/cloudWorkspace';
 import { compareProjectionRows, formatNumber, summarizeComparisons } from './utils/metrics';
 import { mergeLineValuePoints, mergeLineValuePointsPreservingEarlier } from './utils/linePoints';
 import {
@@ -49,16 +49,7 @@ import {
 } from './utils/movingAverage';
 import {
   generatePredictionRows,
-  loadKLineCache,
-  loadPredictions,
-  loadPredictionRows,
-  loadWorkspaceCache,
   normalizePredictionPoint,
-  predictionPlanKey,
-  saveKLineCache,
-  savePredictionDraft,
-  savePredictions,
-  saveWorkspaceCache,
 } from './utils/predictions';
 import { ALL_KLINE_PERIODS, refreshAllKLinePeriods } from './utils/periodRefresh';
 
@@ -71,7 +62,6 @@ const periods: Array<{ value: PeriodType; label: string; unit: string }> = [
 const forecastRowCount = 40;
 const minHistoryCount = 60;
 const todayDate = formatDate(new Date());
-const initialWorkspace = loadWorkspaceCache();
 const appVersion = packageJson.version;
 const updateManifestUrl = 'https://nhtqgm.github.io/111/update.json';
 const lineColors: Record<MaWindow, string> = {
@@ -118,16 +108,14 @@ interface UpdateState {
 type CloudSyncState = 'unconfigured' | 'signed-out' | 'ready' | 'syncing' | 'error';
 
 export default function App() {
-  const [stockCode, setStockCode] = useState(initialWorkspace?.stockCode ?? '000166');
-  const [queryCode, setQueryCode] = useState(initialWorkspace?.stockCode ?? '000166');
-  const [period, setPeriod] = useState<PeriodType>(initialWorkspace?.period ?? 'month');
+  const [stockCode, setStockCode] = useState('000166');
+  const [queryCode, setQueryCode] = useState('000166');
+  const [period, setPeriod] = useState<PeriodType>('month');
   const [data, setData] = useState<StockKLineResponse | null>(null);
   const [dataPeriod, setDataPeriod] = useState<PeriodType | null>(null);
   const [baseDate, setBaseDate] = useState(todayDate);
   const [predictions, setPredictions] = useState<PredictionPoint[]>([]);
-  const [forecastHistory, setForecastHistory] = useState(() =>
-    loadForecastHistory(initialWorkspace?.stockCode ?? '000166', initialWorkspace?.period ?? 'month'),
-  );
+  const [forecastHistory, setForecastHistory] = useState<ForecastHistorySnapshot[]>([]);
   const [visibleMaWindows, setVisibleMaWindows] = useState<MaWindow[]>([5, 10, 20, 40, 60]);
   const [showActualMaLines, setShowActualMaLines] = useState(false);
   const [inputMaWindow, setInputMaWindow] = useState<MaWindow>(MA40_WINDOW);
@@ -142,6 +130,11 @@ export default function App() {
     currentVersion: appVersion,
   });
   const [cloudUser, setCloudUser] = useState<User | null>(null);
+  const [cloudWorkspace, setCloudWorkspace] = useState<CloudWorkspace | null>(null);
+  const [cloudWorkspaceRevision, setCloudWorkspaceRevision] = useState(0);
+  const [cloudRole, setCloudRole] = useState<'user' | 'admin' | null>(null);
+  const [cloudSaveStatus, setCloudSaveStatus] = useState<CloudWorkspaceSaveStatus>('idle');
+  const [isCloudWorkspaceLoading, setIsCloudWorkspaceLoading] = useState(false);
   const [cloudStockCodes, setCloudStockCodes] = useState<string[]>([]);
   const [cloudSyncState, setCloudSyncState] = useState<CloudSyncState>(
     isCloudSyncConfigured() ? 'signed-out' : 'unconfigured',
@@ -156,6 +149,10 @@ export default function App() {
   const importedPlanRef = useRef<PredictionFileV5 | null>(null);
   const toastTimerRef = useRef<number | null>(null);
   const lastSavedSignatureRef = useRef('');
+  const cloudWorkspaceRef = useRef<CloudWorkspace | null>(null);
+  const cloudSaveQueueRef = useRef<ReturnType<typeof createWorkspaceSaveQueue> | null>(null);
+  const cloudSessionGenerationRef = useRef(0);
+  const marketDataRef = useRef(new Map<string, StockKLineResponse>());
 
   useEffect(
     () => () => {
@@ -171,7 +168,7 @@ export default function App() {
     void getCloudUser().then((user) => {
       setCloudUser(user);
       setCloudSyncState(user ? 'ready' : 'signed-out');
-      if (user) void syncCloudPredictions(user, true);
+      if (user) void loadCloudWorkspace(user, true);
     });
   }, []);
 
@@ -184,30 +181,32 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const cached = loadKLineCache(queryCode, period);
+    if (!cloudWorkspace) return;
+    const cached = marketDataRef.current.get(marketScopeKey(queryCode, period));
     setError('');
 
     if (!cached) {
       setData(null);
       setDataPeriod(null);
-      setPredictions([]);
-      setBaseDate(todayDate);
+      setPredictions(getWorkspacePredictions(cloudWorkspace, { stockCode: queryCode, period }));
+      setForecastHistory(getWorkspaceForecastHistory(cloudWorkspace, { stockCode: queryCode, period }));
+      setBaseDate(cloudWorkspace.workspace.baseDate || todayDate);
       showToast('暂无本地历史数据，请点击“联网更新”拉取最近历史收盘价', 'warning');
       return;
     }
 
-    const completed = filterCompletedKLineData(markAsLocalCache(cached.data), period);
+    const completed = filterCompletedKLineData(cached, period);
     setData(completed.data);
     setDataPeriod(period);
     setBaseDate(completed.lastCompletedDate ?? todayDate);
     showToast(
-      formatHistoryStatus(cached.updatedAt, completed.data.points.length, completed.removedPoints.length),
+      formatHistoryStatus(new Date().toISOString(), completed.data.points.length, completed.removedPoints.length),
       'info',
     );
     if (completed.data.points.length < minHistoryCount) {
       setError(`本地历史数据不足${minHistoryCount}条，MA60计算可能不完整，请联网更新一次`);
     }
-  }, [period, queryCode]);
+  }, [cloudWorkspace, period, queryCode]);
 
   useEffect(() => {
     if (!data || !baseDate || dataPeriod !== period || normalizeStockCode(data.code) !== normalizeStockCode(queryCode)) {
@@ -221,19 +220,28 @@ export default function App() {
       importedPlan.period === period
     ) {
       setPredictions(importedPlan.predictions);
-      savePredictions(predictionPlanKey(data.code, period, baseDate), importedPlan.predictions);
+      updateCloudWorkspace((workspace) =>
+        setWorkspacePredictions(workspace, { stockCode: data.code, period }, importedPlan.predictions),
+      );
       importedPlanRef.current = null;
       showToast('预测文件已加载', 'success');
       return;
     }
 
-    setPredictions(loadPredictionRows(data.code, period, baseDate, data.points, forecastRowCount));
-  }, [baseDate, data, period]);
+    const storedRows = cloudWorkspace
+      ? getWorkspacePredictions(cloudWorkspace, { stockCode: data.code, period })
+      : [];
+    setPredictions(
+      storedRows.length
+        ? storedRows
+        : generatePredictionRows(data.points, period, baseDate, forecastRowCount),
+    );
+  }, [baseDate, cloudWorkspace, data, period]);
 
   useEffect(() => {
-    if (!data || dataPeriod !== period) return;
-    setForecastHistory(loadForecastHistory(data.code, period));
-  }, [data, dataPeriod, period]);
+    if (!data || dataPeriod !== period || !cloudWorkspace) return;
+    setForecastHistory(getWorkspaceForecastHistory(cloudWorkspace, { stockCode: data.code, period }));
+  }, [cloudWorkspace, data, dataPeriod, period]);
 
   useEffect(() => {
     if (!data || !baseDate || !predictions.length) return;
@@ -249,6 +257,75 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, [baseDate, data, hasUnsavedChanges, period, predictions]);
 
+  function updateCloudWorkspace(transform: (workspace: CloudWorkspace) => CloudWorkspace) {
+    const current = cloudWorkspaceRef.current;
+    if (!current || !cloudUser) return;
+    const next = transform(current);
+    cloudWorkspaceRef.current = next;
+    setCloudWorkspace(next);
+    cloudSaveQueueRef.current?.schedule(next);
+  }
+
+  async function loadCloudWorkspace(user: User, quiet = false) {
+    const generation = ++cloudSessionGenerationRef.current;
+    cloudSaveQueueRef.current?.switchAccount('', 0);
+    cloudWorkspaceRef.current = null;
+    setCloudWorkspace(null);
+    setCloudRole(null);
+    setData(null);
+    setDataPeriod(null);
+    setPredictions([]);
+    setForecastHistory([]);
+    setIsCloudWorkspaceLoading(true);
+    setCloudSyncState('syncing');
+
+    try {
+      const [profile, record] = await Promise.all([getCloudProfile(), loadMyCloudWorkspace()]);
+      if (generation !== cloudSessionGenerationRef.current) return;
+      if (!profile || profile.userId !== user.id) throw new Error('Cloud account profile is unavailable.');
+
+      let workspace = record?.payload ?? createEmptyCloudWorkspace();
+      let revision = record?.revision ?? 0;
+      if (!record) {
+        const created = await saveMyCloudWorkspace(workspace, 0);
+        if (generation !== cloudSessionGenerationRef.current) return;
+        workspace = created.payload;
+        revision = created.revision;
+      }
+
+      cloudWorkspaceRef.current = workspace;
+      setCloudWorkspace(workspace);
+      setCloudWorkspaceRevision(revision);
+      setCloudRole(profile.role);
+      setStockCode(workspace.workspace.stockCode);
+      setQueryCode(workspace.workspace.stockCode);
+      setPeriod(workspace.workspace.period);
+      setBaseDate(workspace.workspace.baseDate || todayDate);
+      setCloudStockCodes(
+        [...new Set(Object.keys(workspace.predictions).map((key) => key.split(':')[0]))].sort(),
+      );
+      cloudSaveQueueRef.current = createWorkspaceSaveQueue({
+        accountId: user.id,
+        revision,
+        save: async ({ payload, expectedRevision }) => {
+          const saved = await saveMyCloudWorkspace(payload, expectedRevision);
+          if (generation === cloudSessionGenerationRef.current) setCloudWorkspaceRevision(saved.revision);
+          return { revision: saved.revision, payload: saved.payload };
+        },
+        onStatusChange: setCloudSaveStatus,
+      });
+      setCloudSyncState('ready');
+      if (!quiet) showToast('Cloud workspace loaded.', 'success');
+      void refreshHistoricalData();
+    } catch (err) {
+      if (generation !== cloudSessionGenerationRef.current) return;
+      setCloudSyncState('error');
+      if (!quiet) showToast(err instanceof Error ? err.message : 'Cloud workspace load failed.', 'warning');
+    } finally {
+      if (generation === cloudSessionGenerationRef.current) setIsCloudWorkspaceLoading(false);
+    }
+  }
+
   function saveCurrentWorkspace({
     force = false,
     notice,
@@ -256,6 +333,15 @@ export default function App() {
     force?: boolean;
     notice: 'auto' | 'manual' | 'silent';
   }) {
+    if (!data || !baseDate || !predictions.length || !cloudWorkspace) return;
+    capturePredictionHistory(predictions, data);
+    updateCloudWorkspace((workspace) => ({
+      ...setWorkspacePredictions(workspace, { stockCode: data.code, period }, predictions),
+      workspace: { stockCode: data.code, period, baseDate },
+    }));
+    setHasUnsavedChanges(false);
+    if (notice === 'manual') showToast('Saved to cloud.', 'success');
+    /*
     if (!data || !baseDate || !predictions.length) {
       if (notice === 'manual') {
         showToast('暂无可保存的数据', 'warning');
@@ -298,6 +384,7 @@ export default function App() {
         'success',
       );
     }
+    */
   }
 
   const projection = useMemo(
@@ -439,7 +526,9 @@ export default function App() {
       return;
     }
 
-    const existing = loadForecastHistory(sourceData.code, workspacePeriod);
+    const existing = cloudWorkspace
+      ? getWorkspaceForecastHistory(cloudWorkspace, { stockCode: sourceData.code, period: workspacePeriod })
+      : [];
     const frozenIds = new Set(
       buildForecastHistoryRows(existing, sourceData.points)
         .filter((row) => row.actualClose !== null)
@@ -463,13 +552,30 @@ export default function App() {
     }
 
     const merged = mergeForecastHistory(existing, incoming);
-    saveForecastHistory(sourceData.code, workspacePeriod, merged);
+    updateCloudWorkspace((workspace) =>
+      setWorkspaceForecastHistory(
+        workspace,
+        { stockCode: sourceData.code, period: workspacePeriod },
+        merged,
+      ),
+    );
     if (workspacePeriod === period && normalizeStockCode(sourceData.code) === normalizeStockCode(queryCode)) {
       setForecastHistory(merged);
     }
   }
 
   function captureCachedPredictionHistory(workspacePeriod: PeriodType) {
+    const cached = marketDataRef.current.get(marketScopeKey(stockCode, workspacePeriod));
+    if (!cached) return;
+    const completed = filterCompletedKLineData(cached, workspacePeriod);
+    const workspaceBaseDate = completed.lastCompletedDate;
+    if (!workspaceBaseDate || !cloudWorkspace) return;
+    const storedRows = getWorkspacePredictions(cloudWorkspace, {
+      stockCode: completed.data.code,
+      period: workspacePeriod,
+    });
+    if (storedRows.length) capturePredictionHistory(storedRows, completed.data, workspacePeriod, workspaceBaseDate);
+    /*
     const cached = loadKLineCache(stockCode, workspacePeriod);
     if (!cached) return;
 
@@ -483,16 +589,18 @@ export default function App() {
     if (storedRows?.length) {
       capturePredictionHistory(storedRows, completed.data, workspacePeriod, workspaceBaseDate);
     }
+    */
   }
 
   function persistPredictionDraft(rows: PredictionPoint[]) {
     if (!data || !baseDate || !rows.length) return;
-
-    // Keep the editable table durable between the 30-second archive saves.
-    // This prevents a browser refresh from reverting the most recent input.
-    savePredictionDraft(data.code, period, baseDate, rows);
+    updateCloudWorkspace((workspace) => ({
+      ...setWorkspacePredictions(workspace, { stockCode: data.code, period }, rows),
+      workspace: { stockCode: data.code, period, baseDate },
+    }));
   }
 
+  /*
   function applyCloudEventsLocally(events: PredictionEvent[]) {
     setCloudStockCodes(listPredictionStockCodes(events));
     const folded = foldPredictionEvents(events);
@@ -591,7 +699,32 @@ export default function App() {
     }
   }
 
-  async function submitCloudAccount(mode: 'sign-in' | 'sign-up') {
+  */
+  function selectCloudStockCode(code: string) {
+    if (!code) return;
+    setStockCode(code);
+    setQueryCode(code);
+  }
+
+  async function readCloudPredictions(user = cloudUser) {
+    if (!user) {
+      setIsCloudAccountOpen(true);
+      return;
+    }
+    await loadCloudWorkspace(user);
+  }
+
+  async function saveCurrentWorkspaceToCloud() {
+    saveCurrentWorkspace({ force: true, notice: 'silent' });
+    await cloudSaveQueueRef.current?.flush();
+    if (cloudSaveQueueRef.current?.getStatus() === 'error') {
+      showToast('Cloud save failed. Please retry.', 'warning');
+      return;
+    }
+    showToast('Saved to cloud.', 'success');
+  }
+
+  async function submitCloudAccount(mode: 'sign-in') {
     const email = cloudEmail.trim();
     if (!email || !cloudPassword) {
       showToast('请填写云端账户邮箱和密码', 'warning');
@@ -600,6 +733,7 @@ export default function App() {
 
     setCloudSyncState('syncing');
     try {
+      /* Public sign-up is disabled. Accounts are provisioned by an administrator.
       if (mode === 'sign-up') {
         const result = await signUpForCloud(email, cloudPassword);
         if (!result.user) throw new Error('注册未返回账户信息');
@@ -613,12 +747,13 @@ export default function App() {
         await syncCloudPredictions(result.user);
         return;
       }
+      */
 
       const user = await signInToCloud(email, cloudPassword);
       if (!user) throw new Error('登录未返回账户信息');
       setCloudUser(user);
       setIsCloudAccountOpen(false);
-      await syncCloudPredictions(user);
+      await loadCloudWorkspace(user);
     } catch (err) {
       setCloudSyncState('error');
       showToast(err instanceof Error ? `云端账户操作失败：${err.message}` : '云端账户操作失败', 'warning');
@@ -628,7 +763,16 @@ export default function App() {
   async function signOutCloudAccount() {
     try {
       await signOutOfCloud();
+      cloudSessionGenerationRef.current += 1;
+      cloudSaveQueueRef.current?.switchAccount('', 0);
+      cloudWorkspaceRef.current = null;
       setCloudUser(null);
+      setCloudWorkspace(null);
+      setCloudRole(null);
+      setPredictions([]);
+      setForecastHistory([]);
+      setData(null);
+      setDataPeriod(null);
       setCloudSyncState('signed-out');
       setIsCloudAccountOpen(false);
       showToast('已退出云端账户。本地预测仍保留在本机。', 'info');
@@ -775,7 +919,7 @@ export default function App() {
       const successful = results.flatMap((result) => {
         if (result.status !== 'success') return [];
         const completed = filterCompletedKLineData(markAsOnlineResult(result.data), result.period);
-        saveKLineCache(completed.data, result.period);
+        marketDataRef.current.set(marketScopeKey(completed.data.code, result.period), completed.data);
         return [{ period: result.period, completed }];
       });
       const active = successful.find((result) => result.period === period);
@@ -827,6 +971,24 @@ export default function App() {
   }
 
   function exportAllData() {
+    if (!cloudWorkspace) {
+      showToast('No cloud workspace is loaded.', 'warning');
+      return;
+    }
+    const blob = new Blob([JSON.stringify(cloudWorkspace, null, 2)], {
+      type: 'application/json;charset=utf-8',
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `gupiao-cloud-workspace-${formatDate(new Date())}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    showToast('Cloud workspace exported.', 'success');
+    return;
+    /*
     if (data && baseDate && predictions.length) {
       savePredictions(predictionPlanKey(data.code, period, baseDate), predictions);
       saveWorkspaceCache({
@@ -861,6 +1023,7 @@ export default function App() {
     link.remove();
     URL.revokeObjectURL(url);
     showToast(`已导出全部本地数据：${Object.keys(storage).length}项`, 'success');
+    */
   }
 
   function exportPredictions() {
@@ -894,6 +1057,28 @@ export default function App() {
 
   async function importPredictions(file: File | undefined) {
     if (!file) return;
+
+    try {
+      const rawFile = JSON.parse(await file.text()) as unknown;
+      const workspace = isCloudWorkspace(rawFile)
+        ? rawFile
+        : createCloudWorkspaceFromLegacyBackup(rawFile);
+      if (!cloudUser) throw new Error('Please sign in before importing data.');
+      const saved = await saveMyCloudWorkspace(workspace, cloudWorkspaceRevision);
+      cloudWorkspaceRef.current = saved.payload;
+      setCloudWorkspace(saved.payload);
+      setCloudWorkspaceRevision(saved.revision);
+      setStockCode(saved.payload.workspace.stockCode);
+      setQueryCode(saved.payload.workspace.stockCode);
+      setPeriod(saved.payload.workspace.period);
+      showToast('Imported into the current cloud account.', 'success');
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Import failed.', 'warning');
+    } finally {
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+    return;
+    /*
 
     try {
       const text = await file.text();
@@ -946,6 +1131,7 @@ export default function App() {
     } finally {
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
+    */
   }
 
   function renderPredictionTable(expanded = false) {
@@ -989,6 +1175,31 @@ export default function App() {
           </div>
         ))}
       </div>
+    );
+  }
+
+  if (!isCloudSyncConfigured()) {
+    return <main className="app-shell"><div className="error-banner">Cloud configuration is required.</div></main>;
+  }
+
+  if (!cloudUser || isCloudWorkspaceLoading || !cloudWorkspace) {
+    return (
+      <main className="app-shell">
+        <div className="loading">
+          {isCloudWorkspaceLoading ? 'Loading cloud workspace...' : 'Please sign in to use your cloud workspace.'}
+        </div>
+        <CloudAccountModal
+          email={cloudEmail}
+          password={cloudPassword}
+          cloudUser={cloudUser}
+          isBusy={cloudSyncState === 'syncing'}
+          onEmailChange={setCloudEmail}
+          onPasswordChange={setCloudPassword}
+          onSignIn={() => void submitCloudAccount('sign-in')}
+          onSignOut={() => void signOutCloudAccount()}
+          onClose={() => setIsCloudAccountOpen(false)}
+        />
+      </main>
     );
   }
 
@@ -1251,7 +1462,6 @@ export default function App() {
           onEmailChange={setCloudEmail}
           onPasswordChange={setCloudPassword}
           onSignIn={() => void submitCloudAccount('sign-in')}
-          onSignUp={() => void submitCloudAccount('sign-up')}
           onSignOut={() => void signOutCloudAccount()}
           onClose={() => setIsCloudAccountOpen(false)}
         />
@@ -1268,7 +1478,6 @@ function CloudAccountModal({
   onEmailChange,
   onPasswordChange,
   onSignIn,
-  onSignUp,
   onSignOut,
   onClose,
 }: {
@@ -1279,7 +1488,6 @@ function CloudAccountModal({
   onEmailChange: (value: string) => void;
   onPasswordChange: (value: string) => void;
   onSignIn: () => void;
-  onSignUp: () => void;
   onSignOut: () => void;
   onClose: () => void;
 }) {
@@ -1327,9 +1535,10 @@ function CloudAccountModal({
               <button type="button" onClick={onSignIn} disabled={isBusy}>
                 登录并同步
               </button>
+              {/* Account provisioning is restricted to administrators.
               <button type="button" className="ghost" onClick={onSignUp} disabled={isBusy}>
                 注册账户
-              </button>
+              </button> */}
             </div>
           </div>
         )}
@@ -1643,6 +1852,20 @@ function isPredictionFileV5(value: unknown): value is PredictionFileV5 {
     typeof candidate.baseDate === 'string' &&
     Array.isArray(candidate.predictions)
   );
+}
+
+function isCloudWorkspace(value: unknown): value is CloudWorkspace {
+  const candidate = value as Partial<CloudWorkspace>;
+  return (
+    candidate?.schema === 'gupiao-cloud-workspace/v1' &&
+    !!candidate.workspace &&
+    !!candidate.predictions &&
+    !!candidate.forecastHistory
+  );
+}
+
+function marketScopeKey(stockCode: string, period: PeriodType) {
+  return `${stockCode.replace(/\D/g, '').slice(0, 6)}:${period}`;
 }
 
 function formatDecimalInput(value: string) {
