@@ -1,7 +1,7 @@
 {
   "app": "gupiao-ma40",
-  "version": "0.2.8",
-  "url": "https://github.com/nhtqgm/111/releases/download/v0.2.8/gupiao-forecast-0.2.8-win7.exe",
-  "notes": "Preserve EXE data automatically when switching between bundled and online UI.",
-  "publishedAt": "2026-07-10"
+  "version": "0.2.9",
+  "url": "https://github.com/nhtqgm/111/releases/download/v0.2.9/gupiao-forecast-0.2.9-win7-x64.exe",
+  "notes": "Cloud workspaces are isolated by account. Only user forecasts are synced; market K-line data remains local and updates online.",
+  "publishedAt": "2026-07-11"
 }
