@@ -1,6 +1,9 @@
 import { createClient, type SupabaseClient, type User } from '@supabase/supabase-js';
 import type { PredictionEvent } from './cloudPredictions.ts';
+import type { CloudPredictionValueMutation } from './cloudPredictionStorage.ts';
 import type { CloudWorkspace } from './cloudWorkspace.ts';
+import type { ForecastHistorySnapshot } from './forecastHistory.ts';
+import type { PeriodType } from '../types.ts';
 
 export type CloudRole = 'user' | 'admin';
 
@@ -90,12 +93,11 @@ export async function getCloudProfile(): Promise<CloudProfile | null> {
 
 export async function loadMyCloudWorkspace(): Promise<CloudWorkspaceRecord | null> {
   const api = requireCloudClient();
-  const { data, error } = await api.rpc('get_my_workspace');
+  const { data, error } = await api.rpc('get_my_prediction_workspace');
   if (error) throw error;
   const row = Array.isArray(data) ? data[0] : null;
   if (!row) return null;
   if (
-    typeof row.revision !== 'number' ||
     !row.payload ||
     typeof row.payload !== 'object' ||
     (row.payload as CloudWorkspace).schema !== 'gupiao-cloud-workspace/v1'
@@ -103,7 +105,7 @@ export async function loadMyCloudWorkspace(): Promise<CloudWorkspaceRecord | nul
     throw new Error('Cloud workspace payload is invalid.');
   }
   return {
-    revision: row.revision,
+    revision: 0,
     payload: row.payload as CloudWorkspace,
     updatedAt: typeof row.updated_at === 'string' ? row.updated_at : '',
   };
@@ -128,6 +130,42 @@ export async function saveMyCloudWorkspace(
     payload: row.payload as CloudWorkspace,
     updatedAt: typeof row.updated_at === 'string' ? row.updated_at : '',
   };
+}
+
+export async function saveMyPredictionValues(mutations: CloudPredictionValueMutation[]) {
+  if (!mutations.length) return;
+  const api = requireCloudClient();
+  const { error } = await api.rpc('save_my_prediction_values', {
+    p_values: mutations.map((mutation) => ({
+      stock_code: mutation.stockCode,
+      period: mutation.period,
+      target_date: mutation.targetDate,
+      metric: mutation.metric,
+      value: mutation.value,
+    })),
+  });
+  if (error) throw error;
+}
+
+export async function saveMyWorkspacePreferences(
+  stockCode: string,
+  period: PeriodType,
+  baseDate: string,
+) {
+  const api = requireCloudClient();
+  const { error } = await api.rpc('save_my_workspace_preferences', {
+    p_stock_code: stockCode,
+    p_period: period,
+    p_base_date: baseDate || null,
+  });
+  if (error) throw error;
+}
+
+export async function upsertMyForecastHistory(snapshots: ForecastHistorySnapshot[]) {
+  if (!snapshots.length) return;
+  const api = requireCloudClient();
+  const { error } = await api.rpc('upsert_my_forecast_history', { p_snapshots: snapshots });
+  if (error) throw error;
 }
 
 export function isCloudWorkspaceRevisionConflict(error: unknown) {
