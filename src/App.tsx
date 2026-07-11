@@ -37,6 +37,7 @@ import {
   normalizePredictionPoint,
   predictionPlanKey,
   saveKLineCache,
+  savePredictionDraft,
   savePredictions,
   saveWorkspaceCache,
 } from './utils/predictions';
@@ -436,15 +437,23 @@ export default function App() {
     }
   }
 
+  function persistPredictionDraft(rows: PredictionPoint[]) {
+    if (!data || !baseDate || !rows.length) return;
+
+    // Keep the editable table durable between the 30-second archive saves.
+    // This prevents a browser refresh from reverting the most recent input.
+    savePredictionDraft(data.code, period, baseDate, rows);
+  }
+
   function updatePrediction(targetDate: string, value: string) {
     const normalizedValue = normalizeDecimalInput(value);
-    setPredictions((current) =>
-      current.map((row) =>
-        row.targetDate === targetDate
-          ? setPredictionInputValue(row, inputMaWindow, normalizedValue)
-          : row,
-      ),
+    const nextRows = predictions.map((row) =>
+      row.targetDate === targetDate
+        ? setPredictionInputValue(row, inputMaWindow, normalizedValue)
+        : row,
     );
+    setPredictions(nextRows);
+    persistPredictionDraft(nextRows);
   }
 
   function formatPredictionInput(targetDate: string) {
@@ -612,12 +621,16 @@ export default function App() {
   }
 
   function updateNote(value: string) {
-    setPredictions((current) => current.map((row) => ({ ...row, note: value })));
+    const nextRows = predictions.map((row) => ({ ...row, note: value }));
+    setPredictions(nextRows);
+    persistPredictionDraft(nextRows);
   }
 
   function resetRows() {
     if (!data || !baseDate) return;
-    setPredictions(generatePredictionRows(data.points, period, baseDate, forecastRowCount));
+    const nextRows = generatePredictionRows(data.points, period, baseDate, forecastRowCount);
+    setPredictions(nextRows);
+    persistPredictionDraft(nextRows);
     showToast('已重置当前预测表', 'success');
   }
 

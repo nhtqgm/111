@@ -73,6 +73,59 @@ test('mergeAppStorage preserves filled predictions and newer timestamped caches'
   assert.equal(JSON.parse(merged['prediction-ma40:last-workspace']).stockCode, '000166');
 });
 
+test('mergeAppStorage prefers a newer non-empty prediction table over an older fuller table', () => {
+  const { mergeAppStorage } = loadStorageModule();
+  assert.equal(typeof mergeAppStorage, 'function');
+
+  const predictionKey = 'prediction-ma:688571:day:v2';
+  const olderFullerTable = JSON.stringify(
+    Array.from({ length: 30 }, (_, index) => ({
+      targetDate: `2026-07-${String(index + 10).padStart(2, '0')}`,
+      predictedMa40: '9.1000',
+      predictedMaValues: { 40: '9.1000' },
+    })),
+  );
+  const newerCurrentTable = JSON.stringify([
+    {
+      targetDate: '2026-07-10',
+      predictedMa40: '9.2000',
+      predictedMaValues: { 40: '9.2000' },
+    },
+    {
+      targetDate: '2026-07-13',
+      predictedMa40: '9.1300',
+      predictedMaValues: { 40: '9.1300' },
+    },
+    {
+      targetDate: '2026-07-14',
+      predictedMa40: '9.1300',
+      predictedMaValues: { 40: '9.1300' },
+    },
+  ]);
+
+  const merged = mergeAppStorage(
+    {
+      [predictionKey]: olderFullerTable,
+      'prediction-ma40:last-workspace': JSON.stringify({
+        stockCode: '688571',
+        period: 'day',
+        updatedAt: '2026-07-11T12:00:00.000Z',
+      }),
+    },
+    {
+      [predictionKey]: newerCurrentTable,
+      'prediction-ma40:last-workspace': JSON.stringify({
+        stockCode: '688571',
+        period: 'day',
+        updatedAt: '2026-07-11T12:24:00.000Z',
+      }),
+    },
+  );
+
+  assert.equal(merged[predictionKey], newerCurrentTable);
+  assert.equal(JSON.parse(merged[predictionKey])[0].predictedMa40, '9.2000');
+});
+
 test('app storage store persists snapshots and keeps rolling backups', async (t) => {
   const { createAppStorageStore } = loadStorageModule();
   assert.equal(typeof createAppStorageStore, 'function');

@@ -45,8 +45,51 @@ function getPredictionScore(value) {
   }, 0);
 }
 
-function chooseStoredValue(key, existingValue, incomingValue) {
+function isPredictionTableKey(key) {
+  return /^prediction-ma:\d{6}:(day|week|month):v2$/.test(key);
+}
+
+function getWorkspaceUpdatedAt(storage) {
+  return getUpdatedAt(storage['prediction-ma40:last-workspace']);
+}
+
+function choosePredictionValue(
+  existingValue,
+  incomingValue,
+  existingWorkspaceUpdatedAt,
+  incomingWorkspaceUpdatedAt,
+) {
+  const existingScore = getPredictionScore(existingValue);
+  const incomingScore = getPredictionScore(incomingValue);
+
+  // Never let a generated blank table erase a real prediction table.
+  if (existingScore === 0 && incomingScore > 0) return incomingValue;
+  if (incomingScore === 0 && existingScore > 0) return existingValue;
+
+  // Prediction rows themselves do not carry updatedAt. The workspace timestamp is
+  // written in the same save operation, so it is the only reliable ordering signal.
+  if (existingWorkspaceUpdatedAt !== null || incomingWorkspaceUpdatedAt !== null) {
+    if (existingWorkspaceUpdatedAt === null) return incomingValue;
+    if (incomingWorkspaceUpdatedAt === null) return existingValue;
+    if (incomingWorkspaceUpdatedAt !== existingWorkspaceUpdatedAt) {
+      return incomingWorkspaceUpdatedAt > existingWorkspaceUpdatedAt ? incomingValue : existingValue;
+    }
+  }
+
+  return incomingScore > existingScore ? incomingValue : existingValue;
+}
+
+function chooseStoredValue(key, existingValue, incomingValue, timestamps = {}) {
   if (existingValue === incomingValue) return existingValue;
+
+  if (isPredictionTableKey(key)) {
+    return choosePredictionValue(
+      existingValue,
+      incomingValue,
+      timestamps.existingWorkspaceUpdatedAt ?? null,
+      timestamps.incomingWorkspaceUpdatedAt ?? null,
+    );
+  }
 
   const existingUpdatedAt = getUpdatedAt(existingValue);
   const incomingUpdatedAt = getUpdatedAt(incomingValue);
@@ -56,12 +99,6 @@ function chooseStoredValue(key, existingValue, incomingValue) {
     return incomingUpdatedAt > existingUpdatedAt ? incomingValue : existingValue;
   }
 
-  if (key.startsWith('prediction-ma:')) {
-    return getPredictionScore(incomingValue) > getPredictionScore(existingValue)
-      ? incomingValue
-      : existingValue;
-  }
-
   return existingValue;
 }
 
@@ -69,10 +106,14 @@ function mergeAppStorage(existingValue, incomingValue) {
   const existing = filterAppStorage(existingValue);
   const incoming = filterAppStorage(incomingValue);
   const merged = { ...existing };
+  const timestamps = {
+    existingWorkspaceUpdatedAt: getWorkspaceUpdatedAt(existing),
+    incomingWorkspaceUpdatedAt: getWorkspaceUpdatedAt(incoming),
+  };
 
   Object.entries(incoming).forEach(([key, value]) => {
     merged[key] = Object.prototype.hasOwnProperty.call(merged, key)
-      ? chooseStoredValue(key, merged[key], value)
+      ? chooseStoredValue(key, merged[key], value, timestamps)
       : value;
   });
 

@@ -102,6 +102,40 @@ test('persistElectronStorage sends the complete application snapshot', async () 
   ]);
 });
 
+test('savePredictionDraft keeps the latest edit through a page refresh', async (t) => {
+  const previousLocalStorage = globalThis.localStorage;
+  const previousWindow = globalThis.window;
+  const storage = new MemoryStorage();
+  Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: storage });
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: {} });
+  t.after(() => {
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      value: previousLocalStorage,
+    });
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: previousWindow });
+  });
+
+  const { predictionPlanKey, savePredictionDraft } = await import('../src/utils/predictions.ts');
+  const rows = [
+    {
+      targetDate: '2026-07-10',
+      predictedMa40: '9.2000',
+      predictedMaValues: { 40: '9.2000' },
+      note: '',
+    },
+  ];
+
+  savePredictionDraft('688571', 'day', '2026-07-09', rows);
+
+  assert.deepEqual(JSON.parse(storage.getItem(predictionPlanKey('688571', 'day')) ?? '[]'), rows);
+  const workspace = JSON.parse(storage.getItem('prediction-ma40:last-workspace') ?? '{}');
+  assert.equal(workspace.stockCode, '688571');
+  assert.equal(workspace.period, 'day');
+  assert.equal(workspace.baseDate, '2026-07-09');
+  assert.equal(typeof workspace.updatedAt, 'string');
+});
+
 test('queueElectronStorageSync collapses duplicate writes in the same turn', async () => {
   const { queueElectronStorageSync } = await loadStorageModule();
   assert.equal(typeof queueElectronStorageSync, 'function');

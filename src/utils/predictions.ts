@@ -32,6 +32,21 @@ export function savePredictions(key: string, rows: PredictionPoint[]) {
   void queueElectronStorageSync();
 }
 
+export function savePredictionDraft(
+  stockCode: string,
+  period: PeriodType,
+  baseDate: string,
+  rows: PredictionPoint[],
+) {
+  savePredictions(predictionPlanKey(stockCode, period), rows);
+  saveWorkspaceCache({
+    stockCode,
+    period,
+    baseDate,
+    updatedAt: new Date().toISOString(),
+  });
+}
+
 export function loadPredictionRows(
   stockCode: string,
   period: PeriodType,
