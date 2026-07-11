@@ -54,27 +54,12 @@ export function loadPredictionRows(
   points: KLinePoint[],
   rowCount: number,
 ): PredictionPoint[] {
-  const rows = generatePredictionRows(points, period, baseDate, rowCount);
   const currentRows =
     loadPredictions(predictionPlanKey(stockCode, period, baseDate)) ??
     loadPredictions(legacyPredictionPlanKey(stockCode, period, baseDate)) ??
     [];
 
-  return rows.map((row) => {
-    const currentMatch = currentRows.find((item) => item.targetDate === row.targetDate);
-    if (!currentMatch) return row;
-
-    const normalized = normalizePredictionPoint(currentMatch);
-    return {
-      ...row,
-      predictedMaValues: mergePredictionValues(row.predictedMaValues, normalized.predictedMaValues),
-      predictedMa40:
-        row.predictedMa40.trim() === '' && normalized.predictedMa40.trim() !== ''
-          ? normalized.predictedMa40
-          : row.predictedMa40,
-      note: row.note.trim() === '' && normalized.note.trim() !== '' ? normalized.note : row.note,
-    };
-  });
+  return hydratePredictionRows(currentRows, points, period, baseDate, rowCount);
 }
 
 export function loadWorkspaceCache(): WorkspaceCache | null {
@@ -155,6 +140,38 @@ export function generatePredictionRows(
     predictedMaValues: {},
     note: '',
   }));
+}
+
+/**
+ * Cloud storage deliberately omits blank values. Rebuild those blank input
+ * rows locally, while keeping every date where the user has already entered a
+ * prediction (including historical forecasts outside the current horizon).
+ */
+export function hydratePredictionRows(
+  savedRows: PredictionPoint[],
+  points: KLinePoint[],
+  period: PeriodType,
+  baseDate: string,
+  rowCount: number,
+): PredictionPoint[] {
+  const generatedRows = generatePredictionRows(points, period, baseDate, rowCount);
+  const savedByDate = new Map(savedRows.map((row) => [row.targetDate, normalizePredictionPoint(row)]));
+  const horizonDates = new Set(generatedRows.map((row) => row.targetDate));
+
+  const hydratedRows = generatedRows.map((row) => {
+    const saved = savedByDate.get(row.targetDate);
+    if (!saved) return row;
+
+    return {
+      ...row,
+      predictedMaValues: mergePredictionValues(row.predictedMaValues, saved.predictedMaValues),
+      predictedMa40: saved.predictedMa40.trim() || row.predictedMa40,
+      note: saved.note.trim() || row.note,
+    };
+  });
+
+  const historicalRows = [...savedByDate.values()].filter((row) => !horizonDates.has(row.targetDate));
+  return [...historicalRows, ...hydratedRows].sort((left, right) => left.targetDate.localeCompare(right.targetDate));
 }
 
 export function normalizePredictionPoint(value: any): PredictionPoint {

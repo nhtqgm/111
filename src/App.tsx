@@ -53,6 +53,7 @@ import {
 } from './utils/movingAverage';
 import {
   generatePredictionRows,
+  hydratePredictionRows,
   normalizePredictionPoint,
 } from './utils/predictions';
 import { ALL_KLINE_PERIODS, refreshAllKLinePeriods } from './utils/periodRefresh';
@@ -63,7 +64,7 @@ const periods: Array<{ value: PeriodType; label: string; unit: string }> = [
   { value: 'month', label: '月K', unit: '月' },
 ];
 
-const forecastRowCount = 40;
+const forecastRowCount = Math.max(...MA_WINDOWS);
 const minHistoryCount = 60;
 const todayDate = formatDate(new Date());
 const appVersion = packageJson.version;
@@ -234,11 +235,7 @@ export default function App() {
     const storedRows = cloudWorkspace
       ? getWorkspacePredictions(cloudWorkspace, { stockCode: data.code, period })
       : [];
-    setPredictions(
-      storedRows.length
-        ? storedRows
-        : generatePredictionRows(data.points, period, baseDate, forecastRowCount),
-    );
+    setPredictions(hydratePredictionRows(storedRows, data.points, period, baseDate, forecastRowCount));
   }, [baseDate, cloudWorkspace, data, period]);
 
   useEffect(() => {
@@ -388,6 +385,14 @@ export default function App() {
   const filledCount = predictions.filter(
     (row) => getPredictionInputValue(row, inputMaWindow).trim() !== '',
   ).length;
+  const inputHorizonDates = useMemo(
+    () => new Set(data ? generatePredictionRows(data.points, period, baseDate, inputMaWindow).map((row) => row.targetDate) : []),
+    [baseDate, data, inputMaWindow, period],
+  );
+  const predictionTableRows = useMemo(
+    () => projection.rows.filter((row) => inputHorizonDates.has(row.targetDate) || hasSavedPrediction(row)),
+    [inputHorizonDates, projection.rows],
+  );
   const updateButtonText =
     updateState.status === 'checking'
       ? '检查中'
@@ -1132,7 +1137,7 @@ export default function App() {
             <span key={windowSize}>MA{windowSize}</span>
           ))}
         </div>
-        {projection.rows.map((row) => (
+        {predictionTableRows.map((row) => (
           <div className="prediction-row" key={row.targetDate} style={predictionTableStyle}>
             <span className="date-cell">{row.targetDate}</span>
             <input
@@ -1317,7 +1322,7 @@ export default function App() {
         <Metric label="最新周期" value={latest?.date ?? '--'} />
         <Metric label="历史数量" value={data ? `${data.points.length}` : '--'} />
         <Metric label="预测窗口" value={`${inputMaWindow}${unit}`} />
-        <Metric label="已填写" value={`${filledCount}/${predictions.length || forecastRowCount}`} />
+        <Metric label="已填写" value={`${filledCount}/${inputMaWindow}`} />
         <Metric label="可对比" value={`${summary.compared}`} />
         <Metric label="MAE" value={summary.mae === null ? '--' : summary.mae.toFixed(2)} />
         <Metric label="MAPE" value={summary.mape === null ? '--' : `${summary.mape.toFixed(2)}%`} />
@@ -1896,6 +1901,12 @@ function normalizeDecimalInput(value: string) {
 
 function getPredictionInputValue(row: PredictionPoint, windowSize: MaWindow) {
   return row.predictedMaValues[String(windowSize)] ?? (windowSize === 40 ? row.predictedMa40 : '');
+}
+
+function hasSavedPrediction(row: PredictionPoint) {
+  return row.predictedMa40.trim() !== '' ||
+    Object.values(row.predictedMaValues).some((value) => value.trim() !== '') ||
+    row.note.trim() !== '';
 }
 
 function setPredictionInputValue(
