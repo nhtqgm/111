@@ -3,6 +3,15 @@ export interface ChartZoomRange {
   end: number;
 }
 
+export function getStableChartZoomRange(
+  previousAxisSignature: string,
+  axisSignature: string,
+  currentRange: ChartZoomRange,
+  defaultRange: ChartZoomRange,
+): ChartZoomRange {
+  return previousAxisSignature === axisSignature ? currentRange : defaultRange;
+}
+
 export function getForecastCenteredZoomRange(xAxis: string[], baseDate: string): ChartZoomRange {
   const baseIndex = xAxis.indexOf(baseDate);
   const forecastCount = xAxis.length - baseIndex - 1;

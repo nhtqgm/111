@@ -11,8 +11,10 @@ import { persistElectronStorage } from './utils/electronStorage';
 import {
   buildForecastHistoryRows,
   createForecastHistorySnapshots,
+  getPendingForecastRows,
   loadForecastHistory,
   mergeForecastHistory,
+  recoverForecastHistoryFromBackupStorage,
   saveForecastHistory,
   type ForecastHistoryRow,
 } from './utils/forecastHistory';
@@ -171,9 +173,6 @@ export default function App() {
     if (!data || !baseDate || dataPeriod !== period || normalizeStockCode(data.code) !== normalizeStockCode(queryCode)) {
       return;
     }
-
-    const storedRows = loadPredictions(predictionPlanKey(data.code, period, baseDate)) ?? [];
-    capturePredictionHistory(storedRows, data);
 
     const importedPlan = importedPlanRef.current;
     if (
@@ -396,12 +395,13 @@ export default function App() {
         .filter((row) => row.actualClose !== null)
         .map((row) => row.id),
     );
+    const pendingRows = getPendingForecastRows(rows, workspaceBaseDate);
     const incoming = MA_WINDOWS.flatMap((windowSize) =>
       createForecastHistorySnapshots(
         sourceData.code,
         workspacePeriod,
         windowSize,
-        buildMa40Projection(sourceData.points, rows, workspaceBaseDate, windowSize).rows,
+        buildMa40Projection(sourceData.points, pendingRows, workspaceBaseDate, windowSize).rows,
       ),
     ).filter((snapshot) => !frozenIds.has(snapshot.id));
 
@@ -694,9 +694,16 @@ export default function App() {
       const rawFile = JSON.parse(text);
       const backup = normalizeFullBackupFile(rawFile);
       if (backup) {
-        restoreAppStorage(backup.storage);
+        const recovery = recoverForecastHistoryFromBackupStorage(backup.storage);
+        restoreAppStorage(recovery.storage);
         await persistElectronStorage();
-        showToast(`已导入全部本地数据：${Object.keys(backup.storage).length}项，正在刷新`, 'success');
+        const recoveryNotice = recovery.recoveredCount
+          ? `，已恢复${recovery.recoveredCount}条历史预测`
+          : '';
+        showToast(
+          `已导入全部本地数据：${Object.keys(backup.storage).length}项${recoveryNotice}，正在刷新`,
+          'success',
+        );
         window.setTimeout(() => window.location.reload(), 500);
         return;
       }

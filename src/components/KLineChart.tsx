@@ -2,7 +2,7 @@ import { type KeyboardEvent, useEffect, useRef } from 'react';
 import * as echarts from 'echarts';
 import type { KLinePoint, PeriodType } from '../types';
 import type { LineValuePoint } from '../utils/movingAverage';
-import { getForecastCenteredZoomRange } from '../utils/chartViewport';
+import { getForecastCenteredZoomRange, getStableChartZoomRange } from '../utils/chartViewport';
 
 export interface ChartLineSeries {
   label: string;
@@ -60,6 +60,7 @@ export default function KLineChart({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<echarts.EChartsType | null>(null);
   const zoomRangeRef = useRef({ start: 0, end: 100 });
+  const axisSignatureRef = useRef('');
 
   useEffect(() => {
     if (!containerRef.current || !points.length) return;
@@ -78,7 +79,15 @@ export default function KLineChart({
       [...lineDates, ...pointDates, ...forecastDates],
     );
     const initialZoomRange = getForecastCenteredZoomRange(xAxis, baseDate);
-    zoomRangeRef.current = initialZoomRange;
+    const axisSignature = `${period}:${baseDate}:${xAxis.join('|')}`;
+    const activeZoomRange = getStableChartZoomRange(
+      axisSignatureRef.current,
+      axisSignature,
+      zoomRangeRef.current,
+      initialZoomRange,
+    );
+    axisSignatureRef.current = axisSignature;
+    zoomRangeRef.current = activeZoomRange;
     const pointByDate = new Map(points.map((point) => [point.date, point]));
     const lineMaps = lineSeries.map((series) => ({
       ...series,
@@ -179,7 +188,7 @@ export default function KLineChart({
           id: 'keyboard-inside-zoom',
           type: 'inside',
           xAxisIndex: showVolume ? [0, 1] : [0],
-          ...initialZoomRange,
+          ...activeZoomRange,
         },
         {
           id: 'keyboard-slider-zoom',
@@ -187,7 +196,7 @@ export default function KLineChart({
           xAxisIndex: showVolume ? [0, 1] : [0],
           bottom: 8,
           height: 18,
-          ...initialZoomRange,
+          ...activeZoomRange,
         },
       ],
       series: [
@@ -308,10 +317,19 @@ export default function KLineChart({
       },
     });
 
+    const handleDataZoom = (event: unknown) => {
+      const range = getZoomRangeFromEvent(event);
+      if (range) {
+        zoomRangeRef.current = normalizeZoomRange(range.start, range.end);
+      }
+    };
+    chart.on('datazoom', handleDataZoom);
+
     const resize = () => chart.resize();
     window.addEventListener('resize', resize);
     return () => {
       window.removeEventListener('resize', resize);
+      chart.off('datazoom', handleDataZoom);
       chart.dispose();
       if (chartRef.current === chart) {
         chartRef.current = null;
@@ -405,6 +423,21 @@ function normalizeZoomRange(start: number, end: number) {
     start: Math.max(0, Number(nextStart.toFixed(2))),
     end: Math.min(100, Number(nextEnd.toFixed(2))),
   };
+}
+
+function getZoomRangeFromEvent(event: unknown) {
+  if (!event || typeof event !== 'object') return null;
+
+  const source = event as {
+    start?: unknown;
+    end?: unknown;
+    batch?: Array<{ start?: unknown; end?: unknown }>;
+  };
+  const range = source.batch?.[0] ?? source;
+
+  return typeof range.start === 'number' && typeof range.end === 'number'
+    ? { start: range.start, end: range.end }
+    : null;
 }
 
 function createBaseDateMarkLine(baseDate: string) {

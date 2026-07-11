@@ -40,3 +40,31 @@ test('viewport falls back to the complete axis when there is no future forecast 
     end: 100,
   });
 });
+
+test('viewport retains the user zoom when a chart rerenders with the same data domain', async () => {
+  const { getStableChartZoomRange } = await loadViewportModule();
+
+  assert.deepEqual(
+    getStableChartZoomRange(
+      'day:2026-07-10:2026-01-01|2026-07-10|2026-08-10',
+      'day:2026-07-10:2026-01-01|2026-07-10|2026-08-10',
+      { start: 34, end: 62 },
+      { start: 50, end: 100 },
+    ),
+    { start: 34, end: 62 },
+  );
+});
+
+test('viewport uses the centered default when the chart data domain changes', async () => {
+  const { getStableChartZoomRange } = await loadViewportModule();
+
+  assert.deepEqual(
+    getStableChartZoomRange(
+      'day:2026-07-10:2026-01-01|2026-07-10|2026-08-10',
+      'week:2026-07-10:2026-01-02|2026-07-10|2026-08-14',
+      { start: 34, end: 62 },
+      { start: 48, end: 92 },
+    ),
+    { start: 48, end: 92 },
+  );
+});

@@ -1,5 +1,6 @@
-import type { KLinePoint, PeriodType } from '../types';
+import type { KLinePoint, PeriodType, PredictionPoint, StockKLineResponse } from '../types';
 import {
+  buildMa40Projection,
   calculateMovingAverage,
   MA_WINDOWS,
   type Ma40ProjectionRow,
@@ -29,6 +30,11 @@ export interface ForecastHistoryRow extends ForecastHistorySnapshot {
   actualClose: number | null;
   actualMaValues: Record<MaWindow, number | null>;
   closeDiff: number | null;
+}
+
+export interface ForecastHistoryRecoveryResult {
+  storage: Record<string, string>;
+  recoveredCount: number;
 }
 
 export function loadForecastHistory(stockCode: string, period: PeriodType) {
@@ -94,6 +100,61 @@ export function mergeForecastHistory(
   incoming: ForecastHistorySnapshot[],
 ) {
   return deduplicate([...existing, ...incoming]);
+}
+
+export function getPendingForecastRows(rows: PredictionPoint[], baseDate: string) {
+  return rows.filter((row) => row.targetDate > baseDate);
+}
+
+/**
+ * Old full backups contain the prediction input and the K-line cache that was
+ * available when it was exported. Rebuild snapshots from those two records,
+ * rather than from newer online prices.
+ */
+export function recoverForecastHistoryFromBackupStorage(
+  sourceStorage: Record<string, string>,
+  savedAt = new Date().toISOString(),
+): ForecastHistoryRecoveryResult {
+  const storage = { ...sourceStorage };
+  let recoveredCount = 0;
+
+  for (const [key, rawCache] of Object.entries(sourceStorage)) {
+    const cacheMatch = /^prediction-ma40:kline-cache:(\d{6}):(day|week|month):v1$/.exec(key);
+    if (!cacheMatch) continue;
+
+    const stockCode = cacheMatch[1];
+    const period = cacheMatch[2] as PeriodType;
+    const cache = parseRecoveryCache(rawCache, stockCode, period);
+    const predictions = parseRecoveryPredictions(
+      sourceStorage[`prediction-ma:${stockCode}:${period}:v2`],
+    );
+    if (!cache || !predictions.length) continue;
+
+    const baseDate = [...cache.points].map((point) => point.date).sort().at(-1);
+    if (!baseDate) continue;
+
+    const pendingRows = getPendingForecastRows(predictions, baseDate);
+    if (!pendingRows.length) continue;
+
+    const historyKey = storageKey(stockCode, period);
+    const existing = parseStoredSnapshots(sourceStorage[historyKey], stockCode, period);
+    const existingIds = new Set(existing.map((snapshot) => snapshot.id));
+    const recovered = MA_WINDOWS.flatMap((windowSize) =>
+      createForecastHistorySnapshots(
+        stockCode,
+        period,
+        windowSize,
+        buildProjection(cache.points, pendingRows, baseDate, windowSize),
+        savedAt,
+      ),
+    ).filter((snapshot) => !existingIds.has(snapshot.id));
+
+    if (!recovered.length) continue;
+    storage[historyKey] = JSON.stringify(deduplicate([...existing, ...recovered]));
+    recoveredCount += recovered.length;
+  }
+
+  return { storage, recoveredCount };
 }
 
 export function buildForecastHistoryRows(
@@ -162,6 +223,76 @@ function normalizeSnapshot(
     note: typeof candidate.note === 'string' ? candidate.note : '',
     savedAt: typeof candidate.savedAt === 'string' ? candidate.savedAt : '',
   };
+}
+
+function parseStoredSnapshots(raw: string | undefined, stockCode: string, period: PeriodType) {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed)
+      ? deduplicate(
+          parsed
+            .map((item) => normalizeSnapshot(item, stockCode, period))
+            .filter((item): item is ForecastHistorySnapshot => item !== null),
+        )
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function parseRecoveryCache(raw: string, stockCode: string, period: PeriodType): StockKLineResponse | null {
+  try {
+    const candidate = JSON.parse(raw) as { stockCode?: unknown; period?: unknown; data?: unknown };
+    const data = candidate.data as Partial<StockKLineResponse> | undefined;
+    if (
+      candidate.stockCode !== stockCode ||
+      candidate.period !== period ||
+      !data ||
+      normalizeStockCode(String(data.code ?? '')) !== stockCode ||
+      !Array.isArray(data.points)
+    ) {
+      return null;
+    }
+    return data as StockKLineResponse;
+  } catch {
+    return null;
+  }
+}
+
+function parseRecoveryPredictions(raw: string | undefined): PredictionPoint[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.flatMap((item) => {
+      if (!item || typeof item !== 'object') return [];
+      const candidate = item as Partial<PredictionPoint>;
+      if (typeof candidate.targetDate !== 'string') return [];
+      return [
+        {
+          targetDate: candidate.targetDate,
+          predictedMa40: typeof candidate.predictedMa40 === 'string' ? candidate.predictedMa40 : '',
+          predictedMaValues:
+            candidate.predictedMaValues && typeof candidate.predictedMaValues === 'object'
+              ? candidate.predictedMaValues
+              : {},
+          note: typeof candidate.note === 'string' ? candidate.note : '',
+        },
+      ];
+    });
+  } catch {
+    return [];
+  }
+}
+
+function buildProjection(
+  points: KLinePoint[],
+  predictions: PredictionPoint[],
+  baseDate: string,
+  inputMaWindow: MaWindow,
+) {
+  return buildMa40Projection(points, predictions, baseDate, inputMaWindow).rows;
 }
 
 function normalizeMaValues(value: unknown) {
