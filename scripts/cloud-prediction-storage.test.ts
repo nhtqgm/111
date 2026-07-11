@@ -71,6 +71,15 @@ test('normalized migration stores each prediction value separately and does not 
   );
 });
 
+test('legacy workspace cleanup migration removes the old table and revision RPCs after normalization', () => {
+  const sql = fs.readFileSync('supabase/20260711_drop_legacy_workspace.sql', 'utf8');
+
+  assert.match(sql, /drop function if exists public\.get_my_workspace\(\)/i);
+  assert.match(sql, /drop function if exists public\.save_my_workspace\(jsonb, bigint\)/i);
+  assert.match(sql, /drop function if exists public\.admin_workspace_count\(\)/i);
+  assert.match(sql, /drop table if exists public\.user_workspaces/i);
+});
+
 test('active app flow reads and writes normalized prediction RPCs instead of the old workspace save RPC', () => {
   const app = fs.readFileSync('src/App.tsx', 'utf8');
   const supabase = fs.readFileSync('src/utils/supabase.ts', 'utf8');

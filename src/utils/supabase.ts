@@ -111,27 +111,6 @@ export async function loadMyCloudWorkspace(): Promise<CloudWorkspaceRecord | nul
   };
 }
 
-export async function saveMyCloudWorkspace(
-  payload: CloudWorkspace,
-  expectedRevision: number,
-): Promise<CloudWorkspaceRecord> {
-  const api = requireCloudClient();
-  const { data, error } = await api.rpc('save_my_workspace', {
-    p_payload: payload,
-    p_expected_revision: expectedRevision,
-  });
-  if (error) throw error;
-  const row = Array.isArray(data) ? data[0] : null;
-  if (!row || typeof row.revision !== 'number' || !row.payload || typeof row.payload !== 'object') {
-    throw new Error('Cloud workspace save returned an invalid response.');
-  }
-  return {
-    revision: row.revision,
-    payload: row.payload as CloudWorkspace,
-    updatedAt: typeof row.updated_at === 'string' ? row.updated_at : '',
-  };
-}
-
 export async function saveMyPredictionValues(mutations: CloudPredictionValueMutation[]) {
   if (!mutations.length) return;
   const api = requireCloudClient();
@@ -166,12 +145,6 @@ export async function upsertMyForecastHistory(snapshots: ForecastHistorySnapshot
   const api = requireCloudClient();
   const { error } = await api.rpc('upsert_my_forecast_history', { p_snapshots: snapshots });
   if (error) throw error;
-}
-
-export function isCloudWorkspaceRevisionConflict(error: unknown) {
-  if (!error || typeof error !== 'object') return false;
-  const candidate = error as { code?: unknown; message?: unknown };
-  return candidate.code === '40001' || /workspace revision conflict/i.test(String(candidate.message ?? ''));
 }
 
 export async function downloadPredictionEvents(user: User) {
