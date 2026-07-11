@@ -112,17 +112,18 @@ test('backup recovery rebuilds a historical prediction from the backup K-line ca
   assert.equal(snapshots[0].predictedMaValues[40], 9);
 });
 
-test('only prediction rows after the saved K-line date are eligible for history capture', async () => {
-  const { getPendingForecastRows } = await loadHistoryModule();
+test('history capture keeps every user-entered prediction even after its real K-line appears', async () => {
+  const { getHistoryCaptureRows } = await loadHistoryModule();
   const rows = [
     createRow('2026-07-09'),
     createRow('2026-07-10'),
     createRow('2026-07-11'),
+    { targetDate: '2026-07-12', predictedMa40: '', predictedMaValues: {}, note: '' },
   ];
 
   assert.deepEqual(
-    getPendingForecastRows(rows, '2026-07-10').map((row: { targetDate: string }) => row.targetDate),
-    ['2026-07-11'],
+    getHistoryCaptureRows(rows).map((row: { targetDate: string }) => row.targetDate),
+    ['2026-07-09', '2026-07-10', '2026-07-11'],
   );
 });
 

@@ -23,7 +23,7 @@ import {
   buildForecastHistoryRows,
   createForecastHistorySnapshots,
   filterForecastHistorySnapshots,
-  getPendingForecastRows,
+  getHistoryCaptureRows,
   mergeForecastHistory,
   type ForecastHistorySnapshot,
   type ForecastHistoryRow,
@@ -242,6 +242,11 @@ export default function App() {
     if (!data || dataPeriod !== period || !cloudWorkspace) return;
     setForecastHistory(getWorkspaceForecastHistory(cloudWorkspace, { stockCode: data.code, period }));
   }, [cloudWorkspace, data, dataPeriod, period]);
+
+  useEffect(() => {
+    if (!data || dataPeriod !== period || !cloudWorkspace || !baseDate) return;
+    capturePredictionHistory(predictions, data);
+  }, [baseDate, cloudWorkspace, data, dataPeriod, period, predictions]);
 
   useEffect(() => {
     if (!data || !baseDate || !predictions.length) return;
@@ -489,20 +494,30 @@ export default function App() {
     const existing = cloudWorkspace
       ? getWorkspaceForecastHistory(cloudWorkspace, { stockCode: sourceData.code, period: workspacePeriod })
       : [];
+    const existingById = new Map(existing.map((snapshot) => [snapshot.id, snapshot]));
     const frozenIds = new Set(
       buildForecastHistoryRows(existing, sourceData.points)
         .filter((row) => row.actualClose !== null)
         .map((row) => row.id),
     );
-    const pendingRows = getPendingForecastRows(rows, workspaceBaseDate);
+    const captureRows = getHistoryCaptureRows(rows);
+    if (!captureRows.length) {
+      if (workspacePeriod === period && normalizeStockCode(sourceData.code) === normalizeStockCode(queryCode)) {
+        setForecastHistory(existing);
+      }
+      return;
+    }
     const incoming = MA_WINDOWS.flatMap((windowSize) =>
       createForecastHistorySnapshots(
         sourceData.code,
         workspacePeriod,
         windowSize,
-        buildMa40Projection(sourceData.points, pendingRows, workspaceBaseDate, windowSize).rows,
+        buildMa40Projection(sourceData.points, rows, workspaceBaseDate, windowSize).rows,
       ),
-    ).filter((snapshot) => !frozenIds.has(snapshot.id));
+    ).filter((snapshot) => {
+      const existingSnapshot = existingById.get(snapshot.id);
+      return !frozenIds.has(snapshot.id) && !sameForecastSnapshot(existingSnapshot, snapshot);
+    });
 
     if (!incoming.length) {
       if (workspacePeriod === period && normalizeStockCode(sourceData.code) === normalizeStockCode(queryCode)) {
@@ -1907,6 +1922,17 @@ function hasSavedPrediction(row: PredictionPoint) {
   return row.predictedMa40.trim() !== '' ||
     Object.values(row.predictedMaValues).some((value) => value.trim() !== '') ||
     row.note.trim() !== '';
+}
+
+function sameForecastSnapshot(
+  existing: ForecastHistorySnapshot | undefined,
+  incoming: ForecastHistorySnapshot,
+) {
+  return !!existing &&
+    existing.inputMaValue === incoming.inputMaValue &&
+    existing.predictedClose === incoming.predictedClose &&
+    existing.note === incoming.note &&
+    MA_WINDOWS.every((windowSize) => existing.predictedMaValues[windowSize] === incoming.predictedMaValues[windowSize]);
 }
 
 function setPredictionInputValue(

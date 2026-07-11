@@ -106,6 +106,18 @@ export function getPendingForecastRows(rows: PredictionPoint[], baseDate: string
   return rows.filter((row) => row.targetDate > baseDate);
 }
 
+/**
+ * A saved prediction remains eligible for review after the target period has
+ * completed. The former date-only filter made a prediction disappear from
+ * history if the market data arrived before its snapshot was written.
+ */
+export function getHistoryCaptureRows(rows: PredictionPoint[]) {
+  return rows.filter((row) =>
+    row.predictedMa40.trim() !== '' ||
+    Object.values(row.predictedMaValues).some((value) => value.trim() !== ''),
+  );
+}
+
 export function filterForecastHistorySnapshots(
   snapshots: ForecastHistorySnapshot[],
   stockCode: string,
