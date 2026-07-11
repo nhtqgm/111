@@ -130,6 +130,12 @@ export async function saveMyCloudWorkspace(
   };
 }
 
+export function isCloudWorkspaceRevisionConflict(error: unknown) {
+  if (!error || typeof error !== 'object') return false;
+  const candidate = error as { code?: unknown; message?: unknown };
+  return candidate.code === '40001' || /workspace revision conflict/i.test(String(candidate.message ?? ''));
+}
+
 export async function downloadPredictionEvents(user: User) {
   const api = requireCloudClient();
   const { data, error } = await api

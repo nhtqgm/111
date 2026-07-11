@@ -26,8 +26,9 @@ interface LegacyBackup {
 export interface CloudWorkspaceSaveQueueOptions {
   accountId: string;
   revision: number;
+  baseline: CloudWorkspace;
   debounceMs?: number;
-  save: (request: { payload: CloudWorkspace; expectedRevision: number }) => Promise<{
+  save: (request: { payload: CloudWorkspace; baseline: CloudWorkspace; expectedRevision: number }) => Promise<{
     revision: number;
     payload: CloudWorkspace;
   }>;
@@ -119,12 +120,55 @@ export function setWorkspaceForecastHistory(
   } satisfies CloudWorkspace;
 }
 
+/**
+ * Replays only this device's edits onto the newest cloud copy. Predictions are
+ * compared per stock/period scope, so an untouched scope from another device
+ * is never replaced by an older full-workspace payload.
+ */
+export function mergeCloudWorkspaceAfterRevisionConflict({
+  baseline,
+  local,
+  remote,
+}: {
+  baseline: CloudWorkspace;
+  local: CloudWorkspace;
+  remote: CloudWorkspace;
+}): CloudWorkspace {
+  const merged = cloneWorkspace(remote);
+  merged.predictions = mergeWorkspaceScopes(
+    baseline.predictions,
+    local.predictions,
+    remote.predictions,
+    clonePredictionRows,
+  );
+  merged.forecastHistory = mergeWorkspaceScopes(
+    baseline.forecastHistory,
+    local.forecastHistory,
+    remote.forecastHistory,
+    cloneForecastHistory,
+  );
+  merged.workspace = {
+    stockCode: local.workspace.stockCode === baseline.workspace.stockCode
+      ? remote.workspace.stockCode
+      : local.workspace.stockCode,
+    period: local.workspace.period === baseline.workspace.period
+      ? remote.workspace.period
+      : local.workspace.period,
+    baseDate: local.workspace.baseDate === baseline.workspace.baseDate
+      ? remote.workspace.baseDate
+      : local.workspace.baseDate,
+  };
+  merged.updatedAt = local.updatedAt;
+  return merged;
+}
+
 export function createWorkspaceSaveQueue(options: CloudWorkspaceSaveQueueOptions) {
   let accountId = options.accountId;
   let revision = options.revision;
+  let baseline = cloneWorkspace(options.baseline);
   let generation = 0;
-  let pending: CloudWorkspace | null = null;
-  let failed: CloudWorkspace | null = null;
+  let pending: { payload: CloudWorkspace; baseline: CloudWorkspace } | null = null;
+  let failed: { payload: CloudWorkspace; baseline: CloudWorkspace } | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let active: Promise<void> | null = null;
   let status: CloudWorkspaceSaveStatus = 'idle';
@@ -137,23 +181,31 @@ export function createWorkspaceSaveQueue(options: CloudWorkspaceSaveQueueOptions
 
   const start = async () => {
     if (active || !pending) return;
-    const payload = pending;
+    const request = pending;
     pending = null;
     const requestGeneration = generation;
     const requestAccountId = accountId;
     setStatus('saving');
     active = options
-      .save({ payload: cloneWorkspace(payload), expectedRevision: revision })
+      .save({
+        payload: cloneWorkspace(request.payload),
+        baseline: cloneWorkspace(request.baseline),
+        expectedRevision: revision,
+      })
       .then((result) => {
         if (generation !== requestGeneration || accountId !== requestAccountId) return;
         revision = result.revision;
+        baseline = cloneWorkspace(result.payload);
         failed = null;
         lastError = null;
         setStatus('saved');
       })
       .catch((error: unknown) => {
         if (generation !== requestGeneration || accountId !== requestAccountId) return;
-        failed = payload;
+        failed = {
+          payload: cloneWorkspace(request.payload),
+          baseline: cloneWorkspace(request.baseline),
+        };
         lastError = error instanceof Error ? error : new Error(String(error));
         setStatus('error');
       })
@@ -175,7 +227,7 @@ export function createWorkspaceSaveQueue(options: CloudWorkspaceSaveQueueOptions
 
   return {
     schedule(payload: CloudWorkspace) {
-      pending = cloneWorkspace(payload);
+      pending = { payload: cloneWorkspace(payload), baseline: cloneWorkspace(baseline) };
       failed = null;
       lastError = null;
       arm();
@@ -199,6 +251,7 @@ export function createWorkspaceSaveQueue(options: CloudWorkspaceSaveQueueOptions
       generation += 1;
       accountId = nextAccountId;
       revision = nextRevision;
+      baseline = createEmptyCloudWorkspace();
       pending = null;
       failed = null;
       lastError = null;
@@ -209,6 +262,26 @@ export function createWorkspaceSaveQueue(options: CloudWorkspaceSaveQueueOptions
     getStatus: () => status,
     getLastError: () => lastError,
   };
+}
+
+function mergeWorkspaceScopes<T>(
+  baseline: Record<string, T[]>,
+  local: Record<string, T[]>,
+  remote: Record<string, T[]>,
+  cloneRows: (rows: T[]) => T[],
+) {
+  const merged = Object.fromEntries(Object.entries(remote).map(([key, rows]) => [key, cloneRows(rows)])) as Record<string, T[]>;
+  const localKeys = new Set([...Object.keys(baseline), ...Object.keys(local)]);
+  for (const key of localKeys) {
+    if (sameValue(local[key], baseline[key])) continue;
+    if (key in local) merged[key] = cloneRows(local[key]);
+    else delete merged[key];
+  }
+  return merged;
+}
+
+function sameValue(left: unknown, right: unknown) {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function toScopeKey(stockCode: string, period: PeriodType) {

@@ -10,6 +10,7 @@ import { filterCompletedKLineData } from './utils/completedPeriods';
 import {
   getCloudProfile,
   getCloudUser,
+  isCloudWorkspaceRevisionConflict,
   isCloudSyncConfigured,
   loadMyCloudWorkspace,
   saveMyCloudWorkspace,
@@ -32,6 +33,7 @@ import {
   createWorkspaceSaveQueue,
   getWorkspaceForecastHistory,
   getWorkspacePredictions,
+  mergeCloudWorkspaceAfterRevisionConflict,
   setWorkspaceForecastHistory,
   setWorkspacePredictions,
   type CloudWorkspace,
@@ -149,6 +151,7 @@ export default function App() {
   const importedPlanRef = useRef<PredictionFileV5 | null>(null);
   const toastTimerRef = useRef<number | null>(null);
   const cloudWorkspaceRef = useRef<CloudWorkspace | null>(null);
+  const cloudWorkspaceBaselineRef = useRef<CloudWorkspace | null>(null);
   const cloudSaveQueueRef = useRef<ReturnType<typeof createWorkspaceSaveQueue> | null>(null);
   const cloudSessionGenerationRef = useRef(0);
   const marketDataRef = useRef(new Map<string, StockKLineResponse>());
@@ -265,10 +268,74 @@ export default function App() {
     cloudSaveQueueRef.current?.schedule(next);
   }
 
+  async function saveCloudWorkspaceWithConflictRecovery(
+    payload: CloudWorkspace,
+    expectedRevision: number,
+    baseline: CloudWorkspace,
+    generation: number,
+  ) {
+    const rebase = (remote: CloudWorkspace) =>
+      mergeCloudWorkspaceAfterRevisionConflict({ baseline, local: payload, remote });
+    const commit = async (nextPayload: CloudWorkspace, revision: number) => {
+      const saved = await saveMyCloudWorkspace(nextPayload, revision);
+      if (generation === cloudSessionGenerationRef.current) {
+        cloudWorkspaceBaselineRef.current = saved.payload;
+        setCloudWorkspaceRevision(saved.revision);
+      }
+      return saved;
+    };
+
+    try {
+      return await commit(rebase(cloudWorkspaceBaselineRef.current ?? baseline), expectedRevision);
+    } catch (error) {
+      if (!isCloudWorkspaceRevisionConflict(error)) throw error;
+
+      const remote = await loadMyCloudWorkspace();
+      if (!remote) throw new Error('Cloud workspace changed while it was being saved. Please retry.');
+
+      try {
+        const saved = await commit(rebase(remote.payload), remote.revision);
+        if (generation === cloudSessionGenerationRef.current) {
+          showToast('检测到另一端更新，已自动合并并保留当前输入。', 'info');
+        }
+        return saved;
+      } catch (retryError) {
+        if (isCloudWorkspaceRevisionConflict(retryError)) {
+          throw new Error('Cloud workspace changed again during merge. Your current input is still kept locally; please save again.');
+        }
+        throw retryError;
+      }
+    }
+  }
+
+  function createCloudSaveQueueForUser(
+    user: User,
+    revision: number,
+    baseline: CloudWorkspace,
+    generation: number,
+  ) {
+    return createWorkspaceSaveQueue({
+      accountId: user.id,
+      revision,
+      baseline,
+      save: async ({ payload, baseline: payloadBaseline, expectedRevision }) => {
+        const saved = await saveCloudWorkspaceWithConflictRecovery(
+          payload,
+          expectedRevision,
+          payloadBaseline,
+          generation,
+        );
+        return { revision: saved.revision, payload: saved.payload };
+      },
+      onStatusChange: setCloudSaveStatus,
+    });
+  }
+
   async function loadCloudWorkspace(user: User, quiet = false) {
     const generation = ++cloudSessionGenerationRef.current;
     cloudSaveQueueRef.current?.switchAccount('', 0);
     cloudWorkspaceRef.current = null;
+    cloudWorkspaceBaselineRef.current = null;
     setCloudWorkspace(null);
     setCloudRole(null);
     setData(null);
@@ -293,6 +360,7 @@ export default function App() {
       }
 
       cloudWorkspaceRef.current = workspace;
+      cloudWorkspaceBaselineRef.current = workspace;
       setCloudWorkspace(workspace);
       setCloudWorkspaceRevision(revision);
       setCloudRole(profile.role);
@@ -303,16 +371,7 @@ export default function App() {
       setCloudStockCodes(
         [...new Set(Object.keys(workspace.predictions).map((key) => key.split(':')[0]))].sort(),
       );
-      cloudSaveQueueRef.current = createWorkspaceSaveQueue({
-        accountId: user.id,
-        revision,
-        save: async ({ payload, expectedRevision }) => {
-          const saved = await saveMyCloudWorkspace(payload, expectedRevision);
-          if (generation === cloudSessionGenerationRef.current) setCloudWorkspaceRevision(saved.revision);
-          return { revision: saved.revision, payload: saved.payload };
-        },
-        onStatusChange: setCloudSaveStatus,
-      });
+      cloudSaveQueueRef.current = createCloudSaveQueueForUser(user, revision, workspace, generation);
       setCloudSyncState('ready');
       if (!quiet) showToast('Cloud workspace loaded.', 'success');
       void refreshHistoricalData();
@@ -726,6 +785,7 @@ export default function App() {
       cloudSessionGenerationRef.current += 1;
       cloudSaveQueueRef.current?.switchAccount('', 0);
       cloudWorkspaceRef.current = null;
+      cloudWorkspaceBaselineRef.current = null;
       setCloudUser(null);
       setCloudWorkspace(null);
       setCloudWorkspaceRevision(0);
@@ -1033,10 +1093,22 @@ export default function App() {
         ? rawFile
         : createCloudWorkspaceFromLegacyBackup(rawFile);
       if (!cloudUser) throw new Error('Please sign in before importing data.');
-      const saved = await saveMyCloudWorkspace(workspace, cloudWorkspaceRevision);
+      const saved = await saveCloudWorkspaceWithConflictRecovery(
+        workspace,
+        cloudWorkspaceRevision,
+        cloudWorkspaceBaselineRef.current ?? createEmptyCloudWorkspace(),
+        cloudSessionGenerationRef.current,
+      );
       cloudWorkspaceRef.current = saved.payload;
+      cloudWorkspaceBaselineRef.current = saved.payload;
       setCloudWorkspace(saved.payload);
       setCloudWorkspaceRevision(saved.revision);
+      cloudSaveQueueRef.current = createCloudSaveQueueForUser(
+        cloudUser,
+        saved.revision,
+        saved.payload,
+        cloudSessionGenerationRef.current,
+      );
       setStockCode(saved.payload.workspace.stockCode);
       setQueryCode(saved.payload.workspace.stockCode);
       setPeriod(saved.payload.workspace.period);
