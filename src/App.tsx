@@ -195,7 +195,7 @@ export default function App() {
       setPredictions(getWorkspacePredictions(cloudWorkspace, { stockCode: queryCode, period }));
       setForecastHistory(getWorkspaceForecastHistory(cloudWorkspace, { stockCode: queryCode, period }));
       setBaseDate(cloudWorkspace.workspace.baseDate || todayDate);
-      showToast('暂无本地历史数据，请点击“联网更新”拉取最近历史收盘价', 'warning');
+      setError('暂无本地历史数据，请点击“联网更新”拉取最近历史收盘价');
       return;
     }
 
@@ -203,10 +203,6 @@ export default function App() {
     setData(completed.data);
     setDataPeriod(period);
     setBaseDate(completed.lastCompletedDate ?? todayDate);
-    showToast(
-      formatHistoryStatus(new Date().toISOString(), completed.data.points.length, completed.removedPoints.length),
-      'info',
-    );
     if (completed.data.points.length < minHistoryCount) {
       setError(`本地历史数据不足${minHistoryCount}条，MA60计算可能不完整，请联网更新一次`);
     }
@@ -959,6 +955,11 @@ export default function App() {
 
   function resetRows() {
     if (!data || !baseDate) return;
+    const confirmed = window.confirm(
+      `确认重置 ${data.code} 的当前${getPeriodLabel(period)}预测表吗？\n已填写的预测值将被清空。`,
+    );
+    if (!confirmed) return;
+
     const nextRows = generatePredictionRows(data.points, period, baseDate, forecastRowCount);
     setPredictions(nextRows);
     persistPredictionDraft(nextRows);
@@ -1349,6 +1350,7 @@ export default function App() {
             <div className="loading">正在加载K线数据...</div>
           ) : data ? (
             <KLineChart
+              stockCode={data.code}
               points={data.points}
               lineSeries={lineSeries}
               pointSeries={pointSeries}
@@ -1964,15 +1966,6 @@ function markAsOnlineResult(data: StockKLineResponse): StockKLineResponse {
     ...data,
     sourceName: `${data.sourceName ?? '行情'} / 刚刚联网`,
   };
-}
-
-function formatHistoryStatus(updatedAt: string, count: number, removedCount = 0) {
-  const updatedDate = new Date(updatedAt);
-  const updatedText = Number.isNaN(updatedDate.getTime())
-    ? updatedAt
-    : updatedDate.toLocaleString();
-  const removedText = removedCount > 0 ? `，已过滤未完成K线${removedCount}条` : '';
-  return `行情K线缓存：${count}条，加载于 ${updatedText}${removedText}`;
 }
 
 function formatCloudSaveError(error: Error | null) {

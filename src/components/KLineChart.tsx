@@ -29,6 +29,7 @@ export interface ChartPointSeries {
 }
 
 interface KLineChartProps {
+  stockCode: string;
   points: KLinePoint[];
   lineSeries: ChartLineSeries[];
   pointSeries?: ChartPointSeries[];
@@ -47,6 +48,7 @@ const periodName: Record<PeriodType, string> = {
 };
 
 export default function KLineChart({
+  stockCode,
   points,
   lineSeries,
   pointSeries = [],
@@ -63,10 +65,35 @@ export default function KLineChart({
   const axisSignatureRef = useRef('');
 
   useEffect(() => {
-    if (!containerRef.current || !points.length) return;
+    if (!containerRef.current) return;
 
     const chart = echarts.init(containerRef.current, undefined, { renderer: 'canvas' });
     chartRef.current = chart;
+
+    const handleDataZoom = (event: unknown) => {
+      const range = getZoomRangeFromEvent(event);
+      if (range) {
+        zoomRangeRef.current = normalizeZoomRange(range.start, range.end);
+      }
+    };
+    chart.on('datazoom', handleDataZoom);
+
+    const resize = () => chart.resize();
+    window.addEventListener('resize', resize);
+    return () => {
+      window.removeEventListener('resize', resize);
+      chart.off('datazoom', handleDataZoom);
+      chart.dispose();
+      if (chartRef.current === chart) {
+        chartRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart || !points.length) return;
+
     const visiblePoints = points.slice(-180);
     const lineDates = lineSeries.flatMap((series) =>
       series.rows.filter((row) => row.value !== null).map((row) => row.targetDate),
@@ -79,7 +106,9 @@ export default function KLineChart({
       [...lineDates, ...pointDates, ...forecastDates],
     );
     const initialZoomRange = getForecastCenteredZoomRange(xAxis, baseDate);
-    const axisSignature = `${period}:${baseDate}:${xAxis.join('|')}`;
+    // Only a stock/period switch should reposition the user's view. Updating
+    // cached candles or forecast values must retain the current zoom range.
+    const axisSignature = `${stockCode}:${period}`;
     const activeZoomRange = getStableChartZoomRange(
       axisSignatureRef.current,
       axisSignature,
@@ -315,26 +344,7 @@ export default function KLineChart({
           fontWeight: 700,
         },
       },
-    });
-
-    const handleDataZoom = (event: unknown) => {
-      const range = getZoomRangeFromEvent(event);
-      if (range) {
-        zoomRangeRef.current = normalizeZoomRange(range.start, range.end);
-      }
-    };
-    chart.on('datazoom', handleDataZoom);
-
-    const resize = () => chart.resize();
-    window.addEventListener('resize', resize);
-    return () => {
-      window.removeEventListener('resize', resize);
-      chart.off('datazoom', handleDataZoom);
-      chart.dispose();
-      if (chartRef.current === chart) {
-        chartRef.current = null;
-      }
-    };
+    }, { notMerge: true, lazyUpdate: true });
   }, [
     baseDate,
     forecastDates,
@@ -342,6 +352,7 @@ export default function KLineChart({
     period,
     pointSeries,
     points,
+    stockCode,
     showActualKLine,
     showCloseLine,
     showVolume,
