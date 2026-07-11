@@ -6,11 +6,28 @@ import {
   applyPredictionEventsToRows,
   createPredictionEventsFromRows,
   foldPredictionEvents,
+  listPredictionStockCodes,
   parsePredictionEventsFromFullBackup,
   type PredictionEvent,
 } from '../src/utils/cloudPredictions.ts';
 
 const scope = { stockCode: '688571', period: 'day' as const };
+
+test('cloud stock selector lists each predicted stock code once in order', () => {
+  const codes = listPredictionStockCodes([
+    {
+      id: 'month-000166', stockCode: '000166', period: 'month', targetDate: '2026-08-31', metric: 'ma40', eventType: 'set', value: '4.8310', deviceId: 'device-a', clientEventAt: '2026-07-11T08:00:00.000Z', createdAt: '2026-07-11T08:00:00.000Z',
+    },
+    {
+      id: 'day-688571', stockCode: '688571', period: 'day', targetDate: '2026-07-10', metric: 'ma40', eventType: 'set', value: '9.2000', deviceId: 'device-a', clientEventAt: '2026-07-11T08:00:01.000Z', createdAt: '2026-07-11T08:00:01.000Z',
+    },
+    {
+      id: 'week-000166', stockCode: '000166', period: 'week', targetDate: '2026-07-10', metric: 'ma5', eventType: 'set', value: '4.8200', deviceId: 'device-a', clientEventAt: '2026-07-11T08:00:02.000Z', createdAt: '2026-07-11T08:00:02.000Z',
+    },
+  ]);
+
+  assert.deepEqual(codes, ['000166', '688571']);
+});
 
 test('newer user prediction event wins and is never replaced by a market value', () => {
   const events: PredictionEvent[] = [

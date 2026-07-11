@@ -12,6 +12,7 @@ import {
   applyPredictionEventsToRows,
   createPredictionEventsFromRows,
   foldPredictionEvents,
+  listPredictionStockCodes,
   parsePredictionEventsFromFullBackup,
   type PredictionEvent,
 } from './utils/cloudPredictions';
@@ -141,6 +142,7 @@ export default function App() {
     currentVersion: appVersion,
   });
   const [cloudUser, setCloudUser] = useState<User | null>(null);
+  const [cloudStockCodes, setCloudStockCodes] = useState<string[]>([]);
   const [cloudSyncState, setCloudSyncState] = useState<CloudSyncState>(
     isCloudSyncConfigured() ? 'signed-out' : 'unconfigured',
   );
@@ -492,6 +494,7 @@ export default function App() {
   }
 
   function applyCloudEventsLocally(events: PredictionEvent[]) {
+    setCloudStockCodes(listPredictionStockCodes(events));
     const folded = foldPredictionEvents(events);
     const scopes = new Map(
       events.map((event) => [`${event.stockCode}:${event.period}`, { stockCode: event.stockCode, period: event.period }]),
@@ -507,6 +510,12 @@ export default function App() {
       savePredictions(predictionPlanKey(scope.stockCode, scope.period), mergedRows);
       if (isCurrentScope) setPredictions(mergedRows);
     });
+  }
+
+  function selectCloudStockCode(code: string) {
+    if (!code) return;
+    setStockCode(code);
+    setQueryCode(code);
   }
 
   async function syncCloudPredictions(user = cloudUser, quiet = false) {
@@ -1010,6 +1019,22 @@ export default function App() {
             maxLength={6}
             onChange={(event) => setStockCode(event.target.value)}
           />
+          {cloudStockCodes.length ? (
+            <select
+              aria-label="云端预测股票代码"
+              value={cloudStockCodes.includes(stockCode) ? stockCode : ''}
+              onChange={(event) => selectCloudStockCode(event.target.value)}
+            >
+              <option value="" disabled>
+                云端股票
+              </option>
+              {cloudStockCodes.map((code) => (
+                <option key={code} value={code}>
+                  {code}
+                </option>
+              ))}
+            </select>
+          ) : null}
           <button type="button" onClick={refreshHistoricalData} disabled={isLoading}>
             {isLoading ? '更新中' : '联网更新'}
           </button>

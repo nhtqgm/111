@@ -11,3 +11,9 @@ test('prediction controls use cloud read and cloud save instead of the local cac
   assert.match(appSource, /onClick=\{\(\) => \(cloudUser \? void readCloudPredictions\(\)/);
   assert.match(appSource, /onClick=\{\(\) => void saveCurrentWorkspaceToCloud\(\)\}/);
 });
+
+test('cloud-loaded stock codes are offered through a selector next to the stock code input', () => {
+  assert.match(appSource, /aria-label="云端预测股票代码"/);
+  assert.match(appSource, /cloudStockCodes\.map\(\(code\)/);
+  assert.match(appSource, /onChange=\{\(event\) => selectCloudStockCode\(event\.target\.value\)\}/);
+});

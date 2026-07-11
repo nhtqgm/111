@@ -76,6 +76,10 @@ export function foldPredictionEvents(events: PredictionEvent[]) {
   return latest;
 }
 
+export function listPredictionStockCodes(events: PredictionEvent[]) {
+  return [...new Set(events.filter(isValidPredictionEvent).map((event) => event.stockCode))].sort();
+}
+
 export function applyPredictionEventsToRows(
   rows: PredictionPoint[],
   scope: PredictionScope,

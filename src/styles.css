@@ -87,7 +87,7 @@ h2 {
 
 .stock-search {
   display: grid;
-  grid-template-columns: auto 120px auto auto auto;
+  grid-template-columns: auto 120px 96px auto auto auto;
   align-items: center;
   gap: 6px;
   padding: 5px;
@@ -103,6 +103,7 @@ h2 {
 }
 
 .stock-search input,
+.stock-search select,
 .stock-search button,
 .select-field select,
 .select-field input {
@@ -114,6 +115,13 @@ h2 {
 .stock-search input {
   width: 100%;
   padding: 0 9px;
+  background: #f7f4ee;
+  color: #111611;
+}
+
+.stock-search select {
+  width: 100%;
+  padding: 0 6px;
   background: #f7f4ee;
   color: #111611;
 }
