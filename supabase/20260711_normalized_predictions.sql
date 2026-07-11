@@ -182,8 +182,16 @@ begin
     'updatedAt', now()::text
   ), greatest(
     preferences.updated_at,
-    coalesce((select max(updated_at) from public.user_prediction_values where user_id = auth.uid()), preferences.updated_at),
-    coalesce((select max(updated_at) from public.user_forecast_history where user_id = auth.uid()), preferences.updated_at)
+    coalesce((
+      select max(prediction_value.updated_at)
+      from public.user_prediction_values prediction_value
+      where prediction_value.user_id = auth.uid()
+    ), preferences.updated_at),
+    coalesce((
+      select max(forecast_history.updated_at)
+      from public.user_forecast_history forecast_history
+      where forecast_history.user_id = auth.uid()
+    ), preferences.updated_at)
   );
 end;
 $$;

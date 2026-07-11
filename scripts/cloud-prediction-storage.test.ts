@@ -71,6 +71,20 @@ test('normalized migration stores each prediction value separately and does not 
   );
 });
 
+test('normalized workspace loader qualifies updated_at columns so cloud login can load a workspace', () => {
+  for (const fileName of [
+    'supabase/20260711_normalized_predictions.sql',
+    'supabase/20260711_fix_workspace_loader.sql',
+  ]) {
+    const sql = fs.readFileSync(fileName, 'utf8');
+    const loader = sql.slice(sql.indexOf('create or replace function public.get_my_prediction_workspace()'));
+
+    assert.match(loader, /max\(prediction_value\.updated_at\)/i, fileName);
+    assert.match(loader, /max\(forecast_history\.updated_at\)/i, fileName);
+    assert.doesNotMatch(loader, /max\(updated_at\)/i, fileName);
+  }
+});
+
 test('legacy workspace cleanup migration removes the old table and revision RPCs after normalization', () => {
   const sql = fs.readFileSync('supabase/20260711_drop_legacy_workspace.sql', 'utf8');
 
