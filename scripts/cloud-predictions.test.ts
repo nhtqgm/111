@@ -5,6 +5,7 @@ import type { PredictionPoint } from '../src/types.ts';
 import {
   applyPredictionEventsToRows,
   createPredictionEventsFromRows,
+  createPredictionEventsFromStorageSnapshot,
   foldPredictionEvents,
   listPredictionStockCodes,
   parsePredictionEventsFromFullBackup,
@@ -27,6 +28,31 @@ test('cloud stock selector lists each predicted stock code once in order', () =>
   ]);
 
   assert.deepEqual(codes, ['000166', '688571']);
+});
+
+test('cloud save snapshot contains only the current user prediction tables', () => {
+  const events = createPredictionEventsFromStorageSnapshot(
+    {
+      'prediction-ma:000166:month:v2': JSON.stringify([
+        { targetDate: '2026-08-31', predictedMa40: '4.8310', predictedMaValues: { 40: '4.8310' }, note: '' },
+      ]),
+      'prediction-ma:688571:week:v2': JSON.stringify([
+        { targetDate: '2026-07-10', predictedMa40: '8.1700', predictedMaValues: { 40: '8.1700' }, note: '' },
+      ]),
+      'prediction-ma40:kline-cache:000166:month': JSON.stringify({ data: 'not a prediction' }),
+      'prediction-ma40:cloud-outbox:v1': JSON.stringify([{ value: 'stale event' }]),
+    },
+    'snapshot-device',
+    '2026-07-11T08:00:00.000Z',
+  );
+
+  assert.deepEqual(
+    events.map(({ stockCode, period, targetDate, metric, value }) => ({ stockCode, period, targetDate, metric, value })),
+    [
+      { stockCode: '000166', period: 'month', targetDate: '2026-08-31', metric: 'ma40', value: '4.8310' },
+      { stockCode: '688571', period: 'week', targetDate: '2026-07-10', metric: 'ma40', value: '8.1700' },
+    ],
+  );
 });
 
 test('newer user prediction event wins and is never replaced by a market value', () => {

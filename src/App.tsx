@@ -10,17 +10,17 @@ import { filterCompletedKLineData } from './utils/completedPeriods';
 import { persistElectronStorage } from './utils/electronStorage';
 import {
   applyPredictionEventsToRows,
-  createPredictionEventsFromRows,
+  createPredictionEventsFromStorageSnapshot,
   foldPredictionEvents,
   listPredictionStockCodes,
-  parsePredictionEventsFromFullBackup,
   type PredictionEvent,
 } from './utils/cloudPredictions';
-import { enqueueCloudEvents, flushCloudOutbox, getCloudDeviceId } from './utils/cloudOutbox';
+import { clearCloudOutbox, getCloudDeviceId } from './utils/cloudOutbox';
 import {
   downloadPredictionEvents,
   getCloudUser,
   isCloudSyncConfigured,
+  replaceCloudPredictionEvents,
   signInToCloud,
   signOutOfCloud,
   signUpForCloud,
@@ -518,6 +518,10 @@ export default function App() {
     setQueryCode(code);
   }
 
+  function buildCloudPredictionSnapshot() {
+    return createPredictionEventsFromStorageSnapshot(collectAppStorage(), getCloudDeviceId());
+  }
+
   async function syncCloudPredictions(user = cloudUser, quiet = false) {
     if (!user) {
       if (!quiet) {
@@ -529,12 +533,11 @@ export default function App() {
 
     setCloudSyncState('syncing');
     try {
-      const uploaded = await flushCloudOutbox(user);
       const events = await downloadPredictionEvents(user);
       applyCloudEventsLocally(events);
       setCloudSyncState('ready');
       if (!quiet) {
-        showToast(`云端同步完成：读取 ${events.length} 条预测事件${uploaded ? `，上传 ${uploaded} 条本地修改` : ''}`, 'success');
+        showToast(`云端读取完成：${events.length} 条预测数据`, 'success');
       }
     } catch (err) {
       setCloudSyncState('error');
@@ -573,14 +576,15 @@ export default function App() {
 
     setCloudSyncState('syncing');
     try {
-      const uploaded = await flushCloudOutbox(cloudUser);
-      const events = await downloadPredictionEvents(cloudUser);
-      applyCloudEventsLocally(events);
+      const snapshotEvents = buildCloudPredictionSnapshot();
+      if (!snapshotEvents.length) {
+        throw new Error('本机没有预测数据，已取消覆盖云端');
+      }
+      await replaceCloudPredictionEvents(cloudUser, snapshotEvents);
+      clearCloudOutbox();
+      applyCloudEventsLocally(snapshotEvents);
       setCloudSyncState('ready');
-      showToast(
-        uploaded ? `已向云端保存 ${uploaded} 条预测修改` : '当前预测已与云端一致',
-        'success',
-      );
+      showToast(`已用本机全部 ${snapshotEvents.length} 条预测覆盖云端`, 'success');
     } catch (err) {
       setCloudSyncState('error');
       showToast(err instanceof Error ? `云端保存失败：${err.message}` : '云端保存失败，修改会在下次重试', 'warning');
@@ -642,14 +646,6 @@ export default function App() {
     );
     setPredictions(nextRows);
     persistPredictionDraft(nextRows);
-    const events = createPredictionEventsFromRows(
-      { stockCode: data?.code ?? normalizeStockCode(queryCode), period },
-      predictions,
-      nextRows,
-      getCloudDeviceId(),
-    );
-    enqueueCloudEvents(events);
-    if (cloudUser) void syncCloudPredictions(cloudUser, true);
   }
 
   function formatPredictionInput(targetDate: string) {
@@ -904,14 +900,8 @@ export default function App() {
       const rawFile = JSON.parse(text);
       const backup = normalizeFullBackupFile(rawFile);
       if (backup) {
-        const cloudEvents = parsePredictionEventsFromFullBackup(
-          backup,
-          getCloudDeviceId(),
-          backup.exportedAt,
-        );
         const recovery = recoverForecastHistoryFromBackupStorage(backup.storage);
         restoreAppStorage(recovery.storage);
-        enqueueCloudEvents(cloudEvents);
         await persistElectronStorage();
         const recoveryNotice = recovery.recoveredCount
           ? `，已恢复${recovery.recoveredCount}条历史预测`
@@ -920,7 +910,15 @@ export default function App() {
           `已导入全部本地数据：${Object.keys(backup.storage).length}项${recoveryNotice}，正在刷新`,
           'success',
         );
-        if (cloudUser) void syncCloudPredictions(cloudUser, true);
+        if (cloudUser) {
+          const snapshotEvents = buildCloudPredictionSnapshot();
+          if (snapshotEvents.length) {
+            await replaceCloudPredictionEvents(cloudUser, snapshotEvents);
+            clearCloudOutbox();
+            applyCloudEventsLocally(snapshotEvents);
+            showToast(`已用导入数据重建云端：${snapshotEvents.length} 条预测`, 'success');
+          }
+        }
         window.setTimeout(() => window.location.reload(), 500);
         return;
       }

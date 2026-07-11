@@ -47,13 +47,11 @@ export async function signOutOfCloud() {
   if (error) throw error;
 }
 
-export async function uploadPredictionEvents(user: User, events: PredictionEvent[]) {
-  if (!events.length) return;
+export async function replaceCloudPredictionEvents(_user: User, events: PredictionEvent[]) {
   const api = requireCloudClient();
-  const { error } = await api.from('prediction_events').upsert(
-    events.map((event) => ({
+  const { error } = await api.rpc('replace_prediction_events', {
+    events: events.map((event) => ({
       id: event.id,
-      user_id: user.id,
       stock_code: event.stockCode,
       period: event.period,
       target_date: event.targetDate,
@@ -62,9 +60,8 @@ export async function uploadPredictionEvents(user: User, events: PredictionEvent
       value: event.value === null ? null : Number(event.value),
       client_event_at: event.clientEventAt,
       device_id: event.deviceId,
-      })),
-    { onConflict: 'id', ignoreDuplicates: true },
-  );
+    })),
+  });
   if (error) throw error;
 }
 

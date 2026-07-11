@@ -155,6 +155,18 @@ export function parsePredictionEventsFromFullBackup(
   return events;
 }
 
+export function createPredictionEventsFromStorageSnapshot(
+  storage: Record<string, string>,
+  deviceId: string,
+  clientEventAt = new Date().toISOString(),
+) {
+  return parsePredictionEventsFromFullBackup(
+    { schema: 'gupiao-ma40-full-backup/v1', storage },
+    deviceId,
+    clientEventAt,
+  );
+}
+
 export function eventKey(event: Pick<PredictionEvent, 'stockCode' | 'period' | 'targetDate' | 'metric'>) {
   return `${event.stockCode}:${event.period}:${event.targetDate}:${event.metric}`;
 }
