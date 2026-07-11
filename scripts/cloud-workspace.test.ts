@@ -78,3 +78,9 @@ test('save queue keeps the server failure available for a manual retry message',
   assert.equal(queue.getStatus(), 'error');
   assert.equal(queue.getLastError()?.message, 'Workspace revision conflict.');
 });
+
+test('workspace SQL qualifies the revision column when incrementing a saved workspace', () => {
+  const sql = fs.readFileSync('supabase/20260711_user_workspace.sql', 'utf8');
+
+  assert.match(sql, /update public\.user_workspaces w\s+set[\s\S]*?revision = w\.revision \+ 1/i);
+});

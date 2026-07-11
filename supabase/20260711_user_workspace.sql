@@ -112,12 +112,12 @@ begin
     if current_revision <> p_expected_revision then
       raise exception 'Workspace revision conflict.' using errcode = '40001';
     end if;
-    update public.user_workspaces
+    update public.user_workspaces w
     set schema = 'gupiao-cloud-workspace/v1',
-        revision = revision + 1,
+        revision = w.revision + 1,
         payload = p_payload,
         updated_at = now()
-    where user_id = auth.uid();
+    where w.user_id = auth.uid();
   end if;
 
   return query
