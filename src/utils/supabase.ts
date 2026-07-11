@@ -57,7 +57,7 @@ export async function signUpForCloud(email: string, password: string) {
 export async function signOutOfCloud() {
   const api = getSupabaseClient();
   if (!api) return;
-  const { error } = await api.auth.signOut();
+  const { error } = await api.auth.signOut({ scope: 'local' });
   if (error) throw error;
 }
 

@@ -148,7 +148,6 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const importedPlanRef = useRef<PredictionFileV5 | null>(null);
   const toastTimerRef = useRef<number | null>(null);
-  const lastSavedSignatureRef = useRef('');
   const cloudWorkspaceRef = useRef<CloudWorkspace | null>(null);
   const cloudSaveQueueRef = useRef<ReturnType<typeof createWorkspaceSaveQueue> | null>(null);
   const cloudSessionGenerationRef = useRef(0);
@@ -333,7 +332,12 @@ export default function App() {
     force?: boolean;
     notice: 'auto' | 'manual' | 'silent';
   }) {
-    if (!data || !baseDate || !predictions.length || !cloudWorkspace) return;
+    if (!data || !baseDate || !predictions.length || !cloudWorkspace) {
+      if (notice === 'manual') showToast('暂无可保存的数据', 'warning');
+      return;
+    }
+    if (!force && !hasUnsavedChanges) return;
+
     capturePredictionHistory(predictions, data);
     updateCloudWorkspace((workspace) => ({
       ...setWorkspacePredictions(workspace, { stockCode: data.code, period }, predictions),
@@ -341,50 +345,6 @@ export default function App() {
     }));
     setHasUnsavedChanges(false);
     if (notice === 'manual') showToast('Saved to cloud.', 'success');
-    /*
-    if (!data || !baseDate || !predictions.length) {
-      if (notice === 'manual') {
-        showToast('暂无可保存的数据', 'warning');
-      }
-      return;
-    }
-
-    if (!force && !hasUnsavedChanges) return;
-
-    const signature = JSON.stringify({
-      stockCode: data.code,
-      period,
-      baseDate,
-      predictions,
-    });
-    if (signature === lastSavedSignatureRef.current) {
-      setHasUnsavedChanges(false);
-      if (notice === 'manual') {
-        showToast(`已保存：${new Date().toLocaleTimeString()}`, 'success');
-      }
-      return;
-    }
-
-    capturePredictionHistory(predictions, data);
-    savePredictions(predictionPlanKey(data.code, period, baseDate), predictions);
-    saveWorkspaceCache({
-      stockCode: data.code,
-      period,
-      baseDate,
-      updatedAt: new Date().toISOString(),
-    });
-    lastSavedSignatureRef.current = signature;
-    setHasUnsavedChanges(false);
-
-    if (notice !== 'silent') {
-      showToast(
-        notice === 'auto'
-          ? `已自动保存：${new Date().toLocaleTimeString()}`
-          : `已保存：${new Date().toLocaleTimeString()}`,
-        'success',
-      );
-    }
-    */
   }
 
   const projection = useMemo(
@@ -768,11 +728,20 @@ export default function App() {
       cloudWorkspaceRef.current = null;
       setCloudUser(null);
       setCloudWorkspace(null);
+      setCloudWorkspaceRevision(0);
       setCloudRole(null);
+      setCloudSaveStatus('idle');
+      setCloudStockCodes([]);
       setPredictions([]);
       setForecastHistory([]);
       setData(null);
       setDataPeriod(null);
+      setBaseDate(todayDate);
+      setError('');
+      setHasUnsavedChanges(false);
+      setCloudEmail('');
+      setCloudPassword('');
+      marketDataRef.current.clear();
       setCloudSyncState('signed-out');
       setIsCloudAccountOpen(false);
       showToast('已退出云端账户。本地预测仍保留在本机。', 'info');
@@ -1253,6 +1222,15 @@ export default function App() {
             disabled={updateState.status === 'checking'}
           >
             {updateButtonText}
+          </button>
+          <button
+            type="button"
+            className="cloud-account-button"
+            data-testid="cloud-account-button"
+            onClick={() => setIsCloudAccountOpen(true)}
+            title={cloudUser ? `当前账户：${cloudUser.email ?? '云端账户'}。可在此退出或切换账户。` : '登录或切换云端账户'}
+          >
+            {cloudUser ? '云端账户' : '登录云端'}
           </button>
           <button
             type="button"

@@ -87,7 +87,7 @@ h2 {
 
 .stock-search {
   display: grid;
-  grid-template-columns: auto 120px 96px auto auto auto;
+  grid-template-columns: auto 120px 96px repeat(4, auto);
   align-items: center;
   gap: 6px;
   padding: 5px;
@@ -142,6 +142,12 @@ h2 {
 .stock-search .cloud-sync-button {
   background: #5f7d5d;
   border-color: #5f7d5d;
+  color: #fffdf8;
+}
+
+.stock-search .cloud-account-button {
+  background: #4e7892;
+  border-color: #4e7892;
   color: #fffdf8;
 }
 
