@@ -19,6 +19,13 @@ test('cloud-loaded stock codes are offered through a selector next to the stock 
   assert.match(appSource, /onChange=\{\(event\) => selectCloudStockCode\(event\.target\.value\)\}/);
 });
 
+test('every signed-in account gets a stock selector from its workspace code even before it has predictions', () => {
+  assert.match(appSource, /function collectCloudStockCodes\(workspace: CloudWorkspace\)/);
+  assert.match(appSource, /workspace\.workspace\.stockCode/);
+  assert.match(appSource, /setCloudStockCodes\(collectCloudStockCodes\(workspace\)\)/);
+  assert.match(appSource, /setCloudStockCodes\(collectCloudStockCodes\(next\)\)/);
+});
+
 test('explicit cloud save replaces the remote prediction snapshot instead of flushing appended events', () => {
   assert.match(appSource, /replaceCloudPredictionEvents\(cloudUser, snapshotEvents\)/);
   assert.doesNotMatch(appSource, /const uploaded = await flushCloudOutbox\(cloudUser\)/);

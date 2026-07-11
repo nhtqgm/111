@@ -266,6 +266,7 @@ export default function App() {
     const next = transform(current);
     cloudWorkspaceRef.current = next;
     setCloudWorkspace(next);
+    setCloudStockCodes(collectCloudStockCodes(next));
   }
 
   function createPredictionSaveQueueForUser(user: User) {
@@ -308,9 +309,7 @@ export default function App() {
       setQueryCode(workspace.workspace.stockCode);
       setPeriod(workspace.workspace.period);
       setBaseDate(workspace.workspace.baseDate || todayDate);
-      setCloudStockCodes(
-        [...new Set(Object.keys(workspace.predictions).map((key) => key.split(':')[0]))].sort(),
-      );
+      setCloudStockCodes(collectCloudStockCodes(workspace));
       cloudPredictionSaveQueueRef.current = createPredictionSaveQueueForUser(user);
       setCloudSyncState('ready');
       if (!quiet) showToast('Cloud workspace loaded.', 'success');
@@ -1865,6 +1864,16 @@ function isPeriodType(value: string): value is PeriodType {
 
 function marketScopeKey(stockCode: string, period: PeriodType) {
   return `${stockCode.replace(/\D/g, '').slice(0, 6)}:${period}`;
+}
+
+function collectCloudStockCodes(workspace: CloudWorkspace) {
+  return [
+    ...new Set([
+      workspace.workspace.stockCode,
+      ...Object.keys(workspace.predictions).map((key) => key.split(':')[0]),
+      ...Object.keys(workspace.forecastHistory).map((key) => key.split(':')[0]),
+    ].filter((code) => /^\d{6}$/.test(code))),
+  ].sort();
 }
 
 function formatDecimalInput(value: string) {
