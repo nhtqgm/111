@@ -106,6 +106,17 @@ export function getPendingForecastRows(rows: PredictionPoint[], baseDate: string
   return rows.filter((row) => row.targetDate > baseDate);
 }
 
+export function filterForecastHistorySnapshots(
+  snapshots: ForecastHistorySnapshot[],
+  stockCode: string,
+  period: PeriodType,
+) {
+  const normalizedCode = normalizeStockCode(stockCode);
+  return snapshots.filter(
+    (snapshot) => snapshot.stockCode === normalizedCode && snapshot.period === period,
+  );
+}
+
 /**
  * Old full backups contain the prediction input and the K-line cache that was
  * available when it was exported. Rebuild snapshots from those two records,

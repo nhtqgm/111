@@ -11,6 +11,7 @@
     "test:chart": "node --test scripts/chart-viewport.test.ts",
     "test:history": "node --test scripts/forecast-history.test.ts",
     "test:refresh": "node --test scripts/period-refresh.test.ts",
+    "test:cloud": "node --test scripts/cloud-predictions.test.ts",
     "verify:ma": "node scripts/verify-ma-periods.mjs",
     "preview": "vite preview --host 0.0.0.0",
     "electron:dev": "npm run build && electron .",
@@ -51,6 +52,7 @@
   },
   "dependencies": {
     "@capacitor/core": "^8.4.1",
+    "@supabase/supabase-js": "^2.110.2",
     "@vitejs/plugin-react": "^5.1.2",
     "echarts": "^6.0.0",
     "react": "^19.2.3",

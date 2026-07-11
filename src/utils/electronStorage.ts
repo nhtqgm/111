@@ -13,9 +13,24 @@ export interface ElectronStorageApi {
 
 let pendingSync: Promise<void> | null = null;
 let syncRequested = false;
+const BROWSER_LEGACY_CACHE_RESET_KEY = 'gupiao:cloud-sync-cache-reset:v2';
 
 export function isAppStorageKey(key: string) {
   return key.startsWith('prediction-ma40:') || key.startsWith('prediction-ma:');
+}
+
+export function clearLegacyBrowserAppCache(storage: StorageLike = localStorage) {
+  if (storage.getItem(BROWSER_LEGACY_CACHE_RESET_KEY)) return 0;
+
+  const keysToRemove: string[] = [];
+  for (let index = 0; index < storage.length; index += 1) {
+    const key = storage.key(index);
+    if (key && isAppStorageKey(key)) keysToRemove.push(key);
+  }
+
+  keysToRemove.forEach((key) => storage.removeItem(key));
+  storage.setItem(BROWSER_LEGACY_CACHE_RESET_KEY, new Date().toISOString());
+  return keysToRemove.length;
 }
 
 export function collectAppStorage(storage: StorageLike) {

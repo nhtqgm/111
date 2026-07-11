@@ -40,6 +40,9 @@ jobs:
 
       - name: Build production root
         working-directory: main-site
+        env:
+          VITE_SUPABASE_URL: https://svupnipcyekyvdhhpbec.supabase.co
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
         run: |
           npm ci
           npm run build
@@ -48,6 +51,8 @@ jobs:
         run: |
           if [ -f preview-site/package.json ]; then
             cd preview-site
+            export VITE_SUPABASE_URL=https://svupnipcyekyvdhhpbec.supabase.co
+            export VITE_SUPABASE_ANON_KEY="${{ secrets.VITE_SUPABASE_ANON_KEY }}"
             npm ci
             npm run build
           else

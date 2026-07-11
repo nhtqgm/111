@@ -9,8 +9,26 @@ import type { PeriodType, PredictionPoint, StockKLineResponse } from './types';
 import { filterCompletedKLineData } from './utils/completedPeriods';
 import { persistElectronStorage } from './utils/electronStorage';
 import {
+  applyPredictionEventsToRows,
+  createPredictionEventsFromRows,
+  foldPredictionEvents,
+  parsePredictionEventsFromFullBackup,
+  type PredictionEvent,
+} from './utils/cloudPredictions';
+import { enqueueCloudEvents, flushCloudOutbox, getCloudDeviceId } from './utils/cloudOutbox';
+import {
+  downloadPredictionEvents,
+  getCloudUser,
+  isCloudSyncConfigured,
+  signInToCloud,
+  signOutOfCloud,
+  signUpForCloud,
+} from './utils/supabase';
+import type { User } from '@supabase/supabase-js';
+import {
   buildForecastHistoryRows,
   createForecastHistorySnapshots,
+  filterForecastHistorySnapshots,
   getPendingForecastRows,
   loadForecastHistory,
   mergeForecastHistory,
@@ -96,6 +114,8 @@ interface UpdateState {
   notes?: string;
 }
 
+type CloudSyncState = 'unconfigured' | 'signed-out' | 'ready' | 'syncing' | 'error';
+
 export default function App() {
   const [stockCode, setStockCode] = useState(initialWorkspace?.stockCode ?? '000166');
   const [queryCode, setQueryCode] = useState(initialWorkspace?.stockCode ?? '000166');
@@ -120,6 +140,13 @@ export default function App() {
     status: 'idle',
     currentVersion: appVersion,
   });
+  const [cloudUser, setCloudUser] = useState<User | null>(null);
+  const [cloudSyncState, setCloudSyncState] = useState<CloudSyncState>(
+    isCloudSyncConfigured() ? 'signed-out' : 'unconfigured',
+  );
+  const [cloudEmail, setCloudEmail] = useState('');
+  const [cloudPassword, setCloudPassword] = useState('');
+  const [isCloudAccountOpen, setIsCloudAccountOpen] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'info' | 'success' | 'warning' } | null>(
     null,
   );
@@ -136,6 +163,15 @@ export default function App() {
     },
     [],
   );
+
+  useEffect(() => {
+    if (!isCloudSyncConfigured()) return;
+    void getCloudUser().then((user) => {
+      setCloudUser(user);
+      setCloudSyncState(user ? 'ready' : 'signed-out');
+      if (user) void syncCloudPredictions(user, true);
+    });
+  }, []);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -193,6 +229,11 @@ export default function App() {
   }, [baseDate, data, period]);
 
   useEffect(() => {
+    if (!data || dataPeriod !== period) return;
+    setForecastHistory(loadForecastHistory(data.code, period));
+  }, [data, dataPeriod, period]);
+
+  useEffect(() => {
     if (!data || !baseDate || !predictions.length) return;
 
     setHasUnsavedChanges(true);
@@ -211,7 +252,7 @@ export default function App() {
     notice,
   }: {
     force?: boolean;
-    notice: 'auto' | 'manual';
+    notice: 'auto' | 'manual' | 'silent';
   }) {
     if (!data || !baseDate || !predictions.length) {
       if (notice === 'manual') {
@@ -247,12 +288,14 @@ export default function App() {
     lastSavedSignatureRef.current = signature;
     setHasUnsavedChanges(false);
 
-    showToast(
-      notice === 'auto'
-        ? `已自动保存：${new Date().toLocaleTimeString()}`
-        : `已保存：${new Date().toLocaleTimeString()}`,
-      'success',
-    );
+    if (notice !== 'silent') {
+      showToast(
+        notice === 'auto'
+          ? `已自动保存：${new Date().toLocaleTimeString()}`
+          : `已保存：${new Date().toLocaleTimeString()}`,
+        'success',
+      );
+    }
   }
 
   const projection = useMemo(
@@ -276,7 +319,10 @@ export default function App() {
       data &&
       dataPeriod === period &&
       normalizeStockCode(data.code) === normalizeStockCode(queryCode)
-        ? buildForecastHistoryRows(forecastHistory, data.points)
+        ? buildForecastHistoryRows(
+            filterForecastHistorySnapshots(forecastHistory, data.code, period),
+            data.points,
+          )
         : [],
     [data, dataPeriod, forecastHistory, period, queryCode],
   );
@@ -445,6 +491,139 @@ export default function App() {
     savePredictionDraft(data.code, period, baseDate, rows);
   }
 
+  function applyCloudEventsLocally(events: PredictionEvent[]) {
+    const folded = foldPredictionEvents(events);
+    const scopes = new Map(
+      events.map((event) => [`${event.stockCode}:${event.period}`, { stockCode: event.stockCode, period: event.period }]),
+    );
+
+    scopes.forEach((scope) => {
+      const isCurrentScope =
+        data &&
+        normalizeStockCode(data.code) === scope.stockCode &&
+        period === scope.period;
+      const localRows = isCurrentScope ? predictions : loadPredictions(predictionPlanKey(scope.stockCode, scope.period)) ?? [];
+      const mergedRows = applyPredictionEventsToRows(localRows, scope, folded);
+      savePredictions(predictionPlanKey(scope.stockCode, scope.period), mergedRows);
+      if (isCurrentScope) setPredictions(mergedRows);
+    });
+  }
+
+  async function syncCloudPredictions(user = cloudUser, quiet = false) {
+    if (!user) {
+      if (!quiet) {
+        setIsCloudAccountOpen(true);
+        showToast('请先登录云端账户，再同步预测数据', 'warning');
+      }
+      return;
+    }
+
+    setCloudSyncState('syncing');
+    try {
+      const uploaded = await flushCloudOutbox(user);
+      const events = await downloadPredictionEvents(user);
+      applyCloudEventsLocally(events);
+      setCloudSyncState('ready');
+      if (!quiet) {
+        showToast(`云端同步完成：读取 ${events.length} 条预测事件${uploaded ? `，上传 ${uploaded} 条本地修改` : ''}`, 'success');
+      }
+    } catch (err) {
+      setCloudSyncState('error');
+      if (!quiet) {
+        showToast(err instanceof Error ? `云端同步失败：${err.message}` : '云端同步失败，本地预测已保留并等待下次重试', 'warning');
+      }
+    }
+  }
+
+  async function readCloudPredictions(user = cloudUser) {
+    if (!user) {
+      setIsCloudAccountOpen(true);
+      showToast('请先登录云端账户，再读取预测数据', 'warning');
+      return;
+    }
+
+    setCloudSyncState('syncing');
+    try {
+      const events = await downloadPredictionEvents(user);
+      applyCloudEventsLocally(events);
+      setCloudSyncState('ready');
+      showToast(`已从云端读取 ${events.length} 条预测事件`, 'success');
+    } catch (err) {
+      setCloudSyncState('error');
+      showToast(err instanceof Error ? `云端读取失败：${err.message}` : '云端读取失败', 'warning');
+    }
+  }
+
+  async function saveCurrentWorkspaceToCloud() {
+    saveCurrentWorkspace({ force: true, notice: 'silent' });
+    if (!cloudUser) {
+      setIsCloudAccountOpen(true);
+      showToast('请先登录云端账户，再保存预测数据', 'warning');
+      return;
+    }
+
+    setCloudSyncState('syncing');
+    try {
+      const uploaded = await flushCloudOutbox(cloudUser);
+      const events = await downloadPredictionEvents(cloudUser);
+      applyCloudEventsLocally(events);
+      setCloudSyncState('ready');
+      showToast(
+        uploaded ? `已向云端保存 ${uploaded} 条预测修改` : '当前预测已与云端一致',
+        'success',
+      );
+    } catch (err) {
+      setCloudSyncState('error');
+      showToast(err instanceof Error ? `云端保存失败：${err.message}` : '云端保存失败，修改会在下次重试', 'warning');
+    }
+  }
+
+  async function submitCloudAccount(mode: 'sign-in' | 'sign-up') {
+    const email = cloudEmail.trim();
+    if (!email || !cloudPassword) {
+      showToast('请填写云端账户邮箱和密码', 'warning');
+      return;
+    }
+
+    setCloudSyncState('syncing');
+    try {
+      if (mode === 'sign-up') {
+        const result = await signUpForCloud(email, cloudPassword);
+        if (!result.user) throw new Error('注册未返回账户信息');
+        if (result.needsEmailConfirmation) {
+          setCloudSyncState('signed-out');
+          showToast('注册成功，请先到邮箱确认后再登录', 'success');
+          return;
+        }
+        setCloudUser(result.user);
+        setIsCloudAccountOpen(false);
+        await syncCloudPredictions(result.user);
+        return;
+      }
+
+      const user = await signInToCloud(email, cloudPassword);
+      if (!user) throw new Error('登录未返回账户信息');
+      setCloudUser(user);
+      setIsCloudAccountOpen(false);
+      await syncCloudPredictions(user);
+    } catch (err) {
+      setCloudSyncState('error');
+      showToast(err instanceof Error ? `云端账户操作失败：${err.message}` : '云端账户操作失败', 'warning');
+    }
+  }
+
+  async function signOutCloudAccount() {
+    try {
+      await signOutOfCloud();
+      setCloudUser(null);
+      setCloudSyncState('signed-out');
+      setIsCloudAccountOpen(false);
+      showToast('已退出云端账户。本地预测仍保留在本机。', 'info');
+    } catch (err) {
+      showToast(err instanceof Error ? `退出云端账户失败：${err.message}` : '退出云端账户失败', 'warning');
+    }
+  }
+
   function updatePrediction(targetDate: string, value: string) {
     const normalizedValue = normalizeDecimalInput(value);
     const nextRows = predictions.map((row) =>
@@ -454,6 +633,14 @@ export default function App() {
     );
     setPredictions(nextRows);
     persistPredictionDraft(nextRows);
+    const events = createPredictionEventsFromRows(
+      { stockCode: data?.code ?? normalizeStockCode(queryCode), period },
+      predictions,
+      nextRows,
+      getCloudDeviceId(),
+    );
+    enqueueCloudEvents(events);
+    if (cloudUser) void syncCloudPredictions(cloudUser, true);
   }
 
   function formatPredictionInput(targetDate: string) {
@@ -708,8 +895,14 @@ export default function App() {
       const rawFile = JSON.parse(text);
       const backup = normalizeFullBackupFile(rawFile);
       if (backup) {
+        const cloudEvents = parsePredictionEventsFromFullBackup(
+          backup,
+          getCloudDeviceId(),
+          backup.exportedAt,
+        );
         const recovery = recoverForecastHistoryFromBackupStorage(backup.storage);
         restoreAppStorage(recovery.storage);
+        enqueueCloudEvents(cloudEvents);
         await persistElectronStorage();
         const recoveryNotice = recovery.recoveredCount
           ? `，已恢复${recovery.recoveredCount}条历史预测`
@@ -718,6 +911,7 @@ export default function App() {
           `已导入全部本地数据：${Object.keys(backup.storage).length}项${recoveryNotice}，正在刷新`,
           'success',
         );
+        if (cloudUser) void syncCloudPredictions(cloudUser, true);
         window.setTimeout(() => window.location.reload(), 500);
         return;
       }
@@ -807,13 +1001,7 @@ export default function App() {
           <p className="eyebrow">MA{inputMaWindow} Forecast Console</p>
           <h1>人工预测 MA{inputMaWindow} 走势</h1>
         </div>
-        <form
-          className="stock-search"
-          onSubmit={(event) => {
-            event.preventDefault();
-            setQueryCode(stockCode);
-          }}
-        >
+        <div className="stock-search">
           <label htmlFor="stockCode">股票代码</label>
           <input
             id="stockCode"
@@ -822,7 +1010,6 @@ export default function App() {
             maxLength={6}
             onChange={(event) => setStockCode(event.target.value)}
           />
-          <button type="submit">读取缓存</button>
           <button type="button" onClick={refreshHistoricalData} disabled={isLoading}>
             {isLoading ? '更新中' : '联网更新'}
           </button>
@@ -833,7 +1020,22 @@ export default function App() {
           >
             {updateButtonText}
           </button>
-        </form>
+          <button
+            type="button"
+            className={`cloud-sync-button ${cloudSyncState}`}
+            onClick={() => (cloudUser ? void readCloudPredictions() : setIsCloudAccountOpen(true))}
+            disabled={cloudSyncState === 'syncing' || cloudSyncState === 'unconfigured'}
+            title={
+              cloudSyncState === 'unconfigured'
+                ? '云端同步尚未配置'
+                : cloudUser
+                  ? `已登录 ${cloudUser.email ?? '云端账户'}，点击从云端读取预测`
+                  : '登录云端账户后读取网页与 EXE 的预测数据'
+            }
+          >
+            {cloudSyncState === 'syncing' ? '读取中' : cloudUser ? '从云端读取' : '登录云端'}
+          </button>
+        </div>
       </section>
 
       <section className="control-band">
@@ -927,9 +1129,9 @@ export default function App() {
               <button
                 type="button"
                 className="ghost primary-save"
-                onClick={() => saveCurrentWorkspace({ force: true, notice: 'manual' })}
+                onClick={() => void saveCurrentWorkspaceToCloud()}
               >
-                保存
+                向云端保存
               </button>
               <button type="button" className="ghost" onClick={() => fileInputRef.current?.click()}>
                 导入
@@ -1016,7 +1218,100 @@ export default function App() {
           onClose={() => setDetailTargetDate(null)}
         />
       ) : null}
+
+      {isCloudAccountOpen ? (
+        <CloudAccountModal
+          email={cloudEmail}
+          password={cloudPassword}
+          cloudUser={cloudUser}
+          isBusy={cloudSyncState === 'syncing'}
+          onEmailChange={setCloudEmail}
+          onPasswordChange={setCloudPassword}
+          onSignIn={() => void submitCloudAccount('sign-in')}
+          onSignUp={() => void submitCloudAccount('sign-up')}
+          onSignOut={() => void signOutCloudAccount()}
+          onClose={() => setIsCloudAccountOpen(false)}
+        />
+      ) : null}
     </main>
+  );
+}
+
+function CloudAccountModal({
+  email,
+  password,
+  cloudUser,
+  isBusy,
+  onEmailChange,
+  onPasswordChange,
+  onSignIn,
+  onSignUp,
+  onSignOut,
+  onClose,
+}: {
+  email: string;
+  password: string;
+  cloudUser: User | null;
+  isBusy: boolean;
+  onEmailChange: (value: string) => void;
+  onPasswordChange: (value: string) => void;
+  onSignIn: () => void;
+  onSignUp: () => void;
+  onSignOut: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="table-modal-backdrop" role="presentation">
+      <section className="cloud-account-modal" role="dialog" aria-modal="true" aria-label="云端账户">
+        <div className="table-modal-head">
+          <div>
+            <p className="eyebrow">Cloud Prediction Sync</p>
+            <h2>云端账户</h2>
+          </div>
+          <button type="button" className="ghost" onClick={onClose}>
+            关闭
+          </button>
+        </div>
+        {cloudUser ? (
+          <div className="cloud-account-signed-in">
+            <strong>{cloudUser.email ?? '已登录云端账户'}</strong>
+            <p>此账户的预测数据会在网页端和 EXE 端同步。行情更新不会覆盖已输入的预测。</p>
+            <button type="button" className="ghost" onClick={onSignOut} disabled={isBusy}>
+              退出登录
+            </button>
+          </div>
+        ) : (
+          <div className="cloud-account-form">
+            <label>
+              <span>邮箱</span>
+              <input
+                type="email"
+                value={email}
+                onChange={(event) => onEmailChange(event.target.value)}
+                autoComplete="email"
+              />
+            </label>
+            <label>
+              <span>密码</span>
+              <input
+                type="password"
+                value={password}
+                onChange={(event) => onPasswordChange(event.target.value)}
+                autoComplete="current-password"
+              />
+            </label>
+            <div className="cloud-account-actions">
+              <button type="button" onClick={onSignIn} disabled={isBusy}>
+                登录并同步
+              </button>
+              <button type="button" className="ghost" onClick={onSignUp} disabled={isBusy}>
+                注册账户
+              </button>
+            </div>
+          </div>
+        )}
+      </section>
+    </div>
   );
 }
 

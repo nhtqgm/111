@@ -131,6 +131,22 @@ h2 {
   opacity: 0.65;
 }
 
+.stock-search .cloud-sync-button {
+  background: #5f7d5d;
+  border-color: #5f7d5d;
+  color: #fffdf8;
+}
+
+.stock-search .cloud-sync-button.error {
+  background: #a65342;
+  border-color: #a65342;
+}
+
+.stock-search .cloud-sync-button.unconfigured {
+  background: #7c7468;
+  border-color: #7c7468;
+}
+
 .control-band {
   flex: 0 0 auto;
   display: flex;
@@ -1101,6 +1117,69 @@ h2 {
   border-radius: 6px;
   background: #fffdf8;
   color: #151a15;
+}
+
+.cloud-account-modal {
+  width: min(430px, calc(100vw - 28px));
+  border: 1px solid #2d342e;
+  border-radius: 8px;
+  background: #f7f4ee;
+  box-shadow: 0 20px 60px rgba(32, 37, 31, 0.3);
+  padding: 14px;
+}
+
+.cloud-account-form,
+.cloud-account-signed-in {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.cloud-account-form label {
+  display: grid;
+  gap: 5px;
+  color: #655d52;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.cloud-account-form input {
+  height: 34px;
+  border: 1px solid #b9ad9d;
+  border-radius: 6px;
+  padding: 0 9px;
+  background: #fffdf8;
+  color: #20251f;
+}
+
+.cloud-account-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.cloud-account-actions button,
+.cloud-account-signed-in button {
+  height: 32px;
+  border: 1px solid #b18438;
+  border-radius: 6px;
+  padding: 0 12px;
+  background: #d7a742;
+  color: #1e211d;
+  font-weight: 800;
+}
+
+.cloud-account-actions .ghost,
+.cloud-account-signed-in .ghost {
+  background: #fffdf8;
+  border-color: #8c8274;
+  color: #374037;
+}
+
+.cloud-account-signed-in p {
+  margin: 0;
+  color: #655d52;
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 @media (max-width: 1080px) {

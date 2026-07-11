@@ -125,3 +125,17 @@ test('only prediction rows after the saved K-line date are eligible for history 
     ['2026-07-11'],
   );
 });
+
+test('history display excludes snapshots from another K-line period', async () => {
+  const { createForecastHistorySnapshots, filterForecastHistorySnapshots } = await loadHistoryModule();
+  const snapshots = [
+    ...createForecastHistorySnapshots('688571', 'week', 40, [createRow('2026-07-10', 8.17)]),
+    ...createForecastHistorySnapshots('688571', 'month', 40, [createRow('2026-07-31', 7.1342)]),
+  ];
+
+  const activeWeekSnapshots = filterForecastHistorySnapshots(snapshots, '688571', 'week');
+
+  assert.equal(activeWeekSnapshots.length, 1);
+  assert.equal(activeWeekSnapshots[0].period, 'week');
+  assert.equal(activeWeekSnapshots[0].inputMaValue, 8.17);
+});

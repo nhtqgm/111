@@ -52,6 +52,29 @@ test('collect and restore use only application storage keys', async () => {
   assert.equal(storage.getItem('unrelated'), 'keep');
 });
 
+test('browser legacy cleanup removes prior app caches once without touching auth or unrelated storage', async () => {
+  const { clearLegacyBrowserAppCache } = await loadStorageModule();
+  assert.equal(typeof clearLegacyBrowserAppCache, 'function');
+
+  const storage = new MemoryStorage();
+  storage.setItem('prediction-ma:000166:day:v2', 'old prediction');
+  storage.setItem('prediction-ma40:kline-cache:000166:day:v1', 'old kline');
+  storage.setItem('prediction-ma:forecast-history:000166:day:v1', 'old history');
+  storage.setItem('sb-supabase-auth-token', 'keep signed in');
+  storage.setItem('unrelated', 'keep');
+
+  assert.equal(clearLegacyBrowserAppCache(storage), 3);
+  assert.equal(storage.getItem('prediction-ma:000166:day:v2'), null);
+  assert.equal(storage.getItem('prediction-ma40:kline-cache:000166:day:v1'), null);
+  assert.equal(storage.getItem('prediction-ma:forecast-history:000166:day:v1'), null);
+  assert.equal(storage.getItem('sb-supabase-auth-token'), 'keep signed in');
+  assert.equal(storage.getItem('unrelated'), 'keep');
+
+  storage.setItem('prediction-ma:000166:week:v2', 'fresh cloud copy');
+  assert.equal(clearLegacyBrowserAppCache(storage), 0);
+  assert.equal(storage.getItem('prediction-ma:000166:week:v2'), 'fresh cloud copy');
+});
+
 test('bootstrapElectronStorage restores the canonical Electron snapshot', async () => {
   const { bootstrapElectronStorage } = await loadStorageModule();
   assert.equal(typeof bootstrapElectronStorage, 'function');
