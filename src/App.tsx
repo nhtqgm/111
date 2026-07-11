@@ -37,6 +37,7 @@ import {
   savePredictions,
   saveWorkspaceCache,
 } from './utils/predictions';
+import { ALL_KLINE_PERIODS, refreshAllKLinePeriods } from './utils/periodRefresh';
 
 const periods: Array<{ value: PeriodType; label: string; unit: string }> = [
   { value: 'day', label: '日K', unit: '日' },
@@ -379,17 +380,17 @@ export default function App() {
     [projection.rows, visibleHistoryRows],
   );
 
-  function capturePredictionHistory(rows: PredictionPoint[], sourceData: StockKLineResponse | null) {
-    if (
-      !sourceData ||
-      !rows.length ||
-      dataPeriod !== period ||
-      normalizeStockCode(sourceData.code) !== normalizeStockCode(queryCode)
-    ) {
+  function capturePredictionHistory(
+    rows: PredictionPoint[],
+    sourceData: StockKLineResponse | null,
+    workspacePeriod = dataPeriod ?? period,
+    workspaceBaseDate = baseDate,
+  ) {
+    if (!sourceData || !rows.length || !workspaceBaseDate) {
       return;
     }
 
-    const existing = loadForecastHistory(sourceData.code, period);
+    const existing = loadForecastHistory(sourceData.code, workspacePeriod);
     const frozenIds = new Set(
       buildForecastHistoryRows(existing, sourceData.points)
         .filter((row) => row.actualClose !== null)
@@ -398,20 +399,40 @@ export default function App() {
     const incoming = MA_WINDOWS.flatMap((windowSize) =>
       createForecastHistorySnapshots(
         sourceData.code,
-        period,
+        workspacePeriod,
         windowSize,
-        buildMa40Projection(sourceData.points, rows, baseDate, windowSize).rows,
+        buildMa40Projection(sourceData.points, rows, workspaceBaseDate, windowSize).rows,
       ),
     ).filter((snapshot) => !frozenIds.has(snapshot.id));
 
     if (!incoming.length) {
-      setForecastHistory(existing);
+      if (workspacePeriod === period && normalizeStockCode(sourceData.code) === normalizeStockCode(queryCode)) {
+        setForecastHistory(existing);
+      }
       return;
     }
 
     const merged = mergeForecastHistory(existing, incoming);
-    saveForecastHistory(sourceData.code, period, merged);
-    setForecastHistory(merged);
+    saveForecastHistory(sourceData.code, workspacePeriod, merged);
+    if (workspacePeriod === period && normalizeStockCode(sourceData.code) === normalizeStockCode(queryCode)) {
+      setForecastHistory(merged);
+    }
+  }
+
+  function captureCachedPredictionHistory(workspacePeriod: PeriodType) {
+    const cached = loadKLineCache(stockCode, workspacePeriod);
+    if (!cached) return;
+
+    const completed = filterCompletedKLineData(markAsLocalCache(cached.data), workspacePeriod);
+    const workspaceBaseDate = completed.lastCompletedDate;
+    if (!workspaceBaseDate) return;
+
+    const storedRows = loadPredictions(
+      predictionPlanKey(completed.data.code, workspacePeriod, workspaceBaseDate),
+    );
+    if (storedRows?.length) {
+      capturePredictionHistory(storedRows, completed.data, workspacePeriod, workspaceBaseDate);
+    }
   }
 
   function updatePrediction(targetDate: string, value: string) {
@@ -538,37 +559,52 @@ export default function App() {
 
   async function refreshHistoricalData() {
     capturePredictionHistory(predictions, data);
+    ALL_KLINE_PERIODS.filter((workspacePeriod) => workspacePeriod !== dataPeriod).forEach(
+      captureCachedPredictionHistory,
+    );
     setIsLoading(true);
     setError('');
-    showToast('正在联网更新历史收盘价...', 'info');
+    showToast('正在联网更新日K、周K、月K历史收盘价...', 'info');
 
     try {
-      const result = await fetchKLines(stockCode, period);
-      const completed = filterCompletedKLineData(markAsOnlineResult(result), period);
-      saveKLineCache(completed.data, period);
-      setData(completed.data);
-      setDataPeriod(period);
-      setBaseDate(completed.lastCompletedDate ?? todayDate);
-      setStockCode(completed.data.code);
-      setQueryCode(completed.data.code);
-      showToast(`已联网更新：${completed.data.points.length}条，${new Date().toLocaleString()}`, 'success');
-      if (completed.data.points.length < minHistoryCount) {
+      const results = await refreshAllKLinePeriods((workspacePeriod) =>
+        fetchKLines(stockCode, workspacePeriod),
+      );
+      const successful = results.flatMap((result) => {
+        if (result.status !== 'success') return [];
+        const completed = filterCompletedKLineData(markAsOnlineResult(result.data), result.period);
+        saveKLineCache(completed.data, result.period);
+        return [{ period: result.period, completed }];
+      });
+      const active = successful.find((result) => result.period === period);
+      const failed = results.filter((result) => result.status === 'failed');
+
+      if (active) {
+        setData(active.completed.data);
+        setDataPeriod(period);
+        setBaseDate(active.completed.lastCompletedDate ?? todayDate);
+        setStockCode(active.completed.data.code);
+        setQueryCode(active.completed.data.code);
+      }
+
+      if (successful.length) {
+        const updated = successful.map((result) => getPeriodLabel(result.period)).join('、');
+        showToast(`已联网更新：${updated}，${new Date().toLocaleString()}`, failed.length ? 'warning' : 'success');
+      } else {
+        showToast('日K、周K、月K均联网更新失败，继续使用本地缓存', 'warning');
+      }
+
+      if (active && active.completed.data.points.length < minHistoryCount) {
         setError(`联网数据不足${minHistoryCount}条，MA60计算可能不完整`);
+      } else if (failed.length) {
+        setError(`部分周期联网更新失败：${failed.map((result) => getPeriodLabel(result.period)).join('、')}`);
+      } else if (!successful.length) {
+        setError('日K、周K、月K联网更新均失败，请检查网络后重试');
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : '联网更新失败';
-      const cached = loadKLineCache(stockCode, period);
-      if (cached) {
-        const completed = filterCompletedKLineData(markAsLocalCache(cached.data), period);
-        setData(completed.data);
-        setDataPeriod(period);
-        setBaseDate(completed.lastCompletedDate ?? todayDate);
-        showToast(
-          `${formatHistoryStatus(cached.updatedAt, completed.data.points.length, completed.removedPoints.length)}；联网失败，继续使用本地缓存`,
-          'warning',
-        );
-      }
-      setError(`联网更新失败：${message}`);
+      setError(`联网更新异常：${message}`);
+      showToast('联网更新异常，继续使用本地缓存', 'warning');
     } finally {
       setIsLoading(false);
     }
@@ -1153,6 +1189,10 @@ function formatSignedNumber(value: number | null) {
 
 function normalizeStockCode(value: string) {
   return value.replace(/\D/g, '').slice(0, 6);
+}
+
+function getPeriodLabel(period: PeriodType) {
+  return periods.find((item) => item.value === period)?.label ?? period;
 }
 
 async function getCurrentAppVersion() {
