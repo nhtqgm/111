@@ -353,7 +353,7 @@ export default function App() {
     [baseDate, data, inputMaWindow, predictions],
   );
   const forecastDates = useMemo(
-    () => projection.rows.map((row) => row.targetDate),
+    () => projection.rows.filter((row) => row.isForecast).map((row) => row.targetDate),
     [projection.rows],
   );
   const historyRows = useMemo(
@@ -377,7 +377,7 @@ export default function App() {
     [completedHistoryRows, inputMaWindow],
   );
   const predictionComparisons = useMemo(
-    () => compareProjectionRows(projection.rows),
+    () => compareProjectionRows(projection.rows.filter((row) => row.isForecast)),
     [projection.rows],
   );
   const summary = useMemo(() => summarizeComparisons(predictionComparisons), [predictionComparisons]);
@@ -464,7 +464,7 @@ export default function App() {
             targetDate: row.actualDate ?? row.targetDate,
             value: row.predictedClose,
           })),
-          projection.rows.map((row) => ({
+          projection.rows.filter((row) => row.isForecast).map((row) => ({
             targetDate: row.targetDate,
             value: row.derivedClose,
           })),

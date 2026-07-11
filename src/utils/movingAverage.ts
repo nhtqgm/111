@@ -40,6 +40,7 @@ export interface ProjectionCalculationDetail {
 export interface Ma40ProjectionRow extends PredictionPoint {
   actualClose: number | null;
   derivedClose: number | null;
+  isForecast: boolean;
   ma40: number | null;
   maValues: Record<MaWindow, number | null>;
   calculation: ProjectionCalculationDetail;
@@ -94,11 +95,13 @@ export function buildMa40Projection(
       inputWindow,
     );
     const derivedClose = reverse.derivedClose;
+    const hasCompletedActual = actualCloseByDate.has(row.targetDate) && row.targetDate <= baseDate;
+    const isForecast = !hasCompletedActual && row.targetDate > baseDate;
 
-    if (derivedClose !== null) {
+    if (isForecast && derivedClose !== null) {
       closeByDate.set(row.targetDate, derivedClose);
       predictedCloseDates.add(row.targetDate);
-    } else if (!closeByDate.has(row.targetDate)) {
+    } else if (!hasCompletedActual && !closeByDate.has(row.targetDate)) {
       closeByDate.set(row.targetDate, Number.NaN);
     }
 
@@ -126,6 +129,7 @@ export function buildMa40Projection(
       ...row,
       actualClose: actualCloseByDate.get(row.targetDate) ?? null,
       derivedClose,
+      isForecast,
       ma40: maValues[40],
       maValues,
       calculation: {
@@ -153,7 +157,7 @@ export function buildMa40Projection(
         windowSize,
         [
           ...(anchor ? [anchor] : []),
-          ...rows.map((row) => ({
+          ...rows.filter((row) => row.isForecast).map((row) => ({
             targetDate: row.targetDate,
             value: row.maValues[windowSize],
           })),
