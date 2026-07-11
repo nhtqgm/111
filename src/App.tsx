@@ -718,7 +718,7 @@ export default function App() {
     saveCurrentWorkspace({ force: true, notice: 'silent' });
     await cloudSaveQueueRef.current?.flush();
     if (cloudSaveQueueRef.current?.getStatus() === 'error') {
-      showToast('Cloud save failed. Please retry.', 'warning');
+      showToast(formatCloudSaveError(cloudSaveQueueRef.current.getLastError()), 'warning');
       return;
     }
     showToast('Saved to cloud.', 'success');
@@ -1927,7 +1927,16 @@ function formatHistoryStatus(updatedAt: string, count: number, removedCount = 0)
     ? updatedAt
     : updatedDate.toLocaleString();
   const removedText = removedCount > 0 ? `，已过滤未完成K线${removedCount}条` : '';
-  return `本地历史：${count}条，更新于 ${updatedText}${removedText}`;
+  return `行情K线缓存：${count}条，加载于 ${updatedText}${removedText}`;
+}
+
+function formatCloudSaveError(error: Error | null) {
+  const message = error?.message?.trim();
+  if (/workspace revision conflict/i.test(message ?? '')) {
+    return '云端数据已在另一端更新。为避免覆盖，请先从云端读取后再保存；当前页面数据未被覆盖。';
+  }
+  if (!message) return '向云端保存失败，请稍后重试。';
+  return `向云端保存失败：${message}`;
 }
 
 function createEmptyLineMap(): Record<MaWindow, LineValuePoint[]> {

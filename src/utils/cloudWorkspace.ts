@@ -128,6 +128,7 @@ export function createWorkspaceSaveQueue(options: CloudWorkspaceSaveQueueOptions
   let timer: ReturnType<typeof setTimeout> | null = null;
   let active: Promise<void> | null = null;
   let status: CloudWorkspaceSaveStatus = 'idle';
+  let lastError: Error | null = null;
 
   const setStatus = (next: CloudWorkspaceSaveStatus) => {
     status = next;
@@ -147,11 +148,13 @@ export function createWorkspaceSaveQueue(options: CloudWorkspaceSaveQueueOptions
         if (generation !== requestGeneration || accountId !== requestAccountId) return;
         revision = result.revision;
         failed = null;
+        lastError = null;
         setStatus('saved');
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         if (generation !== requestGeneration || accountId !== requestAccountId) return;
         failed = payload;
+        lastError = error instanceof Error ? error : new Error(String(error));
         setStatus('error');
       })
       .finally(() => {
@@ -174,6 +177,7 @@ export function createWorkspaceSaveQueue(options: CloudWorkspaceSaveQueueOptions
     schedule(payload: CloudWorkspace) {
       pending = cloneWorkspace(payload);
       failed = null;
+      lastError = null;
       arm();
     },
     async flush() {
@@ -188,6 +192,7 @@ export function createWorkspaceSaveQueue(options: CloudWorkspaceSaveQueueOptions
       if (!failed) return;
       pending = failed;
       failed = null;
+      lastError = null;
       arm();
     },
     switchAccount(nextAccountId: string, nextRevision: number) {
@@ -196,11 +201,13 @@ export function createWorkspaceSaveQueue(options: CloudWorkspaceSaveQueueOptions
       revision = nextRevision;
       pending = null;
       failed = null;
+      lastError = null;
       if (timer) clearTimeout(timer);
       timer = null;
       setStatus('idle');
     },
     getStatus: () => status,
+    getLastError: () => lastError,
   };
 }
 

@@ -61,3 +61,20 @@ test('save queue coalesces rapid changes and never sends an old account payload 
     { accountId: 'server-current-user', value: '000001' },
   ]);
 });
+
+test('save queue keeps the server failure available for a manual retry message', async () => {
+  const queue = createWorkspaceSaveQueue({
+    accountId: 'user-a',
+    revision: 1,
+    debounceMs: 0,
+    save: async () => {
+      throw new Error('Workspace revision conflict.');
+    },
+  });
+
+  queue.schedule(createEmptyCloudWorkspace());
+  await queue.flush();
+
+  assert.equal(queue.getStatus(), 'error');
+  assert.equal(queue.getLastError()?.message, 'Workspace revision conflict.');
+});
