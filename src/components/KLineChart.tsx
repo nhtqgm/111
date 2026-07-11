@@ -3,6 +3,7 @@ import * as echarts from 'echarts';
 import type { KLinePoint, PeriodType } from '../types';
 import type { LineValuePoint } from '../utils/movingAverage';
 import { getForecastCenteredZoomRange, getStableChartZoomRange } from '../utils/chartViewport';
+import { toScatterChartValue } from '../utils/chartPoints';
 
 export interface ChartLineSeries {
   label: string;
@@ -300,7 +301,7 @@ export default function KLineChart({
           type: 'scatter',
           data: xAxis.map((date) => {
             const value = series.values.get(date);
-            return value === undefined ? null : roundPrice(value);
+            return toScatterChartValue(value);
           }),
           symbol: series.symbol,
           symbolSize: series.symbolSize,

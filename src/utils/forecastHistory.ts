@@ -95,11 +95,51 @@ export function createForecastHistorySnapshots(
   });
 }
 
+/**
+ * Each K-line period owns its MA inputs. Capture every filled MA field in that
+ * same period so a later market refresh cannot make a completed forecast
+ * disappear from its own historical chart.
+ */
+export function createForecastHistorySnapshotsForAllInputs(
+  stockCode: string,
+  period: PeriodType,
+  points: KLinePoint[],
+  rows: PredictionPoint[],
+  baseDate: string,
+  savedAt = new Date().toISOString(),
+) {
+  return MA_WINDOWS.flatMap((windowSize) =>
+    createForecastHistorySnapshots(
+      stockCode,
+      period,
+      windowSize,
+      buildProjection(points, rows, baseDate, windowSize),
+      savedAt,
+    ),
+  );
+}
+
 export function mergeForecastHistory(
   existing: ForecastHistorySnapshot[],
   incoming: ForecastHistorySnapshot[],
 ) {
   return deduplicate([...existing, ...incoming]);
+}
+
+/**
+ * Completed forecasts are normally frozen for review. An older snapshot may
+ * nevertheless have been produced from a stale chart state. When the saved
+ * user MA is unchanged but its reverse-calculated close differs, the snapshot
+ * is demonstrably inconsistent with that user input and can be repaired.
+ */
+export function shouldRepairFrozenForecastSnapshot(
+  existing: ForecastHistorySnapshot | undefined,
+  rebuilt: ForecastHistorySnapshot,
+) {
+  if (!existing || existing.id !== rebuilt.id) return false;
+  if (existing.inputMaWindow !== rebuilt.inputMaWindow) return false;
+  if (Math.abs(existing.inputMaValue - rebuilt.inputMaValue) > 1e-9) return false;
+  return Math.abs(existing.predictedClose - rebuilt.predictedClose) > 1e-6;
 }
 
 export function getPendingForecastRows(rows: PredictionPoint[], baseDate: string) {

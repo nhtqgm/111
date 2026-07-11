@@ -21,10 +21,11 @@ import {
 import type { User } from '@supabase/supabase-js';
 import {
   buildForecastHistoryRows,
-  createForecastHistorySnapshots,
+  createForecastHistorySnapshotsForAllInputs,
   filterForecastHistorySnapshots,
   getHistoryCaptureRows,
   mergeForecastHistory,
+  shouldRepairFrozenForecastSnapshot,
   type ForecastHistorySnapshot,
   type ForecastHistoryRow,
 } from './utils/forecastHistory';
@@ -487,8 +488,9 @@ export default function App() {
       return;
     }
 
-    const existing = cloudWorkspace
-      ? getWorkspaceForecastHistory(cloudWorkspace, { stockCode: sourceData.code, period: workspacePeriod })
+    const currentWorkspace = cloudWorkspaceRef.current;
+    const existing = currentWorkspace
+      ? getWorkspaceForecastHistory(currentWorkspace, { stockCode: sourceData.code, period: workspacePeriod })
       : [];
     const existingById = new Map(existing.map((snapshot) => [snapshot.id, snapshot]));
     const frozenIds = new Set(
@@ -503,16 +505,17 @@ export default function App() {
       }
       return;
     }
-    const incoming = MA_WINDOWS.flatMap((windowSize) =>
-      createForecastHistorySnapshots(
-        sourceData.code,
-        workspacePeriod,
-        windowSize,
-        buildMa40Projection(sourceData.points, rows, workspaceBaseDate, windowSize).rows,
-      ),
+    const incoming = createForecastHistorySnapshotsForAllInputs(
+      sourceData.code,
+      workspacePeriod,
+      sourceData.points,
+      rows,
+      workspaceBaseDate,
     ).filter((snapshot) => {
       const existingSnapshot = existingById.get(snapshot.id);
-      return !frozenIds.has(snapshot.id) && !sameForecastSnapshot(existingSnapshot, snapshot);
+      return !sameForecastSnapshot(existingSnapshot, snapshot) && (
+        !frozenIds.has(snapshot.id) || shouldRepairFrozenForecastSnapshot(existingSnapshot, snapshot)
+      );
     });
 
     if (!incoming.length) {
@@ -915,6 +918,18 @@ export default function App() {
       });
       const active = successful.find((result) => result.period === period);
       const failed = results.filter((result) => result.status === 'failed');
+
+      // A forecast may belong to week/month while the user is currently
+      // viewing dayK. Capture all three independent periods after refresh.
+      successful.forEach(({ period: workspacePeriod, completed }) => {
+        const storedRows = getWorkspacePredictions(
+          cloudWorkspaceRef.current ?? createEmptyCloudWorkspace(),
+          { stockCode: completed.data.code, period: workspacePeriod },
+        );
+        if (storedRows.length) {
+          capturePredictionHistory(storedRows, completed.data, workspacePeriod, completed.lastCompletedDate ?? '');
+        }
+      });
 
       if (active) {
         setData(active.completed.data);

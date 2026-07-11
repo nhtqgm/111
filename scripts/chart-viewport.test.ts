@@ -68,3 +68,10 @@ test('viewport uses the centered default when the chart data domain changes', as
     { start: 48, end: 92 },
   );
 });
+
+test('empty forecast-close scatter slots stay gaps instead of becoming zero-value markers', async () => {
+  const { toScatterChartValue } = await import('../src/utils/chartPoints.ts');
+
+  assert.equal(toScatterChartValue(undefined), '-');
+  assert.equal(toScatterChartValue(9.2), 9.2);
+});

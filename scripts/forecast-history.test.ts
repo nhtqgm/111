@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import test from 'node:test';
 
 async function loadHistoryModule() {
@@ -139,4 +140,37 @@ test('history display excludes snapshots from another K-line period', async () =
   assert.equal(activeWeekSnapshots.length, 1);
   assert.equal(activeWeekSnapshots[0].period, 'week');
   assert.equal(activeWeekSnapshots[0].inputMaValue, 8.17);
+});
+
+test('the saved week MA40 input recreates the July 10 forecast close as 9.20', async () => {
+  const { createForecastHistorySnapshotsForAllInputs } = await loadHistoryModule();
+  const backup = JSON.parse(
+    fs.readFileSync('C:/Users/nht/Desktop/gupiao-full-backup-2026-07-11.json', 'utf8'),
+  );
+  const cache = JSON.parse(backup.storage['prediction-ma40:kline-cache:688571:week:v1']);
+  const predictions = JSON.parse(backup.storage['prediction-ma:688571:week:v2']);
+  const snapshots = createForecastHistorySnapshotsForAllInputs(
+    '688571',
+    'week',
+    cache.data.points,
+    predictions,
+    '2026-07-03',
+    '2026-07-09T12:00:00.000Z',
+  );
+
+  const july10 = snapshots.find((snapshot: { targetDate: string; inputMaWindow: number }) =>
+    snapshot.targetDate === '2026-07-10' && snapshot.inputMaWindow === 40,
+  );
+  assert.equal(july10?.inputMaValue, 8.17);
+  assert.equal(Number(july10?.predictedClose.toFixed(2)), 9.2);
+});
+
+test('a completed history snapshot is repaired when the same user MA input derives a different close', async () => {
+  const { createForecastHistorySnapshots, shouldRepairFrozenForecastSnapshot } = await loadHistoryModule();
+  const previous = createForecastHistorySnapshots('688571', 'week', 40, [createRow('2026-07-10', 8.17)])[0];
+  const rebuilt = { ...previous, predictedClose: 9.2 };
+  const corrupted = { ...previous, predictedClose: 9.26 };
+
+  assert.equal(shouldRepairFrozenForecastSnapshot(corrupted, rebuilt), true);
+  assert.equal(shouldRepairFrozenForecastSnapshot({ ...corrupted, inputMaValue: 8.18 }, rebuilt), false);
 });
