@@ -2,6 +2,7 @@ import { type KeyboardEvent, useEffect, useRef } from 'react';
 import * as echarts from 'echarts';
 import type { KLinePoint, PeriodType } from '../types';
 import type { LineValuePoint } from '../utils/movingAverage';
+import { getForecastCenteredZoomRange } from '../utils/chartViewport';
 
 export interface ChartLineSeries {
   label: string;
@@ -31,6 +32,7 @@ interface KLineChartProps {
   points: KLinePoint[];
   lineSeries: ChartLineSeries[];
   pointSeries?: ChartPointSeries[];
+  forecastDates?: string[];
   baseDate: string;
   period: PeriodType;
   showActualKLine?: boolean;
@@ -48,6 +50,7 @@ export default function KLineChart({
   points,
   lineSeries,
   pointSeries = [],
+  forecastDates = [],
   baseDate,
   period,
   showActualKLine = true,
@@ -56,14 +59,13 @@ export default function KLineChart({
 }: KLineChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<echarts.EChartsType | null>(null);
-  const zoomRangeRef = useRef({ start: 45, end: 100 });
+  const zoomRangeRef = useRef({ start: 0, end: 100 });
 
   useEffect(() => {
     if (!containerRef.current || !points.length) return;
 
     const chart = echarts.init(containerRef.current, undefined, { renderer: 'canvas' });
     chartRef.current = chart;
-    zoomRangeRef.current = { start: 45, end: 100 };
     const visiblePoints = points.slice(-180);
     const lineDates = lineSeries.flatMap((series) =>
       series.rows.filter((row) => row.value !== null).map((row) => row.targetDate),
@@ -73,8 +75,10 @@ export default function KLineChart({
     );
     const xAxis = mergeDates(
       [...visiblePoints.map((point) => point.date), baseDate],
-      [...lineDates, ...pointDates],
+      [...lineDates, ...pointDates, ...forecastDates],
     );
+    const initialZoomRange = getForecastCenteredZoomRange(xAxis, baseDate);
+    zoomRangeRef.current = initialZoomRange;
     const pointByDate = new Map(points.map((point) => [point.date, point]));
     const lineMaps = lineSeries.map((series) => ({
       ...series,
@@ -175,8 +179,7 @@ export default function KLineChart({
           id: 'keyboard-inside-zoom',
           type: 'inside',
           xAxisIndex: showVolume ? [0, 1] : [0],
-          start: 45,
-          end: 100,
+          ...initialZoomRange,
         },
         {
           id: 'keyboard-slider-zoom',
@@ -184,8 +187,7 @@ export default function KLineChart({
           xAxisIndex: showVolume ? [0, 1] : [0],
           bottom: 8,
           height: 18,
-          start: 45,
-          end: 100,
+          ...initialZoomRange,
         },
       ],
       series: [
@@ -315,7 +317,17 @@ export default function KLineChart({
         chartRef.current = null;
       }
     };
-  }, [baseDate, lineSeries, period, pointSeries, points, showActualKLine, showCloseLine, showVolume]);
+  }, [
+    baseDate,
+    forecastDates,
+    lineSeries,
+    period,
+    pointSeries,
+    points,
+    showActualKLine,
+    showCloseLine,
+    showVolume,
+  ]);
 
   function applyKeyboardZoom(start: number, end: number) {
     const normalized = normalizeZoomRange(start, end);

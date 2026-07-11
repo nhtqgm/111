@@ -798,6 +798,57 @@ h2 {
   background: #f7f4ee;
 }
 
+.history-modal {
+  width: min(1020px, 96vw);
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+  border: 2px solid #2d342e;
+  border-radius: 8px;
+  background: #f7f4ee;
+  box-shadow: 8px 8px 0 #1f251f;
+}
+
+.history-table {
+  overflow: auto;
+  padding: 10px 16px 16px;
+}
+
+.history-row {
+  min-width: 760px;
+  display: grid;
+  grid-template-columns: 132px repeat(5, minmax(108px, 1fr));
+  gap: 8px;
+  align-items: center;
+  min-height: 42px;
+  border-bottom: 1px solid #e0d7ca;
+  color: #343b35;
+  font-size: 12px;
+}
+
+.history-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  min-height: 32px;
+  background: #f7f4ee;
+  color: #766d60;
+  font-size: 11px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.history-predicted {
+  color: #9c7300;
+}
+
+.empty-history {
+  padding: 24px 0;
+  color: #766d60;
+  font-size: 13px;
+  font-weight: 800;
+}
+
 .detail-modal-backdrop {
   position: fixed;
   inset: 0;

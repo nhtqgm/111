@@ -8,6 +8,14 @@ import { fetchKLines } from './services/eastmoney';
 import type { PeriodType, PredictionPoint, StockKLineResponse } from './types';
 import { filterCompletedKLineData } from './utils/completedPeriods';
 import { persistElectronStorage } from './utils/electronStorage';
+import {
+  buildForecastHistoryRows,
+  createForecastHistorySnapshots,
+  loadForecastHistory,
+  mergeForecastHistory,
+  saveForecastHistory,
+  type ForecastHistoryRow,
+} from './utils/forecastHistory';
 import { compareProjectionRows, formatNumber, summarizeComparisons } from './utils/metrics';
 import {
   buildMa40Projection,
@@ -20,6 +28,7 @@ import {
 import {
   generatePredictionRows,
   loadKLineCache,
+  loadPredictions,
   loadPredictionRows,
   loadWorkspaceCache,
   normalizePredictionPoint,
@@ -87,12 +96,17 @@ export default function App() {
   const [queryCode, setQueryCode] = useState(initialWorkspace?.stockCode ?? '000166');
   const [period, setPeriod] = useState<PeriodType>(initialWorkspace?.period ?? 'month');
   const [data, setData] = useState<StockKLineResponse | null>(null);
+  const [dataPeriod, setDataPeriod] = useState<PeriodType | null>(null);
   const [baseDate, setBaseDate] = useState(todayDate);
   const [predictions, setPredictions] = useState<PredictionPoint[]>([]);
+  const [forecastHistory, setForecastHistory] = useState(() =>
+    loadForecastHistory(initialWorkspace?.stockCode ?? '000166', initialWorkspace?.period ?? 'month'),
+  );
   const [visibleMaWindows, setVisibleMaWindows] = useState<MaWindow[]>([5, 10, 20, 40, 60]);
   const [showActualMaLines, setShowActualMaLines] = useState(false);
   const [inputMaWindow, setInputMaWindow] = useState<MaWindow>(MA40_WINDOW);
   const [isTableExpanded, setIsTableExpanded] = useState(false);
+  const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
   const [detailTargetDate, setDetailTargetDate] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
@@ -132,6 +146,7 @@ export default function App() {
 
     if (!cached) {
       setData(null);
+      setDataPeriod(null);
       setPredictions([]);
       setBaseDate(todayDate);
       showToast('暂无本地历史数据，请点击“联网更新”拉取最近历史收盘价', 'warning');
@@ -140,6 +155,7 @@ export default function App() {
 
     const completed = filterCompletedKLineData(markAsLocalCache(cached.data), period);
     setData(completed.data);
+    setDataPeriod(period);
     setBaseDate(completed.lastCompletedDate ?? todayDate);
     showToast(
       formatHistoryStatus(cached.updatedAt, completed.data.points.length, completed.removedPoints.length),
@@ -151,7 +167,12 @@ export default function App() {
   }, [period, queryCode]);
 
   useEffect(() => {
-    if (!data || !baseDate) return;
+    if (!data || !baseDate || dataPeriod !== period || normalizeStockCode(data.code) !== normalizeStockCode(queryCode)) {
+      return;
+    }
+
+    const storedRows = loadPredictions(predictionPlanKey(data.code, period, baseDate)) ?? [];
+    capturePredictionHistory(storedRows, data);
 
     const importedPlan = importedPlanRef.current;
     if (
@@ -213,6 +234,7 @@ export default function App() {
       return;
     }
 
+    capturePredictionHistory(predictions, data);
     savePredictions(predictionPlanKey(data.code, period, baseDate), predictions);
     saveWorkspaceCache({
       stockCode: data.code,
@@ -242,6 +264,27 @@ export default function App() {
             closeByDate: new Map<string, number>(),
           },
     [baseDate, data, inputMaWindow, predictions],
+  );
+  const forecastDates = useMemo(
+    () => projection.rows.map((row) => row.targetDate),
+    [projection.rows],
+  );
+  const historyRows = useMemo(
+    () =>
+      data &&
+      dataPeriod === period &&
+      normalizeStockCode(data.code) === normalizeStockCode(queryCode)
+        ? buildForecastHistoryRows(forecastHistory, data.points)
+        : [],
+    [data, dataPeriod, forecastHistory, period, queryCode],
+  );
+  const completedHistoryRows = useMemo(
+    () => historyRows.filter((row) => row.actualClose !== null),
+    [historyRows],
+  );
+  const visibleHistoryRows = useMemo(
+    () => completedHistoryRows.filter((row) => row.inputMaWindow === inputMaWindow),
+    [completedHistoryRows, inputMaWindow],
   );
   const predictionComparisons = useMemo(
     () => compareProjectionRows(projection.rows),
@@ -287,7 +330,13 @@ export default function App() {
       ...visibleMaWindows.map((windowSize) => ({
           label: `预测MA${windowSize}`,
           color: lineColors[windowSize],
-          rows: projection.predictedLines[windowSize],
+          rows: mergeLineValuePoints(
+            visibleHistoryRows.map((row) => ({
+              targetDate: row.actualDate ?? row.targetDate,
+              value: row.predictedMaValues[windowSize],
+            })),
+            projection.predictedLines[windowSize],
+          ),
           lineWidth: windowSize === 40 ? 3.2 : 2.5,
           lineType: 'solid' as const,
           symbol: 'circle',
@@ -298,7 +347,13 @@ export default function App() {
           z: 10 + windowSize,
         })),
     ],
-    [projection.actualLines, projection.predictedLines, showActualMaLines, visibleMaWindows],
+    [
+      visibleHistoryRows,
+      projection.actualLines,
+      projection.predictedLines,
+      showActualMaLines,
+      visibleMaWindows,
+    ],
   );
   const pointSeries = useMemo<ChartPointSeries[]>(
     () => [
@@ -306,17 +361,58 @@ export default function App() {
         label: '预测收盘价',
         color: '#ffe600',
         borderColor: '#20251f',
-        rows: projection.rows.map((row) => ({
-          targetDate: row.targetDate,
-          value: row.derivedClose,
-        })),
+        rows: mergeLineValuePoints(
+          visibleHistoryRows.map((row) => ({
+            targetDate: row.actualDate ?? row.targetDate,
+            value: row.predictedClose,
+          })),
+          projection.rows.map((row) => ({
+            targetDate: row.targetDate,
+            value: row.derivedClose,
+          })),
+        ),
         symbol: 'diamond',
         symbolSize: 13,
         z: 120,
       },
     ],
-    [projection.rows],
+    [projection.rows, visibleHistoryRows],
   );
+
+  function capturePredictionHistory(rows: PredictionPoint[], sourceData: StockKLineResponse | null) {
+    if (
+      !sourceData ||
+      !rows.length ||
+      dataPeriod !== period ||
+      normalizeStockCode(sourceData.code) !== normalizeStockCode(queryCode)
+    ) {
+      return;
+    }
+
+    const existing = loadForecastHistory(sourceData.code, period);
+    const frozenIds = new Set(
+      buildForecastHistoryRows(existing, sourceData.points)
+        .filter((row) => row.actualClose !== null)
+        .map((row) => row.id),
+    );
+    const incoming = MA_WINDOWS.flatMap((windowSize) =>
+      createForecastHistorySnapshots(
+        sourceData.code,
+        period,
+        windowSize,
+        buildMa40Projection(sourceData.points, rows, baseDate, windowSize).rows,
+      ),
+    ).filter((snapshot) => !frozenIds.has(snapshot.id));
+
+    if (!incoming.length) {
+      setForecastHistory(existing);
+      return;
+    }
+
+    const merged = mergeForecastHistory(existing, incoming);
+    saveForecastHistory(sourceData.code, period, merged);
+    setForecastHistory(merged);
+  }
 
   function updatePrediction(targetDate: string, value: string) {
     const normalizedValue = normalizeDecimalInput(value);
@@ -441,6 +537,7 @@ export default function App() {
   }
 
   async function refreshHistoricalData() {
+    capturePredictionHistory(predictions, data);
     setIsLoading(true);
     setError('');
     showToast('正在联网更新历史收盘价...', 'info');
@@ -450,6 +547,7 @@ export default function App() {
       const completed = filterCompletedKLineData(markAsOnlineResult(result), period);
       saveKLineCache(completed.data, period);
       setData(completed.data);
+      setDataPeriod(period);
       setBaseDate(completed.lastCompletedDate ?? todayDate);
       setStockCode(completed.data.code);
       setQueryCode(completed.data.code);
@@ -463,6 +561,7 @@ export default function App() {
       if (cached) {
         const completed = filterCompletedKLineData(markAsLocalCache(cached.data), period);
         setData(completed.data);
+        setDataPeriod(period);
         setBaseDate(completed.lastCompletedDate ?? todayDate);
         showToast(
           `${formatHistoryStatus(cached.updatedAt, completed.data.points.length, completed.removedPoints.length)}；联网失败，继续使用本地缓存`,
@@ -746,6 +845,7 @@ export default function App() {
               points={data.points}
               lineSeries={lineSeries}
               pointSeries={pointSeries}
+              forecastDates={forecastDates}
               baseDate={baseDate}
               period={period}
               showActualKLine={showActualMaLines}
@@ -779,6 +879,13 @@ export default function App() {
               </button>
               <button type="button" className="ghost" onClick={resetRows}>
                 重置
+              </button>
+              <button
+                type="button"
+                className="ghost history-open-button"
+                onClick={() => setIsHistoryModalOpen(true)}
+              >
+                历史对比 {visibleHistoryRows.length}
               </button>
               <button type="button" className="ghost" onClick={() => setIsTableExpanded(true)}>
                 放大
@@ -837,6 +944,14 @@ export default function App() {
         </div>
       ) : null}
 
+      {isHistoryModalOpen ? (
+        <ForecastHistoryModal
+          rows={visibleHistoryRows}
+          inputMaWindow={inputMaWindow}
+          onClose={() => setIsHistoryModalOpen(false)}
+        />
+      ) : null}
+
       {detailRow ? (
         <CalculationDetailModal
           row={detailRow}
@@ -845,6 +960,56 @@ export default function App() {
         />
       ) : null}
     </main>
+  );
+}
+
+function ForecastHistoryModal({
+  rows,
+  inputMaWindow,
+  onClose,
+}: {
+  rows: ForecastHistoryRow[];
+  inputMaWindow: MaWindow;
+  onClose: () => void;
+}) {
+  return (
+    <div className="detail-modal-backdrop" role="presentation">
+      <section className="history-modal" role="dialog" aria-modal="true" aria-label="历史预测对比">
+        <div className="detail-modal-head">
+          <div>
+            <p className="eyebrow">Historical Forecasts</p>
+            <h2>历史预测与真实价格对比</h2>
+          </div>
+          <button type="button" className="ghost" onClick={onClose}>
+            关闭
+          </button>
+        </div>
+        <div className="history-table">
+          <div className="history-row history-head">
+            <span>预测日期</span>
+            <span>预测收盘</span>
+            <span>真实收盘</span>
+            <span>差值</span>
+            <span>预测MA{inputMaWindow}</span>
+            <span>真实MA{inputMaWindow}</span>
+          </div>
+          {rows.length ? (
+            rows.map((row) => (
+              <div className="history-row" key={row.id}>
+                <span className="date-cell">{row.actualDate ?? row.targetDate}</span>
+                <strong className="history-predicted">{formatNumber(row.predictedClose)}</strong>
+                <strong>{formatNumber(row.actualClose)}</strong>
+                <span>{formatSignedNumber(row.closeDiff)}</span>
+                <span>{formatNumber(row.predictedMaValues[inputMaWindow])}</span>
+                <span>{formatNumber(row.actualMaValues[inputMaWindow])}</span>
+              </div>
+            ))
+          ) : (
+            <div className="empty-history">暂无已形成真实K线的预测记录。</div>
+          )}
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -969,6 +1134,25 @@ function ValueList({
 
 function sumCalculationValues(values: Array<{ value: number }>) {
   return values.length ? values.reduce((total, item) => total + item.value, 0) : null;
+}
+
+function mergeLineValuePoints(...groups: LineValuePoint[][]) {
+  const values = new Map<string, number | null>();
+  groups.flat().forEach((row) => {
+    if (row.value !== null) values.set(row.targetDate, row.value);
+  });
+  return Array.from(values, ([targetDate, value]) => ({ targetDate, value })).sort((left, right) =>
+    left.targetDate.localeCompare(right.targetDate),
+  );
+}
+
+function formatSignedNumber(value: number | null) {
+  if (value === null) return '--';
+  return `${value > 0 ? '+' : ''}${formatNumber(value)}`;
+}
+
+function normalizeStockCode(value: string) {
+  return value.replace(/\D/g, '').slice(0, 6);
 }
 
 async function getCurrentAppVersion() {
