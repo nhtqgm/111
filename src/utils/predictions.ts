@@ -1,4 +1,5 @@
 import type { KLinePoint, PeriodType, PredictionPoint, StockKLineResponse } from '../types';
+import { generateFutureAStockDates } from './aShareTradingCalendar.ts';
 import { queueElectronStorageSync } from './electronStorage.ts';
 
 export interface WorkspaceCache {
@@ -264,37 +265,5 @@ function getTargetDates(
 }
 
 function generateFutureDates(period: PeriodType, seed: string, count: number) {
-  if (count <= 0) return [];
-
-  const result: string[] = [];
-  const date = parseDate(seed);
-
-  while (result.length < count) {
-    if (period === 'day') {
-      date.setDate(date.getDate() + 1);
-      const day = date.getDay();
-      if (day !== 0 && day !== 6) result.push(formatDate(date));
-    } else if (period === 'week') {
-      date.setDate(date.getDate() + 7);
-      result.push(formatDate(date));
-    } else {
-      date.setMonth(date.getMonth() + 1, 1);
-      date.setMonth(date.getMonth() + 1, 0);
-      result.push(formatDate(date));
-    }
-  }
-
-  return result;
-}
-
-function parseDate(value: string) {
-  const [year, month, day] = value.split('-').map(Number);
-  return new Date(year, month - 1, day);
-}
-
-function formatDate(date: Date) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+  return generateFutureAStockDates(period, seed, count);
 }

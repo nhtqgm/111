@@ -50,6 +50,79 @@ test('cloud prediction values survive horizon hydration while blank input rows a
   assert.equal(rows.filter((row) => row.targetDate > '2026-01-02').length, 60);
 });
 
+test('day prediction rows skip official A-share exchange holidays', () => {
+  assert.deepEqual(
+    generatePredictionRows([point('2026-02-13')], 'day', '2026-02-13', 2).map(
+      (row) => row.targetDate,
+    ),
+    ['2026-02-24', '2026-02-25'],
+  );
+
+  assert.deepEqual(
+    generatePredictionRows([point('2026-09-30')], 'day', '2026-09-30', 2).map(
+      (row) => row.targetDate,
+    ),
+    ['2026-10-08', '2026-10-09'],
+  );
+});
+
+test('week prediction rows use each trading week final session and skip fully closed weeks', () => {
+  assert.deepEqual(
+    generatePredictionRows([point('2026-02-13')], 'week', '2026-02-13', 2).map(
+      (row) => row.targetDate,
+    ),
+    ['2026-02-27', '2026-03-06'],
+  );
+
+  assert.deepEqual(
+    generatePredictionRows([point('2026-09-18')], 'week', '2026-09-18', 2).map(
+      (row) => row.targetDate,
+    ),
+    ['2026-09-24', '2026-09-30'],
+  );
+});
+
+test('month prediction rows use the final A-share trading day of each month', () => {
+  assert.deepEqual(
+    generatePredictionRows([point('2026-04-30')], 'month', '2026-04-30', 2).map(
+      (row) => row.targetDate,
+    ),
+    ['2026-05-29', '2026-06-30'],
+  );
+});
+
+test('existing predictions stay bound to their dates when a new trading day is added', () => {
+  const savedRows = [
+    {
+      targetDate: '2026-07-10',
+      predictedMa40: '9.1500',
+      predictedMaValues: { 40: '9.1500' },
+      note: 'original forecast',
+    },
+    {
+      targetDate: '2026-07-13',
+      predictedMa40: '9.1300',
+      predictedMaValues: { 40: '9.1300' },
+      note: '',
+    },
+  ];
+
+  const rows = hydratePredictionRows(
+    savedRows,
+    [point('2026-07-10'), point('2026-07-13')],
+    'day',
+    '2026-07-13',
+    3,
+  );
+
+  assert.equal(rows.find((row) => row.targetDate === '2026-07-10')?.predictedMa40, '9.1500');
+  assert.equal(rows.find((row) => row.targetDate === '2026-07-13')?.predictedMa40, '9.1300');
+  assert.deepEqual(
+    rows.filter((row) => row.targetDate > '2026-07-13').map((row) => row.targetDate),
+    ['2026-07-14', '2026-07-15', '2026-07-16'],
+  );
+});
+
 function point(date: string): KLinePoint {
   return {
     date,
