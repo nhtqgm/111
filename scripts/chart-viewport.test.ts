@@ -1,6 +1,30 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+class MemoryStorage {
+  private values = new Map<string, string>();
+
+  get length() {
+    return this.values.size;
+  }
+
+  key(index: number) {
+    return [...this.values.keys()][index] ?? null;
+  }
+
+  getItem(key: string) {
+    return this.values.get(key) ?? null;
+  }
+
+  setItem(key: string, value: string) {
+    this.values.set(key, value);
+  }
+
+  removeItem(key: string) {
+    this.values.delete(key);
+  }
+}
+
 async function loadViewportModule() {
   return await import('../src/utils/chartViewport.ts');
 }
@@ -66,6 +90,78 @@ test('viewport uses the centered default when the chart data domain changes', as
       { start: 48, end: 92 },
     ),
     { start: 48, end: 92 },
+  );
+});
+
+test('chart viewport persists independently for each stock and K-line period', async () => {
+  const { loadChartViewport, saveChartViewport } = await loadViewportModule();
+  const storage = new MemoryStorage();
+
+  saveChartViewport(
+    '000166',
+    'day',
+    { startDate: '2026-07-10', endDate: '2026-07-20' },
+    storage,
+  );
+  saveChartViewport(
+    '000166',
+    'month',
+    { startDate: '2025-01-31', endDate: '2026-06-30' },
+    storage,
+  );
+
+  assert.deepEqual(loadChartViewport('000166', 'day', storage), {
+    startDate: '2026-07-10',
+    endDate: '2026-07-20',
+  });
+  assert.deepEqual(loadChartViewport('000166', 'month', storage), {
+    startDate: '2025-01-31',
+    endDate: '2026-06-30',
+  });
+  assert.equal(loadChartViewport('688571', 'day', storage), null);
+});
+
+test('malformed or invalid persisted chart viewport is ignored', async () => {
+  const { loadChartViewport, chartViewportStorageKey } = await loadViewportModule();
+  const storage = new MemoryStorage();
+  storage.setItem(
+    chartViewportStorageKey,
+    JSON.stringify({
+      '000166:day': { startDate: '2026-07-20', endDate: '2026-07-10' },
+      '000166:month': { startDate: 'bad', endDate: 90 },
+    }),
+  );
+
+  assert.equal(loadChartViewport('000166', 'day', storage), null);
+  assert.equal(loadChartViewport('000166', 'month', storage), null);
+});
+
+test('persisted dates are mapped back to the current axis after history changes', async () => {
+  const { getChartViewportFromZoomRange, getPersistedChartZoomRange } = await loadViewportModule();
+  const xAxis = ['2026-07-01', '2026-07-02', '2026-07-03', '2026-07-04', '2026-07-05'];
+  const defaultRange = { start: 0, end: 100 };
+
+  assert.deepEqual(getChartViewportFromZoomRange(xAxis, { start: 25, end: 75 }), {
+    startDate: '2026-07-02',
+    endDate: '2026-07-04',
+  });
+
+  assert.deepEqual(
+    getPersistedChartZoomRange(
+      xAxis,
+      { startDate: '2026-07-02', endDate: '2026-07-04' },
+      defaultRange,
+    ),
+    { start: 25, end: 75 },
+  );
+
+  assert.deepEqual(
+    getPersistedChartZoomRange(
+      ['2026-07-01', '2026-07-02', '2026-07-03'],
+      { startDate: '2025-01-01', endDate: '2025-01-02' },
+      defaultRange,
+    ),
+    defaultRange,
   );
 });
 

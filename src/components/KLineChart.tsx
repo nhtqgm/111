@@ -2,7 +2,13 @@ import { type KeyboardEvent, useEffect, useRef } from 'react';
 import * as echarts from 'echarts';
 import type { KLinePoint, PeriodType } from '../types';
 import type { LineValuePoint } from '../utils/movingAverage';
-import { getForecastCenteredZoomRange, getStableChartZoomRange } from '../utils/chartViewport';
+import {
+  getChartViewportFromZoomRange,
+  getForecastCenteredZoomRange,
+  getPersistedChartZoomRange,
+  getStableChartZoomRange,
+  type ChartViewport,
+} from '../utils/chartViewport';
 import { toScatterChartValue } from '../utils/chartPoints';
 
 export interface ChartLineSeries {
@@ -37,6 +43,8 @@ interface KLineChartProps {
   forecastDates?: string[];
   baseDate: string;
   period: PeriodType;
+  persistedViewport?: ChartViewport | null;
+  onViewportChange?: (viewport: ChartViewport) => void;
   showActualKLine?: boolean;
   showCloseLine?: boolean;
   showVolume?: boolean;
@@ -56,6 +64,8 @@ export default function KLineChart({
   forecastDates = [],
   baseDate,
   period,
+  persistedViewport = null,
+  onViewportChange,
   showActualKLine = true,
   showCloseLine = true,
   showVolume = true,
@@ -64,6 +74,12 @@ export default function KLineChart({
   const chartRef = useRef<echarts.EChartsType | null>(null);
   const zoomRangeRef = useRef({ start: 0, end: 100 });
   const axisSignatureRef = useRef('');
+  const xAxisRef = useRef<string[]>([]);
+  const onViewportChangeRef = useRef(onViewportChange);
+
+  useEffect(() => {
+    onViewportChangeRef.current = onViewportChange;
+  }, [onViewportChange]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -74,7 +90,10 @@ export default function KLineChart({
     const handleDataZoom = (event: unknown) => {
       const range = getZoomRangeFromEvent(event);
       if (range) {
-        zoomRangeRef.current = normalizeZoomRange(range.start, range.end);
+        const normalized = normalizeZoomRange(range.start, range.end);
+        zoomRangeRef.current = normalized;
+        const viewport = getChartViewportFromZoomRange(xAxisRef.current, normalized);
+        if (viewport) onViewportChangeRef.current?.(viewport);
       }
     };
     chart.on('datazoom', handleDataZoom);
@@ -107,6 +126,7 @@ export default function KLineChart({
       [...lineDates, ...pointDates, ...forecastDates],
     );
     const initialZoomRange = getForecastCenteredZoomRange(xAxis, baseDate);
+    const persistedZoomRange = getPersistedChartZoomRange(xAxis, persistedViewport, initialZoomRange);
     // Only a stock/period switch should reposition the user's view. Updating
     // cached candles or forecast values must retain the current zoom range.
     const axisSignature = `${stockCode}:${period}`;
@@ -114,10 +134,11 @@ export default function KLineChart({
       axisSignatureRef.current,
       axisSignature,
       zoomRangeRef.current,
-      initialZoomRange,
+      persistedZoomRange,
     );
     axisSignatureRef.current = axisSignature;
     zoomRangeRef.current = activeZoomRange;
+    xAxisRef.current = xAxis;
     const pointByDate = new Map(points.map((point) => [point.date, point]));
     const lineMaps = lineSeries.map((series) => ({
       ...series,
@@ -351,6 +372,7 @@ export default function KLineChart({
     forecastDates,
     lineSeries,
     period,
+    persistedViewport,
     pointSeries,
     points,
     stockCode,
@@ -362,6 +384,8 @@ export default function KLineChart({
   function applyKeyboardZoom(start: number, end: number) {
     const normalized = normalizeZoomRange(start, end);
     zoomRangeRef.current = normalized;
+    const viewport = getChartViewportFromZoomRange(xAxisRef.current, normalized);
+    if (viewport) onViewportChangeRef.current?.(viewport);
     chartRef.current?.dispatchAction({
       type: 'dataZoom',
       batch: [

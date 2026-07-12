@@ -57,6 +57,7 @@ import {
   MA_WINDOWS,
   type MaWindow,
 } from './utils/movingAverage';
+import { loadChartViewport, saveChartViewport, type ChartViewport } from './utils/chartViewport';
 import {
   generatePredictionRows,
   hydratePredictionRows,
@@ -173,6 +174,13 @@ export default function App() {
     predictionPeriod: predictionScope?.period ?? null,
   });
   const activeData = activeScope ? data : null;
+  const persistedChartViewport = useMemo(
+    () =>
+      activeData && activeScope
+        ? loadChartViewport(activeData.code, activeScope.period)
+        : null,
+    [activeData?.code, activeScope?.period],
+  );
 
   useEffect(
     () => () => {
@@ -1455,6 +1463,10 @@ export default function App() {
               forecastDates={forecastDates}
               baseDate={baseDate}
               period={activeScope.period}
+              persistedViewport={persistedChartViewport}
+              onViewportChange={(viewport: ChartViewport) => {
+                saveChartViewport(activeData.code, activeScope.period, viewport);
+              }}
               showActualKLine={showActualMaLines}
               showCloseLine={false}
               showVolume={showActualMaLines}
