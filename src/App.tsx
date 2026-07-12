@@ -174,13 +174,10 @@ export default function App() {
     predictionPeriod: predictionScope?.period ?? null,
   });
   const activeData = activeScope ? data : null;
-  const persistedChartViewport = useMemo(
-    () =>
-      activeData && activeScope
-        ? loadChartViewport(activeData.code, activeScope.period)
-        : null,
-    [activeData?.code, activeScope?.period],
-  );
+  const persistedChartViewport =
+    activeData && activeScope
+      ? loadChartViewport(activeData.code, activeScope.period)
+      : null;
 
   useEffect(
     () => () => {

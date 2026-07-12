@@ -1,7 +1,7 @@
 {
   "app": "gupiao-ma40",
-  "version": "0.2.11",
-  "url": "https://github.com/nhtqgm/111/releases/download/v0.2.11/gupiao-forecast-0.2.11-win7-x64.exe",
-  "notes": "修复日K/周K/月K预测日期生成逻辑，按A股交易日历跳过周末和官方休市日，并保持已有预测绑定原日期。",
+  "version": "0.2.12",
+  "url": "https://github.com/nhtqgm/111/releases/download/v0.2.12/gupiao-forecast-0.2.12-win7-x64.exe",
+  "notes": "修复日K、周K、月K图表位置记忆：首次打开以预测起点居中，用户调整后按股票和周期分别保存，刷新网页或重启EXE后继续恢复。",
   "publishedAt": "2026-07-12"
 }

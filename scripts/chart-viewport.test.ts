@@ -65,36 +65,8 @@ test('viewport falls back to the complete axis when there is no future forecast 
   });
 });
 
-test('viewport retains the user zoom when a chart rerenders with the same data domain', async () => {
-  const { getStableChartZoomRange } = await loadViewportModule();
-
-  assert.deepEqual(
-    getStableChartZoomRange(
-      'day:2026-07-10:2026-01-01|2026-07-10|2026-08-10',
-      'day:2026-07-10:2026-01-01|2026-07-10|2026-08-10',
-      { start: 34, end: 62 },
-      { start: 50, end: 100 },
-    ),
-    { start: 34, end: 62 },
-  );
-});
-
-test('viewport uses the centered default when the chart data domain changes', async () => {
-  const { getStableChartZoomRange } = await loadViewportModule();
-
-  assert.deepEqual(
-    getStableChartZoomRange(
-      'day:2026-07-10:2026-01-01|2026-07-10|2026-08-10',
-      'week:2026-07-10:2026-01-02|2026-07-10|2026-08-14',
-      { start: 34, end: 62 },
-      { start: 48, end: 92 },
-    ),
-    { start: 48, end: 92 },
-  );
-});
-
 test('chart viewport persists independently for each stock and K-line period', async () => {
-  const { loadChartViewport, saveChartViewport } = await loadViewportModule();
+  const { chartViewportStorageKey, loadChartViewport, saveChartViewport } = await loadViewportModule();
   const storage = new MemoryStorage();
 
   saveChartViewport(
@@ -119,21 +91,118 @@ test('chart viewport persists independently for each stock and K-line period', a
     endDate: '2026-06-30',
   });
   assert.equal(loadChartViewport('688571', 'day', storage), null);
+
+  const storedDay = JSON.parse(storage.getItem(chartViewportStorageKey('000166', 'day')) ?? '{}');
+  assert.equal(storedDay.userAdjusted, true);
+  assert.equal(typeof storedDay.updatedAt, 'string');
+  assert.notEqual(
+    chartViewportStorageKey('000166', 'day'),
+    chartViewportStorageKey('000166', 'month'),
+  );
+});
+
+test('a newer manual viewport always receives a later timestamp for Electron merging', async () => {
+  const { chartViewportStorageKey, saveChartViewport } = await loadViewportModule();
+  const storage = new MemoryStorage();
+  const key = chartViewportStorageKey('000166', 'day');
+  storage.setItem(
+    key,
+    JSON.stringify({
+      startDate: '2026-07-01',
+      endDate: '2026-07-10',
+      userAdjusted: true,
+      updatedAt: '2099-01-01T00:00:00.000Z',
+    }),
+  );
+
+  saveChartViewport(
+    '000166',
+    'day',
+    { startDate: '2026-07-02', endDate: '2026-07-13' },
+    storage,
+  );
+
+  const stored = JSON.parse(storage.getItem(key) ?? '{}');
+  assert.ok(stored.updatedAt > '2099-01-01T00:00:00.000Z');
 });
 
 test('malformed or invalid persisted chart viewport is ignored', async () => {
   const { loadChartViewport, chartViewportStorageKey } = await loadViewportModule();
   const storage = new MemoryStorage();
   storage.setItem(
-    chartViewportStorageKey,
+    chartViewportStorageKey('000166', 'day'),
     JSON.stringify({
-      '000166:day': { startDate: '2026-07-20', endDate: '2026-07-10' },
-      '000166:month': { startDate: 'bad', endDate: 90 },
+      startDate: '2026-07-20',
+      endDate: '2026-07-10',
+      userAdjusted: true,
+      updatedAt: '2026-07-12T00:00:00.000Z',
+    }),
+  );
+  storage.setItem(
+    chartViewportStorageKey('000166', 'month'),
+    JSON.stringify({
+      startDate: '2026-01-01',
+      endDate: '2026-06-30',
+      userAdjusted: false,
+      updatedAt: '2026-07-12T00:00:00.000Z',
     }),
   );
 
   assert.equal(loadChartViewport('000166', 'day', storage), null);
   assert.equal(loadChartViewport('000166', 'month', storage), null);
+});
+
+test('legacy automatic viewport cache is ignored so first use stays forecast-centered', async () => {
+  const { legacyChartViewportStorageKey, loadChartViewport } = await loadViewportModule();
+  const storage = new MemoryStorage();
+  storage.setItem(
+    legacyChartViewportStorageKey,
+    JSON.stringify({
+      '000166:day': { startDate: '2025-01-01', endDate: '2025-02-01' },
+    }),
+  );
+
+  assert.equal(loadChartViewport('000166', 'day', storage), null);
+});
+
+test('EXE bootstrap restores only manual chart viewports and leaves prediction storage untouched', async () => {
+  const { bootstrapChartViewportStorage, chartViewportStorageKey } = await loadViewportModule();
+  const storage = new MemoryStorage();
+  const dayKey = chartViewportStorageKey('000166', 'day');
+  const weekKey = chartViewportStorageKey('000166', 'week');
+  const predictionKey = 'prediction-ma:000166:day:v2';
+  const localDay = JSON.stringify({
+    startDate: '2026-07-01',
+    endDate: '2026-07-10',
+    userAdjusted: true,
+    updatedAt: '2026-07-12T08:00:00.000Z',
+  });
+  const remoteWeek = JSON.stringify({
+    startDate: '2026-06-05',
+    endDate: '2026-07-10',
+    userAdjusted: true,
+    updatedAt: '2026-07-12T09:00:00.000Z',
+  });
+  storage.setItem(dayKey, localDay);
+  storage.setItem(predictionKey, 'local prediction data');
+
+  const api = {
+    async bootstrap(snapshot: Record<string, string>) {
+      assert.deepEqual(snapshot, { [dayKey]: localDay });
+      return {
+        [dayKey]: localDay,
+        [weekKey]: remoteWeek,
+        [predictionKey]: 'remote prediction data',
+      };
+    },
+    async save() {},
+  };
+
+  await bootstrapChartViewportStorage(storage, api);
+
+  assert.equal(storage.getItem(dayKey), localDay);
+  assert.equal(storage.getItem(weekKey), remoteWeek);
+  assert.equal(storage.getItem(predictionKey), 'local prediction data');
 });
 
 test('persisted dates are mapped back to the current axis after history changes', async () => {
