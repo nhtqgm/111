@@ -111,6 +111,14 @@ export async function loadMyCloudWorkspace(): Promise<CloudWorkspaceRecord | nul
   };
 }
 
+export async function replaceMyCloudWorkspace(workspace: CloudWorkspace) {
+  const api = requireCloudClient();
+  const { error } = await api.rpc('replace_my_prediction_workspace', {
+    p_payload: workspace,
+  });
+  if (error) throw error;
+}
+
 export async function saveMyPredictionValues(mutations: CloudPredictionValueMutation[]) {
   if (!mutations.length) return;
   const api = requireCloudClient();

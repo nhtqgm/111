@@ -12,6 +12,7 @@ import {
   getCloudUser,
   isCloudSyncConfigured,
   loadMyCloudWorkspace,
+  replaceMyCloudWorkspace,
   saveMyPredictionValues,
   saveMyWorkspacePreferences,
   signInToCloud,
@@ -31,18 +32,22 @@ import {
 } from './utils/forecastHistory';
 import {
   createEmptyCloudWorkspace,
+  createFullWorkspaceBackup,
   createCloudWorkspaceFromLegacyBackup,
   getWorkspaceForecastHistory,
   getWorkspacePredictions,
+  readFullWorkspaceImport,
+  resolveActiveWorkspaceScope,
   setWorkspaceForecastHistory,
   setWorkspacePredictions,
   type CloudWorkspace,
+  type CloudWorkspaceScope,
 } from './utils/cloudWorkspace';
 import {
   createPredictionValueMutations,
   createPredictionValueSaveQueue,
 } from './utils/cloudPredictionStorage';
-import { compareProjectionRows, formatNumber, summarizeComparisons } from './utils/metrics';
+import { formatNumber, summarizeForecastHistory } from './utils/metrics';
 import { mergeLineValuePoints, mergeLineValuePointsPreservingEarlier } from './utils/linePoints';
 import {
   buildMa40Projection,
@@ -121,6 +126,7 @@ export default function App() {
   const [dataPeriod, setDataPeriod] = useState<PeriodType | null>(null);
   const [baseDate, setBaseDate] = useState(todayDate);
   const [predictions, setPredictions] = useState<PredictionPoint[]>([]);
+  const [predictionScope, setPredictionScope] = useState<CloudWorkspaceScope | null>(null);
   const [forecastHistory, setForecastHistory] = useState<ForecastHistorySnapshot[]>([]);
   const [visibleMaWindows, setVisibleMaWindows] = useState<MaWindow[]>([5, 10, 20, 40, 60]);
   const [showActualMaLines, setShowActualMaLines] = useState(false);
@@ -158,6 +164,15 @@ export default function App() {
   const cloudPredictionSaveQueueRef = useRef<ReturnType<typeof createPredictionValueSaveQueue> | null>(null);
   const cloudSessionGenerationRef = useRef(0);
   const marketDataRef = useRef(new Map<string, StockKLineResponse>());
+  const activeScope = resolveActiveWorkspaceScope({
+    dataStockCode: data?.code,
+    dataPeriod,
+    selectedStockCode: queryCode,
+    selectedPeriod: period,
+    predictionStockCode: predictionScope?.stockCode,
+    predictionPeriod: predictionScope?.period ?? null,
+  });
+  const activeData = activeScope ? data : null;
 
   useEffect(
     () => () => {
@@ -194,6 +209,7 @@ export default function App() {
       setData(null);
       setDataPeriod(null);
       setPredictions(getWorkspacePredictions(cloudWorkspace, { stockCode: queryCode, period }));
+      setPredictionScope({ stockCode: normalizeStockCode(queryCode), period });
       setForecastHistory(getWorkspaceForecastHistory(cloudWorkspace, { stockCode: queryCode, period }));
       setBaseDate(cloudWorkspace.workspace.baseDate || todayDate);
       setError('暂无本地历史数据，请点击“联网更新”拉取最近历史收盘价');
@@ -221,6 +237,7 @@ export default function App() {
       importedPlan.period === period
     ) {
       setPredictions(importedPlan.predictions);
+      setPredictionScope({ stockCode: normalizeStockCode(data.code), period });
       updateCloudWorkspace((workspace) =>
         setWorkspacePredictions(workspace, { stockCode: data.code, period }, importedPlan.predictions),
       );
@@ -233,6 +250,7 @@ export default function App() {
       ? getWorkspacePredictions(cloudWorkspace, { stockCode: data.code, period })
       : [];
     setPredictions(hydratePredictionRows(storedRows, data.points, period, baseDate, forecastRowCount));
+    setPredictionScope({ stockCode: normalizeStockCode(data.code), period });
   }, [baseDate, cloudWorkspace, data, period]);
 
   useEffect(() => {
@@ -241,15 +259,15 @@ export default function App() {
   }, [cloudWorkspace, data, dataPeriod, period]);
 
   useEffect(() => {
-    if (!data || dataPeriod !== period || !cloudWorkspace || !baseDate) return;
-    capturePredictionHistory(predictions, data);
-  }, [baseDate, cloudWorkspace, data, dataPeriod, period, predictions]);
+    if (!activeData || !activeScope || !cloudWorkspace || !baseDate) return;
+    capturePredictionHistory(predictions, activeData, activeScope.period, baseDate);
+  }, [activeData, activeScope?.period, baseDate, cloudWorkspace, predictions]);
 
   useEffect(() => {
-    if (!data || !baseDate || !predictions.length) return;
+    if (!activeData || !activeScope || !baseDate || !predictions.length) return;
 
     setHasUnsavedChanges(true);
-  }, [baseDate, data, period, predictions]);
+  }, [activeData, activeScope?.period, baseDate, predictions]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -257,11 +275,11 @@ export default function App() {
     }, 30000);
 
     return () => window.clearInterval(timer);
-  }, [baseDate, data, hasUnsavedChanges, period, predictions]);
+  }, [activeData, activeScope?.period, baseDate, hasUnsavedChanges, predictions]);
 
   function updateCloudWorkspace(transform: (workspace: CloudWorkspace) => CloudWorkspace) {
     const current = cloudWorkspaceRef.current;
-    if (!current || !cloudUser) return;
+    if (!current) return;
     const next = transform(current);
     cloudWorkspaceRef.current = next;
     setCloudWorkspace(next);
@@ -287,6 +305,7 @@ export default function App() {
     setData(null);
     setDataPeriod(null);
     setPredictions([]);
+    setPredictionScope(null);
     setForecastHistory([]);
     setIsCloudWorkspaceLoading(true);
     setCloudSyncState('syncing');
@@ -312,7 +331,11 @@ export default function App() {
       cloudPredictionSaveQueueRef.current = createPredictionSaveQueueForUser(user);
       setCloudSyncState('ready');
       if (!quiet) showToast('Cloud workspace loaded.', 'success');
-      void refreshHistoricalData();
+      void refreshHistoricalData({
+        targetStockCode: workspace.workspace.stockCode,
+        targetPeriod: workspace.workspace.period,
+        skipCurrentCapture: true,
+      });
     } catch (err) {
       if (generation !== cloudSessionGenerationRef.current) return;
       setCloudSyncState('error');
@@ -329,13 +352,13 @@ export default function App() {
     force?: boolean;
     notice: 'auto' | 'manual' | 'silent';
   }) {
-    if (!data || !baseDate || !predictions.length || !cloudWorkspace) {
+    if (!activeData || !activeScope || !baseDate || !predictions.length || !cloudWorkspace) {
       if (notice === 'manual') showToast('暂无可保存的数据', 'warning');
       return;
     }
     if (!force && !hasUnsavedChanges) return;
 
-    capturePredictionHistory(predictions, data);
+    capturePredictionHistory(predictions, activeData, activeScope.period, baseDate);
     persistPredictionDraft(predictions);
     setHasUnsavedChanges(false);
     if (notice === 'manual') showToast('Saved to cloud.', 'success');
@@ -343,15 +366,15 @@ export default function App() {
 
   const projection = useMemo(
     () =>
-      data
-        ? buildMa40Projection(data.points, predictions, baseDate, inputMaWindow)
+      activeData && activeScope
+        ? buildMa40Projection(activeData.points, predictions, baseDate, inputMaWindow, activeScope.period)
         : {
             rows: [],
             actualLines: createEmptyLineMap(),
             predictedLines: createEmptyLineMap(),
             closeByDate: new Map<string, number>(),
           },
-    [baseDate, data, inputMaWindow, predictions],
+    [activeData, activeScope?.period, baseDate, inputMaWindow, predictions],
   );
   const forecastDates = useMemo(
     () => projection.rows.filter((row) => row.isForecast).map((row) => row.targetDate),
@@ -359,15 +382,13 @@ export default function App() {
   );
   const historyRows = useMemo(
     () =>
-      data &&
-      dataPeriod === period &&
-      normalizeStockCode(data.code) === normalizeStockCode(queryCode)
+      activeData && activeScope
         ? buildForecastHistoryRows(
-            filterForecastHistorySnapshots(forecastHistory, data.code, period),
-            data.points,
+            filterForecastHistorySnapshots(forecastHistory, activeData.code, activeScope.period),
+            activeData.points,
           )
         : [],
-    [data, dataPeriod, forecastHistory, period, queryCode],
+    [activeData, activeScope?.period, forecastHistory],
   );
   const completedHistoryRows = useMemo(
     () => historyRows.filter((row) => row.actualClose !== null),
@@ -377,19 +398,15 @@ export default function App() {
     () => completedHistoryRows.filter((row) => row.inputMaWindow === inputMaWindow),
     [completedHistoryRows, inputMaWindow],
   );
-  const predictionComparisons = useMemo(
-    () => compareProjectionRows(projection.rows.filter((row) => row.isForecast)),
-    [projection.rows],
-  );
-  const summary = useMemo(() => summarizeComparisons(predictionComparisons), [predictionComparisons]);
-  const latest = data?.points.at(-1);
+  const summary = useMemo(() => summarizeForecastHistory(visibleHistoryRows), [visibleHistoryRows]);
+  const latest = activeData?.points.at(-1);
   const unit = periods.find((item) => item.value === period)?.unit ?? '';
   const filledCount = predictions.filter(
     (row) => getPredictionInputValue(row, inputMaWindow).trim() !== '',
   ).length;
   const inputHorizonDates = useMemo(
-    () => new Set(data ? generatePredictionRows(data.points, period, baseDate, inputMaWindow).map((row) => row.targetDate) : []),
-    [baseDate, data, inputMaWindow, period],
+    () => new Set(activeData ? generatePredictionRows(activeData.points, period, baseDate, inputMaWindow).map((row) => row.targetDate) : []),
+    [activeData, baseDate, inputMaWindow, period],
   );
   const predictionTableRows = useMemo(
     () => projection.rows.filter((row) => inputHorizonDates.has(row.targetDate) || hasSavedPrediction(row)),
@@ -481,8 +498,8 @@ export default function App() {
   function capturePredictionHistory(
     rows: PredictionPoint[],
     sourceData: StockKLineResponse | null,
-    workspacePeriod = dataPeriod ?? period,
-    workspaceBaseDate = baseDate,
+    workspacePeriod: PeriodType,
+    workspaceBaseDate: string,
   ) {
     if (!sourceData || !rows.length || !workspaceBaseDate) {
       return;
@@ -541,13 +558,14 @@ export default function App() {
     }
   }
 
-  function captureCachedPredictionHistory(workspacePeriod: PeriodType) {
-    const cached = marketDataRef.current.get(marketScopeKey(stockCode, workspacePeriod));
+  function captureCachedPredictionHistory(workspacePeriod: PeriodType, targetStockCode: string) {
+    const cached = marketDataRef.current.get(marketScopeKey(targetStockCode, workspacePeriod));
     if (!cached) return;
     const completed = filterCompletedKLineData(cached, workspacePeriod);
     const workspaceBaseDate = completed.lastCompletedDate;
-    if (!workspaceBaseDate || !cloudWorkspace) return;
-    const storedRows = getWorkspacePredictions(cloudWorkspace, {
+    const workspace = cloudWorkspaceRef.current;
+    if (!workspaceBaseDate || !workspace) return;
+    const storedRows = getWorkspacePredictions(workspace, {
       stockCode: completed.data.code,
       period: workspacePeriod,
     });
@@ -570,17 +588,17 @@ export default function App() {
   }
 
   function persistPredictionDraft(rows: PredictionPoint[]) {
-    if (!data || !baseDate || !rows.length) return;
-    const scope = { stockCode: data.code, period };
+    if (!activeData || !activeScope || !baseDate || !rows.length) return;
+    const scope = activeScope;
     const current = cloudWorkspaceRef.current;
     const beforeRows = current ? getWorkspacePredictions(current, scope) : [];
     const mutations = createPredictionValueMutations(scope, beforeRows, rows);
     updateCloudWorkspace((workspace) => ({
       ...setWorkspacePredictions(workspace, scope, rows),
-      workspace: { stockCode: data.code, period, baseDate },
+      workspace: { stockCode: scope.stockCode, period: scope.period, baseDate },
     }));
     cloudPredictionSaveQueueRef.current?.schedule(mutations);
-    void saveMyWorkspacePreferences(data.code, period, baseDate).catch((error: unknown) => {
+    void saveMyWorkspacePreferences(scope.stockCode, scope.period, baseDate).catch((error: unknown) => {
       showToast(error instanceof Error ? `界面设置保存失败：${error.message}` : '界面设置保存失败', 'warning');
     });
   }
@@ -687,8 +705,33 @@ export default function App() {
   */
   function selectCloudStockCode(code: string) {
     if (!code) return;
+    if (activeData && activeScope) {
+      capturePredictionHistory(predictions, activeData, activeScope.period, baseDate);
+    }
+    setData(null);
+    setDataPeriod(null);
+    setPredictions([]);
+    setPredictionScope(null);
+    setForecastHistory([]);
+    setHasUnsavedChanges(false);
     setStockCode(code);
     setQueryCode(code);
+  }
+
+  function selectKLinePeriod(nextPeriod: PeriodType) {
+    if (nextPeriod === period) return;
+    if (activeData && activeScope) {
+      capturePredictionHistory(predictions, activeData, activeScope.period, baseDate);
+    }
+    setData(null);
+    setDataPeriod(null);
+    setPredictions([]);
+    setPredictionScope(null);
+    setForecastHistory([]);
+    setDetailTargetDate(null);
+    setHasUnsavedChanges(false);
+    setError('');
+    setPeriod(nextPeriod);
   }
 
   async function readCloudPredictions(user = cloudUser) {
@@ -700,13 +743,32 @@ export default function App() {
   }
 
   async function saveCurrentWorkspaceToCloud() {
-    saveCurrentWorkspace({ force: true, notice: 'silent' });
-    await cloudPredictionSaveQueueRef.current?.flush();
-    if (cloudPredictionSaveQueueRef.current?.getLastError()) {
-      showToast(`向云端保存失败：${cloudPredictionSaveQueueRef.current.getLastError()?.message}`, 'warning');
+    if (!cloudUser || !cloudWorkspaceRef.current) {
+      setIsCloudAccountOpen(true);
+      showToast('请先登录云端账户，再保存预测数据', 'warning');
       return;
     }
-    showToast('Saved to cloud.', 'success');
+
+    saveCurrentWorkspace({ force: true, notice: 'silent' });
+    setCloudSyncState('syncing');
+    try {
+      await cloudPredictionSaveQueueRef.current?.flush();
+      const workspace = cloudWorkspaceRef.current;
+      if (!workspace) throw new Error('云端工作区尚未加载完成');
+      await replaceMyCloudWorkspace(workspace);
+      cloudPredictionSaveQueueRef.current?.switchAccount(cloudUser.id);
+      cloudWorkspaceBaselineRef.current = workspace;
+      setCloudSyncState('ready');
+      const predictionScopes = Object.keys(workspace.predictions).length;
+      const historyCount = Object.values(workspace.forecastHistory).reduce(
+        (total, rows) => total + rows.length,
+        0,
+      );
+      showToast(`已覆盖保存全部预测：${predictionScopes} 个范围，${historyCount} 条历史记录`, 'success');
+    } catch (err) {
+      setCloudSyncState('error');
+      showToast(err instanceof Error ? `向云端保存失败：${err.message}` : '向云端保存失败', 'warning');
+    }
   }
 
   async function submitCloudAccount(mode: 'sign-in') {
@@ -758,6 +820,7 @@ export default function App() {
       setCloudRole(null);
       setCloudStockCodes([]);
       setPredictions([]);
+      setPredictionScope(null);
       setForecastHistory([]);
       setData(null);
       setDataPeriod(null);
@@ -897,10 +960,21 @@ export default function App() {
     window.open(updateState.downloadUrl, '_blank', 'noopener,noreferrer');
   }
 
-  async function refreshHistoricalData() {
-    capturePredictionHistory(predictions, data);
-    ALL_KLINE_PERIODS.filter((workspacePeriod) => workspacePeriod !== dataPeriod).forEach(
-      captureCachedPredictionHistory,
+  async function refreshHistoricalData({
+    targetStockCode = stockCode,
+    targetPeriod = period,
+    skipCurrentCapture = false,
+  }: {
+    targetStockCode?: string;
+    targetPeriod?: PeriodType;
+    skipCurrentCapture?: boolean;
+  } = {}) {
+    const requestedStockCode = normalizeStockCode(targetStockCode);
+    if (!skipCurrentCapture && activeData && activeScope) {
+      capturePredictionHistory(predictions, activeData, activeScope.period, baseDate);
+    }
+    ALL_KLINE_PERIODS.forEach((workspacePeriod) =>
+      captureCachedPredictionHistory(workspacePeriod, requestedStockCode),
     );
     setIsLoading(true);
     setError('');
@@ -908,7 +982,7 @@ export default function App() {
 
     try {
       const results = await refreshAllKLinePeriods((workspacePeriod) =>
-        fetchKLines(stockCode, workspacePeriod),
+        fetchKLines(requestedStockCode, workspacePeriod),
       );
       const successful = results.flatMap((result) => {
         if (result.status !== 'success') return [];
@@ -916,7 +990,7 @@ export default function App() {
         marketDataRef.current.set(marketScopeKey(completed.data.code, result.period), completed.data);
         return [{ period: result.period, completed }];
       });
-      const active = successful.find((result) => result.period === period);
+      const active = successful.find((result) => result.period === targetPeriod);
       const failed = results.filter((result) => result.status === 'failed');
 
       // A forecast may belong to week/month while the user is currently
@@ -933,7 +1007,7 @@ export default function App() {
 
       if (active) {
         setData(active.completed.data);
-        setDataPeriod(period);
+        setDataPeriod(targetPeriod);
         setBaseDate(active.completed.lastCompletedDate ?? todayDate);
         setStockCode(active.completed.data.code);
         setQueryCode(active.completed.data.code);
@@ -969,35 +1043,43 @@ export default function App() {
   }
 
   function resetRows() {
-    if (!data || !baseDate) return;
+    if (!activeData || !activeScope || !baseDate) return;
     const confirmed = window.confirm(
-      `确认重置 ${data.code} 的当前${getPeriodLabel(period)}预测表吗？\n已填写的预测值将被清空。`,
+      `确认重置 ${activeData.code} 的当前${getPeriodLabel(activeScope.period)}预测表吗？\n已填写的预测值将被清空。`,
     );
     if (!confirmed) return;
 
-    const nextRows = generatePredictionRows(data.points, period, baseDate, forecastRowCount);
+    const nextRows = generatePredictionRows(activeData.points, activeScope.period, baseDate, forecastRowCount);
     setPredictions(nextRows);
     persistPredictionDraft(nextRows);
     showToast('已重置当前预测表', 'success');
   }
 
   function exportAllData() {
-    if (!cloudWorkspace) {
+    saveCurrentWorkspace({ force: true, notice: 'silent' });
+    const workspace = cloudWorkspaceRef.current;
+    if (!workspace) {
       showToast('No cloud workspace is loaded.', 'warning');
       return;
     }
-    const blob = new Blob([JSON.stringify(cloudWorkspace, null, 2)], {
+    const backup = createFullWorkspaceBackup(workspace, appVersion);
+    const blob = new Blob([JSON.stringify(backup, null, 2)], {
       type: 'application/json;charset=utf-8',
     });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `gupiao-cloud-workspace-${formatDate(new Date())}.json`;
+    link.download = `gupiao-full-prediction-backup-${formatDate(new Date())}.json`;
     document.body.appendChild(link);
     link.click();
     link.remove();
     URL.revokeObjectURL(url);
-    showToast('Cloud workspace exported.', 'success');
+    const predictionScopes = Object.keys(workspace.predictions).length;
+    const historyCount = Object.values(workspace.forecastHistory).reduce(
+      (total, rows) => total + rows.length,
+      0,
+    );
+    showToast(`已导出全部预测：${predictionScopes} 个范围，${historyCount} 条历史记录`, 'success');
     return;
     /*
     if (data && baseDate && predictions.length) {
@@ -1069,31 +1151,32 @@ export default function App() {
   async function importPredictions(file: File | undefined) {
     if (!file) return;
 
+    let predictionQueueDetached = false;
     try {
       const rawFile = JSON.parse(await file.text()) as unknown;
-      const workspace = isCloudWorkspace(rawFile)
-        ? rawFile
-        : createCloudWorkspaceFromLegacyBackup(rawFile);
+      let workspace: CloudWorkspace;
+      try {
+        workspace = readFullWorkspaceImport(rawFile);
+      } catch {
+        workspace = createCloudWorkspaceFromLegacyBackup(rawFile);
+      }
       if (!cloudUser) throw new Error('Please sign in before importing data.');
-      const mutations = Object.entries(workspace.predictions).flatMap(([scopeKey, rows]) => {
-        const [stockCode, scopePeriod] = scopeKey.split(':');
-        if (!stockCode || !isPeriodType(scopePeriod)) return [];
-        return createPredictionValueMutations(
-          { stockCode, period: scopePeriod },
-          [],
-          rows,
-        );
-      });
-      await saveMyPredictionValues(mutations);
-      await upsertMyForecastHistory(Object.values(workspace.forecastHistory).flat());
-      await saveMyWorkspacePreferences(
-        workspace.workspace.stockCode,
-        workspace.workspace.period,
-        workspace.workspace.baseDate,
-      );
+      await cloudPredictionSaveQueueRef.current?.flush();
+      cloudPredictionSaveQueueRef.current?.switchAccount('');
+      predictionQueueDetached = true;
+      await replaceMyCloudWorkspace(workspace);
       await loadCloudWorkspace(cloudUser);
-      showToast('Imported into the current cloud account.', 'success');
+      predictionQueueDetached = false;
+      const predictionScopes = Object.keys(workspace.predictions).length;
+      const historyCount = Object.values(workspace.forecastHistory).reduce(
+        (total, rows) => total + rows.length,
+        0,
+      );
+      showToast(`已全量导入并覆盖云端：${predictionScopes} 个范围，${historyCount} 条历史记录`, 'success');
     } catch (err) {
+      if (predictionQueueDetached && cloudUser) {
+        cloudPredictionSaveQueueRef.current?.switchAccount(cloudUser.id);
+      }
       showToast(err instanceof Error ? err.message : 'Import failed.', 'warning');
     } finally {
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -1265,7 +1348,7 @@ export default function App() {
               ))}
             </select>
           ) : null}
-          <button type="button" onClick={refreshHistoricalData} disabled={isLoading}>
+          <button type="button" onClick={() => void refreshHistoricalData()} disabled={isLoading}>
             {isLoading ? '更新中' : '联网更新'}
           </button>
           <button
@@ -1309,7 +1392,7 @@ export default function App() {
               key={item.value}
               type="button"
               className={period === item.value ? 'active' : ''}
-              onClick={() => setPeriod(item.value)}
+              onClick={() => selectKLinePeriod(item.value)}
             >
               {item.label}
             </button>
@@ -1348,10 +1431,10 @@ export default function App() {
       {error ? <div className="error-banner">{error}</div> : null}
 
       <section className="market-strip">
-        <Metric label="股票" value={data ? `${data.name} ${data.code}` : '申万宏源 000166'} />
-        <Metric label="数据源" value={data?.sourceName ?? '--'} />
+        <Metric label="股票" value={activeData ? `${activeData.name} ${activeData.code}` : `${queryCode}`} />
+        <Metric label="数据源" value={activeData?.sourceName ?? '--'} />
         <Metric label="最新周期" value={latest?.date ?? '--'} />
-        <Metric label="历史数量" value={data ? `${data.points.length}` : '--'} />
+        <Metric label="历史数量" value={activeData ? `${activeData.points.length}` : '--'} />
         <Metric label="预测窗口" value={`${inputMaWindow}${unit}`} />
         <Metric label="已填写" value={`${filledCount}/${inputMaWindow}`} />
         <Metric label="可对比" value={`${summary.compared}`} />
@@ -1363,15 +1446,15 @@ export default function App() {
         <div className="chart-panel">
           {isLoading ? (
             <div className="loading">正在加载K线数据...</div>
-          ) : data ? (
+          ) : activeData && activeScope ? (
             <KLineChart
-              stockCode={data.code}
-              points={data.points}
+              stockCode={activeData.code}
+              points={activeData.points}
               lineSeries={lineSeries}
               pointSeries={pointSeries}
               forecastDates={forecastDates}
               baseDate={baseDate}
-              period={period}
+              period={activeScope.period}
               showActualKLine={showActualMaLines}
               showCloseLine={false}
               showVolume={showActualMaLines}

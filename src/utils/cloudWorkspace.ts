@@ -18,6 +18,13 @@ export interface CloudWorkspace {
   updatedAt: string;
 }
 
+export interface FullWorkspaceBackup {
+  schema: 'gupiao-cloud-workspace-backup/v1';
+  appVersion: string;
+  exportedAt: string;
+  workspace: CloudWorkspace;
+}
+
 interface LegacyBackup {
   schema?: string;
   storage?: Record<string, unknown>;
@@ -39,6 +46,55 @@ export type CloudWorkspaceSaveStatus = 'idle' | 'saving' | 'saved' | 'error';
 
 const PREDICTION_KEY = /^prediction-ma:(\d{6}):(day|week|month):v2$/;
 const HISTORY_KEY = /^prediction-ma:forecast-history:(\d{6}):(day|week|month):v1$/;
+const SCOPE_KEY = /^(\d{6}):(day|week|month)$/;
+
+export function resolveActiveWorkspaceScope({
+  dataStockCode,
+  dataPeriod,
+  selectedStockCode,
+  selectedPeriod,
+  predictionStockCode,
+  predictionPeriod,
+}: {
+  dataStockCode: string | null | undefined;
+  dataPeriod: PeriodType | null;
+  selectedStockCode: string;
+  selectedPeriod: PeriodType;
+  predictionStockCode?: string | null;
+  predictionPeriod?: PeriodType | null;
+}): CloudWorkspaceScope | null {
+  const dataCode = normalizeStockCode(dataStockCode ?? '');
+  const selectedCode = normalizeStockCode(selectedStockCode);
+  if (dataCode.length !== 6 || dataCode !== selectedCode || dataPeriod !== selectedPeriod) return null;
+  if (
+    predictionStockCode !== undefined &&
+    (normalizeStockCode(predictionStockCode ?? '') !== selectedCode || predictionPeriod !== selectedPeriod)
+  ) {
+    return null;
+  }
+  return { stockCode: dataCode, period: selectedPeriod };
+}
+
+export function createFullWorkspaceBackup(
+  workspace: CloudWorkspace,
+  appVersion: string,
+  exportedAt = new Date().toISOString(),
+): FullWorkspaceBackup {
+  return {
+    schema: 'gupiao-cloud-workspace-backup/v1',
+    appVersion,
+    exportedAt,
+    workspace: cloneWorkspace(workspace),
+  };
+}
+
+export function readFullWorkspaceImport(value: unknown): CloudWorkspace {
+  const candidate = value as Partial<FullWorkspaceBackup>;
+  const workspace = candidate?.schema === 'gupiao-cloud-workspace-backup/v1'
+    ? candidate.workspace
+    : value;
+  return normalizeCloudWorkspace(workspace);
+}
 
 export function createEmptyCloudWorkspace(): CloudWorkspace {
   return {
@@ -286,6 +342,113 @@ function sameValue(left: unknown, right: unknown) {
 
 function toScopeKey(stockCode: string, period: PeriodType) {
   return `${stockCode.replace(/\D/g, '').slice(0, 6)}:${period}`;
+}
+
+function normalizeCloudWorkspace(value: unknown): CloudWorkspace {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Cloud workspace payload is invalid.');
+  }
+  const candidate = value as Partial<CloudWorkspace>;
+  if (candidate.schema !== 'gupiao-cloud-workspace/v1') {
+    throw new Error('Cloud workspace payload is invalid.');
+  }
+  const selectedCode = normalizeStockCode(candidate.workspace?.stockCode ?? '');
+  const selectedPeriod = candidate.workspace?.period;
+  if (selectedCode.length !== 6 || !isPeriodType(selectedPeriod)) {
+    throw new Error('Cloud workspace selection is invalid.');
+  }
+
+  const predictions: CloudWorkspace['predictions'] = {};
+  for (const [scopeKey, rows] of Object.entries(candidate.predictions ?? {})) {
+    const scope = SCOPE_KEY.exec(scopeKey);
+    if (!scope || !Array.isArray(rows)) throw new Error(`Prediction scope is invalid: ${scopeKey}`);
+    predictions[scopeKey] = rows
+      .map(normalizeImportedPredictionRow)
+      .filter((row): row is PredictionPoint => row !== null);
+  }
+
+  const forecastHistory: CloudWorkspace['forecastHistory'] = {};
+  for (const [scopeKey, rows] of Object.entries(candidate.forecastHistory ?? {})) {
+    const scope = SCOPE_KEY.exec(scopeKey);
+    if (!scope || !Array.isArray(rows)) throw new Error(`Forecast history scope is invalid: ${scopeKey}`);
+    forecastHistory[scopeKey] = rows
+      .map((row) => normalizeImportedHistoryRow(row, scope[1], scope[2] as PeriodType))
+      .filter((row): row is ForecastHistorySnapshot => row !== null);
+  }
+
+  return {
+    schema: 'gupiao-cloud-workspace/v1',
+    workspace: {
+      stockCode: selectedCode,
+      period: selectedPeriod,
+      baseDate: typeof candidate.workspace?.baseDate === 'string' ? candidate.workspace.baseDate : '',
+    },
+    predictions,
+    forecastHistory,
+    updatedAt: typeof candidate.updatedAt === 'string' ? candidate.updatedAt : new Date().toISOString(),
+  };
+}
+
+function normalizeImportedPredictionRow(value: unknown): PredictionPoint | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const candidate = value as Partial<PredictionPoint>;
+  if (typeof candidate.targetDate !== 'string') return null;
+  return {
+    targetDate: candidate.targetDate,
+    predictedMa40: typeof candidate.predictedMa40 === 'string' ? candidate.predictedMa40 : '',
+    predictedMaValues: candidate.predictedMaValues && typeof candidate.predictedMaValues === 'object'
+      ? Object.fromEntries(Object.entries(candidate.predictedMaValues).map(([key, item]) => [key, String(item ?? '')]))
+      : {},
+    note: typeof candidate.note === 'string' ? candidate.note : '',
+  };
+}
+
+function normalizeImportedHistoryRow(
+  value: unknown,
+  stockCode: string,
+  period: PeriodType,
+): ForecastHistorySnapshot | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const candidate = value as Partial<ForecastHistorySnapshot>;
+  if (
+    candidate.schema !== 'gupiao-forecast-history/v1' ||
+    normalizeStockCode(candidate.stockCode ?? '') !== stockCode ||
+    candidate.period !== period ||
+    typeof candidate.id !== 'string' ||
+    typeof candidate.targetDate !== 'string' ||
+    ![5, 10, 20, 40, 60].includes(Number(candidate.inputMaWindow)) ||
+    !Number.isFinite(Number(candidate.inputMaValue)) ||
+    !Number.isFinite(Number(candidate.predictedClose))
+  ) {
+    return null;
+  }
+  return {
+    ...candidate,
+    schema: 'gupiao-forecast-history/v1',
+    id: candidate.id,
+    stockCode,
+    period,
+    targetDate: candidate.targetDate,
+    inputMaWindow: Number(candidate.inputMaWindow) as ForecastHistorySnapshot['inputMaWindow'],
+    inputMaValue: Number(candidate.inputMaValue),
+    predictedClose: Number(candidate.predictedClose),
+    predictedMaValues: Object.fromEntries(
+      [5, 10, 20, 40, 60].map((windowSize) => {
+        const item = candidate.predictedMaValues?.[windowSize as keyof typeof candidate.predictedMaValues];
+        return [windowSize, Number.isFinite(Number(item)) ? Number(item) : null];
+      }),
+    ) as ForecastHistorySnapshot['predictedMaValues'],
+    note: typeof candidate.note === 'string' ? candidate.note : '',
+    savedAt: typeof candidate.savedAt === 'string' ? candidate.savedAt : '',
+  };
+}
+
+function isPeriodType(value: unknown): value is PeriodType {
+  return value === 'day' || value === 'week' || value === 'month';
+}
+
+function normalizeStockCode(value: string) {
+  return value.replace(/\D/g, '').slice(0, 6);
 }
 
 function parsePredictionRows(raw: unknown): PredictionPoint[] {

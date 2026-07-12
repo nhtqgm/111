@@ -146,7 +146,7 @@ function verifyProjectionCase(period, points, baseDate, inputWindow) {
       [String(inputWindow)]: String(25 + inputWindow / 10 + index),
     },
   }));
-  const projection = buildMa40Projection(points, predictions, baseDate, inputWindow);
+  const projection = buildMa40Projection(points, predictions, baseDate, inputWindow, period);
   const orderedDates = Array.from(
     new Set([...points.map((point) => point.date), ...predictions.map((row) => row.targetDate)]),
   ).sort();

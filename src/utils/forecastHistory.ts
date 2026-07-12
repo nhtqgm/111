@@ -113,7 +113,7 @@ export function createForecastHistorySnapshotsForAllInputs(
       stockCode,
       period,
       windowSize,
-      buildProjection(points, rows, baseDate, windowSize),
+      buildProjection(points, rows, baseDate, windowSize, period),
       savedAt,
     ),
   );
@@ -207,7 +207,7 @@ export function recoverForecastHistoryFromBackupStorage(
         stockCode,
         period,
         windowSize,
-        buildProjection(cache.points, pendingRows, baseDate, windowSize),
+        buildProjection(cache.points, pendingRows, baseDate, windowSize, period),
         savedAt,
       ),
     ).filter((snapshot) => !existingIds.has(snapshot.id));
@@ -354,8 +354,9 @@ function buildProjection(
   predictions: PredictionPoint[],
   baseDate: string,
   inputMaWindow: MaWindow,
+  period: PeriodType,
 ) {
-  return buildMa40Projection(points, predictions, baseDate, inputMaWindow).rows;
+  return buildMa40Projection(points, predictions, baseDate, inputMaWindow, period).rows;
 }
 
 function normalizeMaValues(value: unknown) {

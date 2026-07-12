@@ -1,4 +1,4 @@
-import type { KLinePoint, PredictionPoint } from '../types';
+import type { KLinePoint, PeriodType, PredictionPoint } from '../types';
 
 export const MA_WINDOWS = [5, 10, 20, 40, 60] as const;
 export type MaWindow = (typeof MA_WINDOWS)[number];
@@ -71,38 +71,66 @@ export function buildMa40Projection(
   predictions: PredictionPoint[],
   baseDate: string,
   inputWindow: MaWindow = MA40_WINDOW,
+  period?: PeriodType,
 ): Ma40Projection {
-  const actualCloseByDate = new Map(points.map((point) => [point.date, point.close]));
-  const closeByDate = new Map(actualCloseByDate);
-  const predictedCloseDates = new Set<string>();
+  const toPeriodKey = createPeriodKeyResolver(period);
+  const basePeriodKey = toPeriodKey(baseDate);
+  const actualPointByPeriod = buildActualPointMap(points, toPeriodKey);
+  const actualCloseByPeriod = new Map(
+    [...actualPointByPeriod].map(([periodKey, point]) => [periodKey, point.close]),
+  );
+  const closeByPeriod = new Map(actualCloseByPeriod);
+  const predictedClosePeriods = new Set<string>();
+  const displayDateByPeriod = new Map(
+    [...actualPointByPeriod].map(([periodKey, point]) => [periodKey, point.date]),
+  );
   const sortedPredictions = [...predictions].sort((a, b) =>
+    toPeriodKey(a.targetDate).localeCompare(toPeriodKey(b.targetDate)) ||
     a.targetDate.localeCompare(b.targetDate),
   );
-  const orderedDates = mergeDates(
-    points.map((point) => point.date),
-    sortedPredictions.map((row) => row.targetDate),
+  const orderedPeriods = mergeDates(
+    [...actualPointByPeriod.keys()],
+    sortedPredictions
+      .map((row) => toPeriodKey(row.targetDate))
+      .filter((periodKey) => periodKey > basePeriodKey || actualPointByPeriod.has(periodKey)),
   );
 
   const rows = sortedPredictions.map((row) => {
+    const targetPeriodKey = toPeriodKey(row.targetDate);
+    const rowOrderedPeriods = orderedPeriods.includes(targetPeriodKey)
+      ? orderedPeriods
+      : insertSortedPeriod(orderedPeriods, targetPeriodKey);
     const predictedMa = parseInput(getPredictedMaInput(row, inputWindow));
     const reverse = buildReverseCalculation(
-      orderedDates,
-      closeByDate,
-      actualCloseByDate,
-      predictedCloseDates,
-      row.targetDate,
+      rowOrderedPeriods,
+      closeByPeriod,
+      actualCloseByPeriod,
+      predictedClosePeriods,
+      displayDateByPeriod,
+      targetPeriodKey,
       predictedMa,
       inputWindow,
     );
     const derivedClose = reverse.derivedClose;
-    const hasCompletedActual = actualCloseByDate.has(row.targetDate) && row.targetDate <= baseDate;
-    const isForecast = !hasCompletedActual && row.targetDate > baseDate;
+    const actualPoint = actualPointByPeriod.get(targetPeriodKey);
+    const hasCompletedActual = Boolean(actualPoint && actualPoint.date <= baseDate);
+    const isForecast = !hasCompletedActual && targetPeriodKey > basePeriodKey;
 
     if (isForecast && derivedClose !== null) {
-      closeByDate.set(row.targetDate, derivedClose);
-      predictedCloseDates.add(row.targetDate);
-    } else if (!hasCompletedActual && !closeByDate.has(row.targetDate)) {
-      closeByDate.set(row.targetDate, Number.NaN);
+      closeByPeriod.set(targetPeriodKey, derivedClose);
+      predictedClosePeriods.add(targetPeriodKey);
+      displayDateByPeriod.set(targetPeriodKey, row.targetDate);
+    }
+
+    // Preserve the user's forecast calculation for this row without replacing
+    // a completed real close in the rolling source used by later periods.
+    const calculationCloseByPeriod = new Map(closeByPeriod);
+    const calculationPredictedPeriods = new Set(predictedClosePeriods);
+    const calculationDisplayDates = new Map(displayDateByPeriod);
+    if (derivedClose !== null) {
+      calculationCloseByPeriod.set(targetPeriodKey, derivedClose);
+      calculationPredictedPeriods.add(targetPeriodKey);
+      calculationDisplayDates.set(targetPeriodKey, row.targetDate);
     }
 
     const movingAverages = Object.fromEntries(
@@ -111,11 +139,12 @@ export function buildMa40Projection(
         derivedClose === null
           ? buildEmptyMovingAverageCalculation(windowSize, '缺少反推收盘价，无法计算均线')
           : buildMovingAverageCalculation(
-              orderedDates,
-              closeByDate,
-              actualCloseByDate,
-              predictedCloseDates,
-              row.targetDate,
+              rowOrderedPeriods,
+              calculationCloseByPeriod,
+              actualCloseByPeriod,
+              calculationPredictedPeriods,
+              calculationDisplayDates,
+              targetPeriodKey,
               windowSize,
             ),
       ]),
@@ -127,7 +156,7 @@ export function buildMa40Projection(
 
     return {
       ...row,
-      actualClose: actualCloseByDate.get(row.targetDate) ?? null,
+      actualClose: actualPoint?.close ?? null,
       derivedClose,
       isForecast,
       ma40: maValues[40],
@@ -166,6 +195,13 @@ export function buildMa40Projection(
     }),
   ) as Record<MaWindow, LineValuePoint[]>;
 
+  const closeByDate = new Map(points.map((point) => [point.date, point.close]));
+  for (const periodKey of predictedClosePeriods) {
+    const targetDate = displayDateByPeriod.get(periodKey);
+    const close = closeByPeriod.get(periodKey);
+    if (targetDate && close !== undefined) closeByDate.set(targetDate, close);
+  }
+
   return {
     rows,
     actualLines,
@@ -179,6 +215,7 @@ function buildReverseCalculation(
   closeByDate: Map<string, number>,
   actualCloseByDate: Map<string, number>,
   predictedCloseDates: Set<string>,
+  displayDateByPeriod: Map<string, string>,
   targetDate: string,
   predictedMa: number | null,
   windowSize: MaWindow,
@@ -207,6 +244,7 @@ function buildReverseCalculation(
     closeByDate,
     actualCloseByDate,
     predictedCloseDates,
+    displayDateByPeriod,
   );
   if (previousValues === null) return emptyDetail(`前${windowSize - 1}个周期存在缺失收盘价`);
 
@@ -226,6 +264,7 @@ function buildMovingAverageCalculation(
   closeByDate: Map<string, number>,
   actualCloseByDate: Map<string, number>,
   predictedCloseDates: Set<string>,
+  displayDateByPeriod: Map<string, string>,
   targetDate: string,
   windowSize: MaWindow,
 ): MovingAverageCalculationDetail {
@@ -243,6 +282,7 @@ function buildMovingAverageCalculation(
     closeByDate,
     actualCloseByDate,
     predictedCloseDates,
+    displayDateByPeriod,
   );
   if (values === null) return emptyDetail(`MA${windowSize}窗口存在缺失收盘价`);
 
@@ -274,11 +314,12 @@ function buildCalculationValues(
   closeByDate: Map<string, number>,
   actualCloseByDate: Map<string, number>,
   predictedCloseDates: Set<string>,
+  displayDateByPeriod: Map<string, string>,
 ): CalculationValueItem[] | null {
   const values = dates.map((date) => {
     const value = closeByDate.get(date) ?? Number.NaN;
     return {
-      targetDate: date,
+      targetDate: displayDateByPeriod.get(date) ?? date,
       value,
       source: (predictedCloseDates.has(date) || !actualCloseByDate.has(date)
         ? 'predicted'
@@ -301,6 +342,34 @@ function getPredictedMaInput(row: PredictionPoint, windowSize: MaWindow) {
 
 function mergeDates(actualDates: string[], predictedDates: string[]) {
   return Array.from(new Set([...actualDates, ...predictedDates])).sort();
+}
+
+function insertSortedPeriod(periods: string[], targetPeriod: string) {
+  return Array.from(new Set([...periods, targetPeriod])).sort();
+}
+
+function buildActualPointMap(points: KLinePoint[], toPeriodKey: (date: string) => string) {
+  const actualPointByPeriod = new Map<string, KLinePoint>();
+  for (const point of points) {
+    const periodKey = toPeriodKey(point.date);
+    const existing = actualPointByPeriod.get(periodKey);
+    if (!existing || point.date >= existing.date) actualPointByPeriod.set(periodKey, point);
+  }
+  return actualPointByPeriod;
+}
+
+function createPeriodKeyResolver(period?: PeriodType) {
+  if (period === 'month') return (date: string) => date.slice(0, 7);
+  if (period === 'week') {
+    return (date: string) => {
+      const parsed = new Date(`${date}T00:00:00Z`);
+      if (!Number.isFinite(parsed.getTime())) return date;
+      const day = parsed.getUTCDay() || 7;
+      parsed.setUTCDate(parsed.getUTCDate() - day + 1);
+      return parsed.toISOString().slice(0, 10);
+    };
+  }
+  return (date: string) => date;
 }
 
 function sum(values: number[]) {

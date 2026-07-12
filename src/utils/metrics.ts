@@ -41,3 +41,33 @@ export function summarizeComparisons(rows: ComparisonRow[]) {
     maxAbsError: Math.max(...absDiffs),
   };
 }
+
+export function summarizeForecastHistory(
+  rows: Array<{ predictedClose: number | null; actualClose: number | null }>,
+) {
+  const valid = rows.filter(
+    (row): row is { predictedClose: number; actualClose: number } =>
+      Number.isFinite(row.predictedClose) && Number.isFinite(row.actualClose),
+  );
+  if (!valid.length) {
+    return {
+      compared: 0,
+      mae: null,
+      mape: null,
+      maxAbsError: null,
+    };
+  }
+
+  const absoluteErrors = valid.map((row) => Math.abs(row.predictedClose - row.actualClose));
+  const percentageErrors = valid
+    .filter((row) => row.actualClose !== 0)
+    .map((row) => (Math.abs(row.predictedClose - row.actualClose) / Math.abs(row.actualClose)) * 100);
+  const total = (values: number[]) => values.reduce((sum, value) => sum + value, 0);
+
+  return {
+    compared: valid.length,
+    mae: total(absoluteErrors) / absoluteErrors.length,
+    mape: percentageErrors.length ? total(percentageErrors) / percentageErrors.length : null,
+    maxAbsError: Math.max(...absoluteErrors),
+  };
+}
