@@ -16,9 +16,9 @@
 - Create: `scripts/kline-cache.test.ts`
 - Modify: `package.json`
 
-- [ ] **Step 1: Write failing tests for validated save/load, last scope, and Electron bootstrap**
-- [ ] **Step 2: Run `npm run test:kline-cache` and verify failure because the cache module does not exist**
-- [ ] **Step 3: Add the test command to `package.json`**
+- [x] **Step 1: Write failing tests for validated save/load, last scope, and Electron bootstrap**
+- [x] **Step 2: Run `npm run test:kline-cache` and verify failure because the cache module does not exist**
+- [x] **Step 3: Add the test command to `package.json`**
 
 ### Task 2: Implement the focused cache module
 
@@ -26,11 +26,11 @@
 - Create: `src/utils/kLineCache.ts`
 - Modify: `src/utils/predictions.ts`
 
-- [ ] **Step 1: Implement versioned cache keys and strict K-line validation**
-- [ ] **Step 2: Implement browser save/load and last-scope save/load**
-- [ ] **Step 3: Implement Electron bootstrap that restores only valid K-line entries**
-- [ ] **Step 4: Re-export legacy cache APIs from `predictions.ts` for compatibility**
-- [ ] **Step 5: Run `npm run test:kline-cache` and verify all tests pass**
+- [x] **Step 1: Implement versioned cache keys and strict K-line validation**
+- [x] **Step 2: Implement browser save/load and last-scope save/load**
+- [x] **Step 3: Implement Electron bootstrap that restores only valid K-line entries**
+- [x] **Step 4: Re-export legacy cache APIs from `predictions.ts` for compatibility**
+- [x] **Step 5: Run `npm run test:kline-cache` and verify all tests pass**
 
 ### Task 3: Wire persistence into application startup and refresh
 
@@ -39,21 +39,20 @@
 - Modify: `src/App.tsx`
 - Modify: `scripts/kline-cache.test.ts`
 
-- [ ] **Step 1: Add failing integration assertions for pre-render bootstrap, cache loading, and refresh saving**
-- [ ] **Step 2: Initialize the App selection from the last cached market scope**
-- [ ] **Step 3: Load persisted K-line data whenever memory has no selected scope**
-- [ ] **Step 4: Save every successful period refresh and preserve raw source metadata**
-- [ ] **Step 5: Keep cached history visible when online refresh fails**
-- [ ] **Step 6: Run the focused tests and verify they pass**
+- [x] **Step 1: Add failing integration assertions for pre-render bootstrap, cache loading, and refresh saving**
+- [x] **Step 2: Initialize the App selection from the last cached market scope**
+- [x] **Step 3: Load persisted K-line data whenever memory has no selected scope**
+- [x] **Step 4: Save every successful period refresh and preserve raw source metadata**
+- [x] **Step 5: Keep cached history visible when online refresh fails**
+- [x] **Step 6: Run the focused tests and verify they pass**
 
 ### Task 4: Regression verification
 
 **Files:**
 - Modify only if a regression is found in files already in scope.
 
-- [ ] **Step 1: Run all Node tests under `scripts`**
-- [ ] **Step 2: Run `npm run verify:ma`**
-- [ ] **Step 3: Run `npm run build`**
-- [ ] **Step 4: Confirm the original `main` worktree remains unchanged**
+- [x] **Step 1: Run all Node tests under `scripts`**
+- [x] **Step 2: Run `npm run verify:ma`**
+- [x] **Step 3: Run `npm run build`**
+- [x] **Step 4: Confirm the original `main` worktree remains unchanged**
 - [ ] **Step 5: Commit only the feature work on `codex/fix-durable-kline-cache`**
-
