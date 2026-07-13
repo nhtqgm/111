@@ -6,7 +6,7 @@ import KLineChart, {
 } from './components/KLineChart';
 import { fetchKLines } from './services/eastmoney';
 import type { PeriodType, PredictionPoint, StockKLineResponse } from './types';
-import { filterCompletedKLineData } from './utils/completedPeriods';
+import { filterCompletedKLineData, type CompletedKLineData } from './utils/completedPeriods';
 import {
   getCloudProfile,
   getCloudUser,
@@ -66,6 +66,12 @@ import {
 } from './utils/movingAverage';
 import { loadChartViewport, saveChartViewport, type ChartViewport } from './utils/chartViewport';
 import {
+  loadKLineCache,
+  loadLastKLineScope,
+  saveKLineCache,
+  saveLastKLineScope,
+} from './utils/kLineCache';
+import {
   generatePredictionRows,
   hydratePredictionRows,
   normalizePredictionPoint,
@@ -81,6 +87,7 @@ const periods: Array<{ value: PeriodType; label: string; unit: string }> = [
 const forecastRowCount = Math.max(...MA_WINDOWS);
 const minHistoryCount = 60;
 const todayDate = formatDate(new Date());
+const initialKLineScope = loadLastKLineScope();
 const appVersion = packageJson.version;
 const updateManifestUrl = 'https://nhtqgm.github.io/111/update.json';
 const lineColors: Record<MaWindow, string> = {
@@ -127,9 +134,9 @@ interface UpdateState {
 type CloudSyncState = 'unconfigured' | 'signed-out' | 'ready' | 'syncing' | 'error';
 
 export default function App() {
-  const [stockCode, setStockCode] = useState('000166');
-  const [queryCode, setQueryCode] = useState('000166');
-  const [period, setPeriod] = useState<PeriodType>('month');
+  const [stockCode, setStockCode] = useState(initialKLineScope?.stockCode ?? '000166');
+  const [queryCode, setQueryCode] = useState(initialKLineScope?.stockCode ?? '000166');
+  const [period, setPeriod] = useState<PeriodType>(initialKLineScope?.period ?? 'month');
   const [data, setData] = useState<StockKLineResponse | null>(null);
   const [dataPeriod, setDataPeriod] = useState<PeriodType | null>(null);
   const [baseDate, setBaseDate] = useState(todayDate);
@@ -219,17 +226,31 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!cloudWorkspace) return;
-    const cached = marketDataRef.current.get(marketScopeKey(queryCode, period));
+    let cached = marketDataRef.current.get(marketScopeKey(queryCode, period));
+    if (!cached) {
+      const persisted = loadKLineCache(queryCode, period);
+      if (persisted) {
+        cached = markAsLocalCache(persisted.data);
+        marketDataRef.current.set(marketScopeKey(queryCode, period), cached);
+      }
+    }
     setError('');
 
     if (!cached) {
       setData(null);
       setDataPeriod(null);
-      setPredictions(getWorkspacePredictions(cloudWorkspace, { stockCode: queryCode, period }));
+      setPredictions(
+        cloudWorkspace
+          ? getWorkspacePredictions(cloudWorkspace, { stockCode: queryCode, period })
+          : [],
+      );
       setPredictionScope({ stockCode: normalizeStockCode(queryCode), period });
-      setForecastHistory(getWorkspaceForecastHistory(cloudWorkspace, { stockCode: queryCode, period }));
-      setBaseDate(cloudWorkspace.workspace.baseDate || todayDate);
+      setForecastHistory(
+        cloudWorkspace
+          ? getWorkspaceForecastHistory(cloudWorkspace, { stockCode: queryCode, period })
+          : [],
+      );
+      setBaseDate(cloudWorkspace?.workspace.baseDate || todayDate);
       setError('暂无本地历史数据，请点击“联网更新”拉取最近历史收盘价');
       return;
     }
@@ -324,8 +345,6 @@ export default function App() {
     cloudWorkspaceBaselineRef.current = null;
     setCloudWorkspace(null);
     setCloudRole(null);
-    setData(null);
-    setDataPeriod(null);
     setPredictions([]);
     setPredictionScope(null);
     setForecastHistory([]);
@@ -350,6 +369,9 @@ export default function App() {
       setStockCode(workspace.workspace.stockCode);
       setQueryCode(workspace.workspace.stockCode);
       setPeriod(workspace.workspace.period);
+      void saveLastKLineScope(workspace.workspace.stockCode, workspace.workspace.period).catch((error: unknown) => {
+        console.error('K-line scope persistence failed:', error);
+      });
       setBaseDate(workspace.workspace.baseDate || todayDate);
       setCloudStockCodes(collectCloudStockCodes(workspace));
       cloudPredictionSaveQueueRef.current = createPredictionSaveQueueForUser(user, outbox);
@@ -651,6 +673,9 @@ export default function App() {
     if (!code) return;
     setStockCode(code);
     setQueryCode(code);
+    void saveLastKLineScope(code, period).catch((error: unknown) => {
+      console.error('K-line scope persistence failed:', error);
+    });
   }
 
   function buildCloudPredictionSnapshot() {
@@ -755,6 +780,9 @@ export default function App() {
     setDetailTargetDate(null);
     setHasUnsavedChanges(false);
     setError('');
+    void saveLastKLineScope(queryCode, nextPeriod).catch((error: unknown) => {
+      console.error('K-line scope persistence failed:', error);
+    });
     setPeriod(nextPeriod);
   }
 
@@ -1011,12 +1039,24 @@ export default function App() {
           referenceData: marketDataRef.current.get(marketScopeKey(requestedStockCode, workspacePeriod)),
         }),
       );
-      const successful = results.flatMap((result) => {
-        if (result.status !== 'success') return [];
-        const completed = filterCompletedKLineData(markAsOnlineResult(result.data), result.period);
+      const successful: Array<{ period: PeriodType; completed: CompletedKLineData }> = [];
+      const cacheSaveFailures: PeriodType[] = [];
+      for (const result of results) {
+        if (result.status !== 'success') continue;
+        const filtered = filterCompletedKLineData(result.data, result.period);
+        try {
+          await saveKLineCache(filtered.data, result.period);
+        } catch (cacheError) {
+          cacheSaveFailures.push(result.period);
+          console.error('K-line cache save failed:', cacheError);
+        }
+        const completed = {
+          ...filtered,
+          data: markAsOnlineResult(filtered.data),
+        };
         marketDataRef.current.set(marketScopeKey(completed.data.code, result.period), completed.data);
-        return [{ period: result.period, completed }];
-      });
+        successful.push({ period: result.period, completed });
+      }
       const active = successful.find((result) => result.period === targetPeriod);
       const failed = results.filter((result) => result.status === 'failed');
 
@@ -1038,17 +1078,25 @@ export default function App() {
         setBaseDate(active.completed.lastCompletedDate ?? todayDate);
         setStockCode(active.completed.data.code);
         setQueryCode(active.completed.data.code);
+        void saveLastKLineScope(active.completed.data.code, targetPeriod).catch((scopeError: unknown) => {
+          console.error('K-line scope persistence failed:', scopeError);
+        });
       }
 
       if (successful.length) {
         const updated = successful.map((result) => getPeriodLabel(result.period)).join('、');
-        showToast(`已联网更新：${updated}，${new Date().toLocaleString()}`, failed.length ? 'warning' : 'success');
+        showToast(
+          `已联网更新：${updated}，${new Date().toLocaleString()}`,
+          failed.length || cacheSaveFailures.length ? 'warning' : 'success',
+        );
       } else {
         showToast('日K、周K、月K均联网更新失败，继续使用本地缓存', 'warning');
       }
 
       if (active && active.completed.data.points.length < minHistoryCount) {
         setError(`联网数据不足${minHistoryCount}条，MA60计算可能不完整`);
+      } else if (cacheSaveFailures.length) {
+        setError(`联网更新成功，但本地缓存保存失败：${cacheSaveFailures.map(getPeriodLabel).join('、')}`);
       } else if (failed.length) {
         setError(`部分周期联网更新失败：${failed.map((result) => getPeriodLabel(result.period)).join('、')}`);
       } else if (!successful.length) {

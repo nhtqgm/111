@@ -4,26 +4,27 @@ import './styles.css';
 import { clearLegacyBrowserAppCache } from './utils/electronStorage';
 import { bootstrapChartViewportStorage } from './utils/chartViewport';
 import { bootstrapCloudPredictionOutboxStorage } from './utils/cloudOutbox';
+import { bootstrapKLineCacheStorage } from './utils/kLineCache';
 
 async function startApp() {
   const rootElement = document.getElementById('root') as HTMLElement;
 
   try {
-    // Cloud workspaces are the only business-data source. Do not bootstrap
-    // the old Electron/localStorage cache before rendering the application.
-    // Browser storage from the pre-cloud versions is never a source of truth.
-    // This runs before App is imported, so legacy values cannot enter React state.
+    // Cloud workspaces remain the only source of prediction data. Restore only
+    // durable UI/outbox state and real market history before App is imported.
     if (window.appStorageApi) {
       try {
         await bootstrapCloudPredictionOutboxStorage();
         await bootstrapChartViewportStorage();
+        await bootstrapKLineCacheStorage();
       } catch (error) {
-        // Damaged local UI/outbox storage must never block cloud predictions.
+        // Damaged local state must never block cloud predictions.
         console.error('Local durable state restore failed:', error);
       }
     } else {
       clearLegacyBrowserAppCache();
       await bootstrapCloudPredictionOutboxStorage();
+      await bootstrapKLineCacheStorage();
     }
   } catch (error) {
     console.error('Application data restore failed:', error);
