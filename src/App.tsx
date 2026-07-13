@@ -44,9 +44,16 @@ import {
   type CloudWorkspaceScope,
 } from './utils/cloudWorkspace';
 import {
+  applyPredictionValueMutationsToWorkspace,
   createPredictionValueMutations,
   createPredictionValueSaveQueue,
+  type CloudPredictionSaveState,
 } from './utils/cloudPredictionStorage';
+import {
+  loadCloudPredictionOutbox,
+  saveCloudPredictionOutbox,
+  type CloudPredictionOutboxSnapshot,
+} from './utils/cloudOutbox';
 import { formatNumber, summarizeForecastHistory } from './utils/metrics';
 import { mergeLineValuePoints, mergeLineValuePointsPreservingEarlier } from './utils/linePoints';
 import {
@@ -151,6 +158,12 @@ export default function App() {
   const [cloudSyncState, setCloudSyncState] = useState<CloudSyncState>(
     isCloudSyncConfigured() ? 'signed-out' : 'unconfigured',
   );
+  const [cloudSaveState, setCloudSaveState] = useState<CloudPredictionSaveState>({
+    status: 'idle',
+    pendingCount: 0,
+    lastSavedAt: null,
+    error: null,
+  });
   const [cloudEmail, setCloudEmail] = useState('');
   const [cloudPassword, setCloudPassword] = useState('');
   const [isCloudAccountOpen, setIsCloudAccountOpen] = useState(false);
@@ -291,12 +304,16 @@ export default function App() {
     setCloudStockCodes(collectCloudStockCodes(next));
   }
 
-  function createPredictionSaveQueueForUser(user: User) {
+  function createPredictionSaveQueueForUser(user: User, outbox: CloudPredictionOutboxSnapshot) {
     return createPredictionValueSaveQueue({
       accountId: user.id,
+      initialMutations: outbox.mutations,
+      initialLastSavedAt: outbox.lastSavedAt,
       save: async (mutations) => {
         await saveMyPredictionValues(mutations);
       },
+      persist: (snapshot) => saveCloudPredictionOutbox(user.id, snapshot),
+      onStateChange: setCloudSaveState,
     });
   }
 
@@ -320,11 +337,13 @@ export default function App() {
       if (generation !== cloudSessionGenerationRef.current) return;
       if (!profile || profile.userId !== user.id) throw new Error('Cloud account profile is unavailable.');
 
-      const workspace = record?.payload ?? createEmptyCloudWorkspace();
+      const remoteWorkspace = record?.payload ?? createEmptyCloudWorkspace();
+      const outbox = loadCloudPredictionOutbox(user.id);
+      const workspace = applyPredictionValueMutationsToWorkspace(remoteWorkspace, outbox.mutations);
       const revision = record?.revision ?? 0;
 
       cloudWorkspaceRef.current = workspace;
-      cloudWorkspaceBaselineRef.current = workspace;
+      cloudWorkspaceBaselineRef.current = remoteWorkspace;
       setCloudWorkspace(workspace);
       setCloudWorkspaceRevision(revision);
       setCloudRole(profile.role);
@@ -333,7 +352,7 @@ export default function App() {
       setPeriod(workspace.workspace.period);
       setBaseDate(workspace.workspace.baseDate || todayDate);
       setCloudStockCodes(collectCloudStockCodes(workspace));
-      cloudPredictionSaveQueueRef.current = createPredictionSaveQueueForUser(user);
+      cloudPredictionSaveQueueRef.current = createPredictionSaveQueueForUser(user, outbox);
       setCloudSyncState('ready');
       if (!quiet) showToast('Cloud workspace loaded.', 'success');
       void refreshHistoricalData({
@@ -761,7 +780,7 @@ export default function App() {
       const workspace = cloudWorkspaceRef.current;
       if (!workspace) throw new Error('云端工作区尚未加载完成');
       await replaceMyCloudWorkspace(workspace);
-      cloudPredictionSaveQueueRef.current?.switchAccount(cloudUser.id);
+      cloudPredictionSaveQueueRef.current?.markAllSaved();
       cloudWorkspaceBaselineRef.current = workspace;
       setCloudSyncState('ready');
       const predictionScopes = Object.keys(workspace.predictions).length;
@@ -835,6 +854,7 @@ export default function App() {
       setCloudEmail('');
       setCloudPassword('');
       marketDataRef.current.clear();
+      setCloudSaveState({ status: 'idle', pendingCount: 0, lastSavedAt: null, error: null });
       setCloudSyncState('signed-out');
       setIsCloudAccountOpen(false);
       showToast('已退出云端账户。本地预测仍保留在本机。', 'info');
@@ -987,7 +1007,9 @@ export default function App() {
 
     try {
       const results = await refreshAllKLinePeriods((workspacePeriod) =>
-        fetchKLines(requestedStockCode, workspacePeriod),
+        fetchKLines(requestedStockCode, workspacePeriod, {
+          referenceData: marketDataRef.current.get(marketScopeKey(requestedStockCode, workspacePeriod)),
+        }),
       );
       const successful = results.flatMap((result) => {
         if (result.status !== 'success') return [];
@@ -1170,6 +1192,10 @@ export default function App() {
       cloudPredictionSaveQueueRef.current?.switchAccount('');
       predictionQueueDetached = true;
       await replaceMyCloudWorkspace(workspace);
+      saveCloudPredictionOutbox(cloudUser.id, {
+        mutations: [],
+        lastSavedAt: new Date().toISOString(),
+      });
       await loadCloudWorkspace(cloudUser);
       predictionQueueDetached = false;
       const predictionScopes = Object.keys(workspace.predictions).length;
@@ -1180,7 +1206,10 @@ export default function App() {
       showToast(`已全量导入并覆盖云端：${predictionScopes} 个范围，${historyCount} 条历史记录`, 'success');
     } catch (err) {
       if (predictionQueueDetached && cloudUser) {
-        cloudPredictionSaveQueueRef.current?.switchAccount(cloudUser.id);
+        cloudPredictionSaveQueueRef.current = createPredictionSaveQueueForUser(
+          cloudUser,
+          loadCloudPredictionOutbox(cloudUser.id),
+        );
       }
       showToast(err instanceof Error ? err.message : 'Import failed.', 'warning');
     } finally {
@@ -1490,6 +1519,26 @@ export default function App() {
               >
                 向云端保存
               </button>
+              {cloudUser ? (
+                <div
+                  className={`cloud-save-indicator ${cloudSaveState.status}`}
+                  title={cloudSaveState.status === 'error' ? formatCloudSaveError(cloudSaveState.error) : undefined}
+                  role="status"
+                  aria-live="polite"
+                >
+                  <span className="cloud-save-status-dot" aria-hidden="true" />
+                  <span>{formatCloudSaveState(cloudSaveState)}</span>
+                  {cloudSaveState.status === 'error' ? (
+                    <button
+                      type="button"
+                      className="cloud-save-retry"
+                      onClick={() => cloudPredictionSaveQueueRef.current?.retry()}
+                    >
+                      重试
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
               <button type="button" className="ghost" onClick={() => fileInputRef.current?.click()}>
                 导入
               </button>
@@ -2082,6 +2131,23 @@ function formatCloudSaveError(error: Error | null) {
   }
   if (!message) return '向云端保存失败，请稍后重试。';
   return `向云端保存失败：${message}`;
+}
+
+function formatCloudSaveState(state: CloudPredictionSaveState) {
+  switch (state.status) {
+    case 'pending':
+      return `待保存 ${state.pendingCount}`;
+    case 'saving':
+      return `正在保存 ${state.pendingCount}`;
+    case 'saved':
+      return state.lastSavedAt
+        ? `已保存 ${new Date(state.lastSavedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+        : '已保存';
+    case 'error':
+      return `保存失败 ${state.pendingCount}`;
+    default:
+      return '云端待命';
+  }
 }
 
 function createEmptyLineMap(): Record<MaWindow, LineValuePoint[]> {

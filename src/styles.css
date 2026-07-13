@@ -589,6 +589,58 @@ h2 {
   border-color: #26302a;
 }
 
+.cloud-save-indicator {
+  min-height: 34px;
+  padding: 0 9px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid #9b917f;
+  border-radius: 6px;
+  background: #f6f0e5;
+  color: #4d554d;
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.cloud-save-status-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  border-radius: 50%;
+  background: #777061;
+}
+
+.cloud-save-indicator.pending .cloud-save-status-dot,
+.cloud-save-indicator.saving .cloud-save-status-dot {
+  background: #d7a742;
+}
+
+.cloud-save-indicator.saved .cloud-save-status-dot {
+  background: #4f805c;
+}
+
+.cloud-save-indicator.error {
+  border-color: #a65342;
+  color: #8b3d31;
+}
+
+.cloud-save-indicator.error .cloud-save-status-dot {
+  background: #b84836;
+}
+
+.cloud-save-retry {
+  height: 24px;
+  padding: 0 7px;
+  border: 1px solid #a65342;
+  border-radius: 5px;
+  background: #fff8f4;
+  color: #8b3d31;
+  font-size: 11px;
+  font-weight: 900;
+}
+
 .history-status {
   margin-top: 10px;
   padding: 8px 10px;

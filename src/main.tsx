@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import './styles.css';
 import { clearLegacyBrowserAppCache } from './utils/electronStorage';
 import { bootstrapChartViewportStorage } from './utils/chartViewport';
+import { bootstrapCloudPredictionOutboxStorage } from './utils/cloudOutbox';
 
 async function startApp() {
   const rootElement = document.getElementById('root') as HTMLElement;
@@ -14,13 +15,15 @@ async function startApp() {
     // This runs before App is imported, so legacy values cannot enter React state.
     if (window.appStorageApi) {
       try {
+        await bootstrapCloudPredictionOutboxStorage();
         await bootstrapChartViewportStorage();
       } catch (error) {
-        // A damaged viewport cache must never block predictions or cloud data.
-        console.error('Chart viewport restore failed:', error);
+        // Damaged local UI/outbox storage must never block cloud predictions.
+        console.error('Local durable state restore failed:', error);
       }
     } else {
       clearLegacyBrowserAppCache();
+      await bootstrapCloudPredictionOutboxStorage();
     }
   } catch (error) {
     console.error('Application data restore failed:', error);

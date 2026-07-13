@@ -27,6 +27,6 @@ test('background saving skips unchanged cloud workspaces', () => {
 
   assert.match(
     saveCurrentWorkspace,
-    /if \(!force && !hasUnsavedChanges\) return;\s*\n\s*capturePredictionHistory\(predictions, data\);/,
+    /if \(!force && !hasUnsavedChanges\) return;\s*\n\s*capturePredictionHistory\(predictions, activeData, activeScope\.period, baseDate\);/,
   );
 });

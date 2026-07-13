@@ -19,7 +19,7 @@ const DEFAULT_BEGIN: Record<PeriodType, string> = {
   month: '20150101',
 };
 
-type AdjustType = 'bfq' | 'qfq' | 'hfq';
+type AdjustType = 'bfq';
 
 interface QuoteSource {
   name: string;
@@ -29,12 +29,12 @@ interface QuoteSource {
 
 const QUOTE_SOURCES: QuoteSource[] = [
   { name: '腾讯不复权', provider: 'tencent', adjust: 'bfq' },
-  { name: '腾讯前复权', provider: 'tencent', adjust: 'qfq' },
-  { name: '腾讯后复权', provider: 'tencent', adjust: 'hfq' },
   { name: '东方财富不复权', provider: 'eastmoney', adjust: 'bfq' },
-  { name: '东方财富前复权', provider: 'eastmoney', adjust: 'qfq' },
-  { name: '东方财富后复权', provider: 'eastmoney', adjust: 'hfq' },
 ];
+
+interface FetchKLineOptions {
+  referenceData?: StockKLineResponse | null;
+}
 
 function getMarketId(code: string) {
   return code.startsWith('6') || code.startsWith('9') ? 1 : 0;
@@ -111,12 +111,16 @@ function parseTencentKLine(row: string[], previousClose?: string): KLinePoint {
 export async function fetchKLines(
   rawCode: string,
   period: PeriodType,
+  options: FetchKLineOptions = {},
 ): Promise<StockKLineResponse> {
   const isRemoteWebApp =
     window.location.protocol === 'https:' && window.location.hostname === 'nhtqgm.github.io';
 
   if (window.eastmoneyApi && !isRemoteWebApp) {
-    return window.eastmoneyApi.fetchKLines(rawCode, period);
+    const candidate = await window.eastmoneyApi.fetchKLines(rawCode, period, options);
+    validateQuoteCandidate(candidate, normalizeCode(rawCode));
+    validateQuoteConsistency(candidate, options.referenceData);
+    return candidate;
   }
 
   const code = normalizeCode(rawCode);
@@ -127,7 +131,10 @@ export async function fetchKLines(
   const errors: string[] = [];
   for (const source of QUOTE_SOURCES) {
     try {
-      return await fetchFromSource(code, period, source);
+      const candidate = await fetchFromSource(code, period, source);
+      validateQuoteCandidate(candidate, code);
+      validateQuoteConsistency(candidate, options.referenceData);
+      return candidate;
     } catch (error) {
       errors.push(`${source.name}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -160,8 +167,7 @@ async function fetchTencentKLines(
   }
 
   const stock = payload.data?.[symbol];
-  const key =
-    source.adjust === 'bfq' ? TENCENT_PERIOD[period] : `${source.adjust}${TENCENT_PERIOD[period]}`;
+  const key = TENCENT_PERIOD[period];
   const rows = stock?.[key] || stock?.[TENCENT_PERIOD[period]];
   if (!Array.isArray(rows) || rows.length === 0) {
     throw new Error('没有返回有效K线');
@@ -172,6 +178,8 @@ async function fetchTencentKLines(
     name: stock?.qt?.[symbol]?.[1] || code,
     market: symbol.startsWith('sh') ? 1 : 0,
     sourceName: source.name,
+    sourceProvider: source.provider,
+    adjustment: source.adjust,
     points: rows.map((row: string[], index: number) => parseTencentKLine(row, rows[index - 1]?.[2])),
   };
 }
@@ -181,13 +189,12 @@ async function fetchEastmoneyKLines(
   period: PeriodType,
   source: QuoteSource,
 ): Promise<StockKLineResponse> {
-  const fqt = source.adjust === 'bfq' ? '0' : source.adjust === 'qfq' ? '1' : '2';
   const params = new URLSearchParams({
     secid: `${getMarketId(code)}.${code}`,
     fields1: 'f1,f2,f3,f4,f5,f6',
     fields2: 'f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61',
     klt: String(KLT[period]),
-    fqt,
+    fqt: '0',
     beg: DEFAULT_BEGIN[period],
     end: '20500101',
     _: String(Date.now()),
@@ -205,8 +212,79 @@ async function fetchEastmoneyKLines(
     name: payload.data.name,
     market: payload.data.market,
     sourceName: source.name,
+    sourceProvider: source.provider,
+    adjustment: source.adjust,
     points: payload.data.klines.map(parseEastmoneyKLine),
   };
+}
+
+function validateQuoteCandidate(candidate: StockKLineResponse, expectedCode: string) {
+  if (normalizeCode(candidate.code) !== expectedCode) {
+    throw new Error(`股票代码不一致：请求 ${expectedCode}，返回 ${candidate.code}`);
+  }
+  if (candidate.adjustment !== 'bfq') {
+    throw new Error('行情复权口径错误：当前版本只允许不复权数据');
+  }
+  if (!candidate.points.length) throw new Error('没有返回有效K线');
+
+  let previousDate = '';
+  candidate.points.forEach((point, index) => {
+    if (!isValidDate(point.date) || (previousDate && point.date <= previousDate)) {
+      throw new Error(`K线日期无效或未严格递增：第 ${index + 1} 条 ${point.date}`);
+    }
+    previousDate = point.date;
+
+    const prices = [point.open, point.close, point.high, point.low];
+    if (prices.some((value) => !Number.isFinite(value) || value <= 0)) {
+      throw new Error(`K线价格无效：${point.date}`);
+    }
+    if (point.high < Math.max(point.open, point.close, point.low) || point.low > Math.min(point.open, point.close, point.high)) {
+      throw new Error(`K线高低价关系无效：${point.date}`);
+    }
+    if (!Number.isFinite(point.volume) || point.volume < 0) {
+      throw new Error(`K线成交量无效：${point.date}`);
+    }
+  });
+}
+
+function validateQuoteConsistency(
+  candidate: StockKLineResponse,
+  referenceData: StockKLineResponse | null | undefined,
+) {
+  if (
+    !referenceData ||
+    referenceData.adjustment !== 'bfq' ||
+    normalizeCode(referenceData.code) !== normalizeCode(candidate.code)
+  ) {
+    return;
+  }
+
+  const referenceCloses = new Map(
+    referenceData.points
+      .filter((point) => Number.isFinite(point.close) && point.close > 0)
+      .map((point) => [point.date, point.close]),
+  );
+  const overlaps = candidate.points
+    .flatMap((point) => {
+      const referenceClose = referenceCloses.get(point.date);
+      return referenceClose === undefined ? [] : [{ date: point.date, close: point.close, referenceClose }];
+    })
+    .slice(-20);
+
+  const mismatch = overlaps.find(({ close, referenceClose }) =>
+    Math.abs(close - referenceClose) > Math.max(0.02, Math.abs(referenceClose) * 0.01),
+  );
+  if (mismatch) {
+    throw new Error(
+      `行情一致性校验失败：${mismatch.date} 新数据 ${mismatch.close.toFixed(2)}，已有不复权数据 ${mismatch.referenceClose.toFixed(2)}`,
+    );
+  }
+}
+
+function isValidDate(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
 }
 
 async function requestJson(url: string) {

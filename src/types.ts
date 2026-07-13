@@ -19,6 +19,8 @@ export interface StockKLineResponse {
   name: string;
   market: number;
   sourceName?: string;
+  sourceProvider?: 'tencent' | 'eastmoney';
+  adjustment?: 'bfq' | 'qfq' | 'hfq';
   points: KLinePoint[];
 }
 

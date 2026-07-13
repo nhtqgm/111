@@ -5,7 +5,11 @@ export {};
 declare global {
   interface Window {
     eastmoneyApi?: {
-      fetchKLines: (code: string, period: PeriodType) => Promise<StockKLineResponse>;
+      fetchKLines: (
+        code: string,
+        period: PeriodType,
+        options?: { referenceData?: StockKLineResponse | null },
+      ) => Promise<StockKLineResponse>;
     };
     appUpdateApi?: {
       getCurrentVersion: () => Promise<string>;
