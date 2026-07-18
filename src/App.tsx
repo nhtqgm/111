@@ -78,6 +78,7 @@ import {
   generatePredictionRows,
   hydratePredictionRows,
   normalizePredictionPoint,
+  selectPredictionRowsForInputTable,
 } from './utils/predictions';
 import { ALL_KLINE_PERIODS, refreshAllKLinePeriods } from './utils/periodRefresh';
 
@@ -473,7 +474,7 @@ export default function App() {
     [activeData, baseDate, inputMaWindow, period],
   );
   const predictionTableRows = useMemo(
-    () => projection.rows.filter((row) => inputHorizonDates.has(row.targetDate) || hasSavedPrediction(row)),
+    () => selectPredictionRowsForInputTable(projection.rows, inputHorizonDates),
     [inputHorizonDates, projection.rows],
   );
   const updateButtonText =
@@ -2156,12 +2157,6 @@ function normalizeDecimalInput(value: string) {
 
 function getPredictionInputValue(row: PredictionPoint, windowSize: MaWindow) {
   return row.predictedMaValues[String(windowSize)] ?? (windowSize === 40 ? row.predictedMa40 : '');
-}
-
-function hasSavedPrediction(row: PredictionPoint) {
-  return row.predictedMa40.trim() !== '' ||
-    Object.values(row.predictedMaValues).some((value) => value.trim() !== '') ||
-    row.note.trim() !== '';
 }
 
 function sameForecastSnapshot(

@@ -175,6 +175,17 @@ export function hydratePredictionRows(
   return [...historicalRows, ...hydratedRows].sort((left, right) => left.targetDate.localeCompare(right.targetDate));
 }
 
+/**
+ * The cloud workspace keeps historical rows for chart/history views, but the
+ * editable table should only show the current input horizon.
+ */
+export function selectPredictionRowsForInputTable<T extends { targetDate: string }>(
+  rows: T[],
+  horizonDates: ReadonlySet<string>,
+) {
+  return rows.filter((row) => horizonDates.has(row.targetDate));
+}
+
 export function normalizePredictionPoint(value: any): PredictionPoint {
   const predictedMa40 = String(value?.predictedMa40 ?? value?.predictedMaValues?.['40'] ?? '');
   const predictedMaValues = normalizePredictionValues(value?.predictedMaValues);

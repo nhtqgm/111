@@ -2,7 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import type { KLinePoint, PeriodType } from '../src/types.ts';
-import { generatePredictionRows, hydratePredictionRows } from '../src/utils/predictions.ts';
+import {
+  generatePredictionRows,
+  hydratePredictionRows,
+  selectPredictionRowsForInputTable,
+} from '../src/utils/predictions.ts';
 
 test('cloud-backed prediction rows retain the selected MA horizon for day, week, and month', () => {
   const cases: Array<{ period: PeriodType; baseDate: string; count: number }> = [
@@ -121,6 +125,22 @@ test('existing predictions stay bound to their dates when a new trading day is a
     rows.filter((row) => row.targetDate > '2026-07-13').map((row) => row.targetDate),
     ['2026-07-14', '2026-07-15', '2026-07-16'],
   );
+});
+
+test('the right input table hides historical rows while retaining them in the workspace', () => {
+  const rows = [
+    { targetDate: '2026-07-10', predictedMa40: '9.1500' },
+    { targetDate: '2026-07-20', predictedMa40: '9.0600' },
+    { targetDate: '2026-07-21', predictedMa40: '' },
+  ];
+
+  const tableRows = selectPredictionRowsForInputTable(
+    rows,
+    new Set(['2026-07-20', '2026-07-21']),
+  );
+
+  assert.deepEqual(tableRows.map((row) => row.targetDate), ['2026-07-20', '2026-07-21']);
+  assert.equal(rows.find((row) => row.targetDate === '2026-07-10')?.predictedMa40, '9.1500');
 });
 
 function point(date: string): KLinePoint {
