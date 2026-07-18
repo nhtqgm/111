@@ -4,6 +4,7 @@ import './styles.css';
 import { clearLegacyBrowserAppCache } from './utils/electronStorage';
 import { bootstrapChartViewportStorage } from './utils/chartViewport';
 import { bootstrapCloudPredictionOutboxStorage } from './utils/cloudOutbox';
+import { bootstrapCloudHistoryOutboxStorage } from './utils/cloudHistoryStorage';
 
 async function startApp() {
   const rootElement = document.getElementById('root') as HTMLElement;
@@ -16,6 +17,7 @@ async function startApp() {
     if (window.appStorageApi) {
       try {
         await bootstrapCloudPredictionOutboxStorage();
+        await bootstrapCloudHistoryOutboxStorage();
         await bootstrapChartViewportStorage();
       } catch (error) {
         // Damaged local UI/outbox storage must never block cloud predictions.
@@ -24,6 +26,7 @@ async function startApp() {
     } else {
       clearLegacyBrowserAppCache();
       await bootstrapCloudPredictionOutboxStorage();
+      await bootstrapCloudHistoryOutboxStorage();
     }
   } catch (error) {
     console.error('Application data restore failed:', error);

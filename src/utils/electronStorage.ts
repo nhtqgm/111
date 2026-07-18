@@ -25,12 +25,19 @@ export function clearLegacyBrowserAppCache(storage: StorageLike = localStorage) 
   const keysToRemove: string[] = [];
   for (let index = 0; index < storage.length; index += 1) {
     const key = storage.key(index);
-    if (key && isAppStorageKey(key)) keysToRemove.push(key);
+    if (key && isAppStorageKey(key) && !isDurableCloudOutboxKey(key)) keysToRemove.push(key);
   }
 
   keysToRemove.forEach((key) => storage.removeItem(key));
   storage.setItem(BROWSER_LEGACY_CACHE_RESET_KEY, new Date().toISOString());
   return keysToRemove.length;
+}
+
+function isDurableCloudOutboxKey(key: string) {
+  return (
+    /^prediction-ma:cloud-outbox:[^:]+:v1$/.test(key) ||
+    /^prediction-ma:cloud-history-outbox:[^:]+:v1$/.test(key)
+  );
 }
 
 export function collectAppStorage(storage: StorageLike) {

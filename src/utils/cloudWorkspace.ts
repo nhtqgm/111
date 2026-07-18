@@ -1,5 +1,6 @@
 import type { PeriodType, PredictionPoint } from '../types.ts';
-import type { ForecastHistorySnapshot } from './forecastHistory.ts';
+import { mergeForecastHistory, type ForecastHistorySnapshot } from './forecastHistory.ts';
+import type { CloudHistoryOutboxSnapshot } from './cloudHistoryStorage.ts';
 
 export interface CloudWorkspaceScope {
   stockCode: string;
@@ -176,6 +177,82 @@ export function setWorkspaceForecastHistory(
   } satisfies CloudWorkspace;
 }
 
+export function applyForecastHistoryOutboxToWorkspace(
+  workspace: CloudWorkspace,
+  outbox: CloudHistoryOutboxSnapshot,
+) {
+  const grouped = new Map<string, ForecastHistorySnapshot[]>();
+  outbox.snapshots.forEach((snapshot) => {
+    const key = toScopeKey(snapshot.stockCode, snapshot.period);
+    grouped.set(key, [...(grouped.get(key) ?? []), snapshot]);
+  });
+
+  let next = workspace;
+  grouped.forEach((snapshots, key) => {
+    const [stockCode, period] = key.split(':') as [string, PeriodType];
+    next = setWorkspaceForecastHistory(
+      next,
+      { stockCode, period },
+      mergeForecastHistory(next.forecastHistory[key] ?? [], snapshots),
+    );
+  });
+  return next;
+}
+
+/**
+ * History is append/replace-by-snapshot-id data. A concurrent local save must
+ * never discard a snapshot that arrived from another device.
+ */
+export function mergeCloudForecastHistory(
+  local: Record<string, ForecastHistorySnapshot[]>,
+  remote: Record<string, ForecastHistorySnapshot[]>,
+) {
+  const merged: Record<string, ForecastHistorySnapshot[]> = {};
+  const keys = new Set([...Object.keys(local), ...Object.keys(remote)]);
+  keys.forEach((key) => {
+    merged[key] = mergeForecastHistory(remote[key] ?? [], local[key] ?? []);
+  });
+  return merged;
+}
+
+export function assertCloudWorkspaceContainsLocalData(
+  local: CloudWorkspace,
+  remote: CloudWorkspace,
+) {
+  const remoteById = new Map(
+    Object.values(remote.forecastHistory).flat().map((snapshot) => [snapshot.id, snapshot]),
+  );
+  const missingHistory = Object.values(local.forecastHistory)
+    .flat()
+    .filter((snapshot) => {
+      const persisted = remoteById.get(snapshot.id);
+      return !persisted || !sameForecastHistorySnapshot(snapshot, persisted);
+    });
+  if (missingHistory.length) {
+    throw new Error(`Cloud history verification failed: ${missingHistory.length} snapshot(s) were not persisted.`);
+  }
+
+  const remotePredictions = new Map<string, PredictionPoint>();
+  Object.entries(remote.predictions).forEach(([scopeKey, rows]) => {
+    rows.forEach((row) => remotePredictions.set(`${scopeKey}:${row.targetDate}`, row));
+  });
+  const missingPredictions = Object.entries(local.predictions).flatMap(([scopeKey, rows]) =>
+    rows.flatMap((row) => {
+      const persisted = remotePredictions.get(`${scopeKey}:${row.targetDate}`);
+      if (!persisted) {
+        return hasPredictionValue(row) ? [row] : [];
+      }
+      return hasAllPersistedPredictionValues(row, persisted) ? [] : [row];
+    }),
+  );
+  if (missingPredictions.length) {
+    throw new Error(`Cloud prediction verification failed: ${missingPredictions.length} row(s) were not persisted.`);
+  }
+  return true;
+}
+
+export const assertCloudWorkspaceContainsLocalHistory = assertCloudWorkspaceContainsLocalData;
+
 /**
  * Replays only this device's edits onto the newest cloud copy. Predictions are
  * compared per stock/period scope, so an untouched scope from another device
@@ -197,12 +274,7 @@ export function mergeCloudWorkspaceAfterRevisionConflict({
     remote.predictions,
     clonePredictionRows,
   );
-  merged.forecastHistory = mergeWorkspaceScopes(
-    baseline.forecastHistory,
-    local.forecastHistory,
-    remote.forecastHistory,
-    cloneForecastHistory,
-  );
+  merged.forecastHistory = mergeCloudForecastHistory(local.forecastHistory, remote.forecastHistory);
   merged.workspace = {
     stockCode: local.workspace.stockCode === baseline.workspace.stockCode
       ? remote.workspace.stockCode
@@ -497,6 +569,43 @@ function parseWorkspaceSelection(raw: string, current: CloudWorkspace['workspace
 
 function clonePredictionRows(rows: PredictionPoint[]) {
   return rows.map((row) => ({ ...row, predictedMaValues: { ...row.predictedMaValues } }));
+}
+
+function hasPredictionValue(row: PredictionPoint) {
+  return row.note.trim() !== '' || [5, 10, 20, 40, 60].some(
+    (windowSize) => predictionValue(row, windowSize) !== '',
+  );
+}
+
+function hasAllPersistedPredictionValues(local: PredictionPoint, remote: PredictionPoint) {
+  if (local.note.trim() !== '' && remote.note.trim() !== local.note.trim()) return false;
+  return [5, 10, 20, 40, 60].every((windowSize) => {
+    const localValue = predictionValue(local, windowSize);
+    return localValue === '' || predictionValue(remote, windowSize) === localValue;
+  });
+}
+
+function predictionValue(row: PredictionPoint, windowSize: number) {
+  const storedValue = row.predictedMaValues[String(windowSize)]?.trim() ?? '';
+  return (storedValue || (windowSize === 40 ? row.predictedMa40 : '')).trim();
+}
+
+function sameForecastHistorySnapshot(
+  left: ForecastHistorySnapshot,
+  right: ForecastHistorySnapshot,
+) {
+  return (
+    left.stockCode === right.stockCode &&
+    left.period === right.period &&
+    left.targetDate === right.targetDate &&
+    left.inputMaWindow === right.inputMaWindow &&
+    left.inputMaValue === right.inputMaValue &&
+    left.predictedClose === right.predictedClose &&
+    left.note === right.note &&
+    ([5, 10, 20, 40, 60] as const).every(
+      (windowSize) => left.predictedMaValues[windowSize] === right.predictedMaValues[windowSize],
+    )
+  );
 }
 
 function cloneForecastHistory(rows: ForecastHistorySnapshot[]) {

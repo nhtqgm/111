@@ -170,6 +170,21 @@ export function filterForecastHistorySnapshots(
 }
 
 /**
+ * The review table keeps every completed forecast, while the chart only uses
+ * the most recent completed period as the bridge into the current forecast.
+ */
+export function selectLatestChartForecastHistoryRows(rows: ForecastHistoryRow[]) {
+  const completedRows = rows.filter((row) => row.actualClose !== null);
+  const latestDate = completedRows.reduce<string | null>((latest, row) => {
+    const rowDate = row.actualDate ?? row.targetDate;
+    return latest === null || rowDate > latest ? rowDate : latest;
+  }, null);
+
+  if (latestDate === null) return [];
+  return completedRows.filter((row) => (row.actualDate ?? row.targetDate) === latestDate);
+}
+
+/**
  * Old full backups contain the prediction input and the K-line cache that was
  * available when it was exported. Rebuild snapshots from those two records,
  * rather than from newer online prices.

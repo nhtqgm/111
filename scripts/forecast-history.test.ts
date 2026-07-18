@@ -142,6 +142,32 @@ test('history display excludes snapshots from another K-line period', async () =
   assert.equal(activeWeekSnapshots[0].inputMaValue, 8.17);
 });
 
+test('chart shows only the latest completed forecast while retaining all history rows', async () => {
+  const { selectLatestChartForecastHistoryRows } = await loadHistoryModule();
+  const rows = [
+    { ...createRow('2026-07-16'), actualDate: '2026-07-16', actualClose: 4.4 },
+    { ...createRow('2026-07-17'), actualDate: '2026-07-17', actualClose: 4.5 },
+    { ...createRow('2026-07-18'), actualDate: null, actualClose: null },
+  ] as any[];
+
+  const chartRows = selectLatestChartForecastHistoryRows(rows);
+
+  assert.equal(rows.length, 3);
+  assert.deepEqual(chartRows.map((row: { targetDate: string }) => row.targetDate), ['2026-07-17']);
+});
+
+test('chart latest-history selection uses the real K-line date for week and month rows', async () => {
+  const { selectLatestChartForecastHistoryRows } = await loadHistoryModule();
+  const rows = [
+    { ...createRow('2026-06-30'), actualDate: '2026-06-29', actualClose: 4.4 },
+    { ...createRow('2026-07-31'), actualDate: '2026-07-30', actualClose: 4.5 },
+  ] as any[];
+
+  const chartRows = selectLatestChartForecastHistoryRows(rows);
+
+  assert.deepEqual(chartRows.map((row: { actualDate: string }) => row.actualDate), ['2026-07-30']);
+});
+
 test('the saved week MA40 input recreates the July 10 forecast close as 9.20', async () => {
   const { createForecastHistorySnapshotsForAllInputs } = await loadHistoryModule();
   const backup = JSON.parse(

@@ -26,11 +26,14 @@ import {
   filterForecastHistorySnapshots,
   getHistoryCaptureRows,
   mergeForecastHistory,
+  selectLatestChartForecastHistoryRows,
   shouldRepairFrozenForecastSnapshot,
   type ForecastHistorySnapshot,
   type ForecastHistoryRow,
 } from './utils/forecastHistory';
 import {
+  applyForecastHistoryOutboxToWorkspace,
+  assertCloudWorkspaceContainsLocalData,
   createEmptyCloudWorkspace,
   createFullWorkspaceBackup,
   createCloudWorkspaceFromLegacyBackup,
@@ -54,6 +57,12 @@ import {
   saveCloudPredictionOutbox,
   type CloudPredictionOutboxSnapshot,
 } from './utils/cloudOutbox';
+import {
+  createForecastHistorySaveQueue,
+  loadCloudHistoryOutbox,
+  saveCloudHistoryOutbox,
+  type CloudHistoryOutboxSnapshot,
+} from './utils/cloudHistoryStorage';
 import { formatNumber, summarizeForecastHistory } from './utils/metrics';
 import { mergeLineValuePoints, mergeLineValuePointsPreservingEarlier } from './utils/linePoints';
 import {
@@ -158,7 +167,13 @@ export default function App() {
   const [cloudSyncState, setCloudSyncState] = useState<CloudSyncState>(
     isCloudSyncConfigured() ? 'signed-out' : 'unconfigured',
   );
-  const [cloudSaveState, setCloudSaveState] = useState<CloudPredictionSaveState>({
+  const [cloudPredictionSaveState, setCloudPredictionSaveState] = useState<CloudPredictionSaveState>({
+    status: 'idle',
+    pendingCount: 0,
+    lastSavedAt: null,
+    error: null,
+  });
+  const [cloudHistorySaveState, setCloudHistorySaveState] = useState<CloudPredictionSaveState>({
     status: 'idle',
     pendingCount: 0,
     lastSavedAt: null,
@@ -176,6 +191,7 @@ export default function App() {
   const cloudWorkspaceRef = useRef<CloudWorkspace | null>(null);
   const cloudWorkspaceBaselineRef = useRef<CloudWorkspace | null>(null);
   const cloudPredictionSaveQueueRef = useRef<ReturnType<typeof createPredictionValueSaveQueue> | null>(null);
+  const cloudHistorySaveQueueRef = useRef<ReturnType<typeof createForecastHistorySaveQueue> | null>(null);
   const cloudSessionGenerationRef = useRef(0);
   const marketDataRef = useRef(new Map<string, StockKLineResponse>());
   const activeScope = resolveActiveWorkspaceScope({
@@ -187,6 +203,7 @@ export default function App() {
     predictionPeriod: predictionScope?.period ?? null,
   });
   const activeData = activeScope ? data : null;
+  const cloudSaveState = combineCloudSaveStates(cloudPredictionSaveState, cloudHistorySaveState);
   const persistedChartViewport =
     activeData && activeScope
       ? loadChartViewport(activeData.code, activeScope.period)
@@ -313,13 +330,27 @@ export default function App() {
         await saveMyPredictionValues(mutations);
       },
       persist: (snapshot) => saveCloudPredictionOutbox(user.id, snapshot),
-      onStateChange: setCloudSaveState,
+      onStateChange: setCloudPredictionSaveState,
+    });
+  }
+
+  function createHistorySaveQueueForUser(user: User, outbox: CloudHistoryOutboxSnapshot) {
+    return createForecastHistorySaveQueue({
+      accountId: user.id,
+      initialSnapshots: outbox.snapshots,
+      initialLastSavedAt: outbox.lastSavedAt,
+      save: async (snapshots) => {
+        await upsertMyForecastHistory(snapshots);
+      },
+      persist: (snapshot) => saveCloudHistoryOutbox(user.id, snapshot),
+      onStateChange: setCloudHistorySaveState,
     });
   }
 
   async function loadCloudWorkspace(user: User, quiet = false) {
     const generation = ++cloudSessionGenerationRef.current;
     cloudPredictionSaveQueueRef.current?.switchAccount('');
+    cloudHistorySaveQueueRef.current?.switchAccount('');
     cloudWorkspaceRef.current = null;
     cloudWorkspaceBaselineRef.current = null;
     setCloudWorkspace(null);
@@ -339,7 +370,11 @@ export default function App() {
 
       const remoteWorkspace = record?.payload ?? createEmptyCloudWorkspace();
       const outbox = loadCloudPredictionOutbox(user.id);
-      const workspace = applyPredictionValueMutationsToWorkspace(remoteWorkspace, outbox.mutations);
+      const historyOutbox = loadCloudHistoryOutbox(user.id);
+      const workspace = applyForecastHistoryOutboxToWorkspace(
+        applyPredictionValueMutationsToWorkspace(remoteWorkspace, outbox.mutations),
+        historyOutbox,
+      );
       const revision = record?.revision ?? 0;
 
       cloudWorkspaceRef.current = workspace;
@@ -353,6 +388,7 @@ export default function App() {
       setBaseDate(workspace.workspace.baseDate || todayDate);
       setCloudStockCodes(collectCloudStockCodes(workspace));
       cloudPredictionSaveQueueRef.current = createPredictionSaveQueueForUser(user, outbox);
+      cloudHistorySaveQueueRef.current = createHistorySaveQueueForUser(user, historyOutbox);
       setCloudSyncState('ready');
       if (!quiet) showToast('Cloud workspace loaded.', 'success');
       void refreshHistoricalData({
@@ -422,6 +458,10 @@ export default function App() {
     () => completedHistoryRows.filter((row) => row.inputMaWindow === inputMaWindow),
     [completedHistoryRows, inputMaWindow],
   );
+  const chartHistoryRows = useMemo(
+    () => selectLatestChartForecastHistoryRows(visibleHistoryRows),
+    [visibleHistoryRows],
+  );
   const summary = useMemo(() => summarizeForecastHistory(visibleHistoryRows), [visibleHistoryRows]);
   const latest = activeData?.points.at(-1);
   const unit = periods.find((item) => item.value === period)?.unit ?? '';
@@ -471,7 +511,7 @@ export default function App() {
           label: `预测MA${windowSize}`,
           color: lineColors[windowSize],
           rows: mergeLineValuePointsPreservingEarlier(
-            visibleHistoryRows.map((row) => ({
+            chartHistoryRows.map((row) => ({
               targetDate: row.actualDate ?? row.targetDate,
               value: row.predictedMaValues[windowSize],
             })),
@@ -488,7 +528,7 @@ export default function App() {
         })),
     ],
     [
-      visibleHistoryRows,
+      chartHistoryRows,
       projection.actualLines,
       projection.predictedLines,
       showActualMaLines,
@@ -502,7 +542,7 @@ export default function App() {
         color: '#ffe600',
         borderColor: '#20251f',
         rows: mergeLineValuePoints(
-          visibleHistoryRows.map((row) => ({
+          chartHistoryRows.map((row) => ({
             targetDate: row.actualDate ?? row.targetDate,
             value: row.predictedClose,
           })),
@@ -516,7 +556,7 @@ export default function App() {
         z: 120,
       },
     ],
-    [projection.rows, visibleHistoryRows],
+    [chartHistoryRows, projection.rows],
   );
 
   function capturePredictionHistory(
@@ -574,12 +614,26 @@ export default function App() {
         merged,
       ),
     );
-    void upsertMyForecastHistory(incoming).catch((error: unknown) => {
-      showToast(error instanceof Error ? `复盘记录保存失败：${error.message}` : '复盘记录保存失败', 'warning');
-    });
+    scheduleCloudHistorySave(incoming);
     if (workspacePeriod === period && normalizeStockCode(sourceData.code) === normalizeStockCode(queryCode)) {
       setForecastHistory(merged);
     }
+  }
+
+  function scheduleCloudHistorySave(snapshots: ForecastHistorySnapshot[]) {
+    if (!snapshots.length) return;
+    const queue = cloudHistorySaveQueueRef.current;
+    if (queue) {
+      queue.schedule(snapshots);
+      return;
+    }
+
+    if (!cloudUser) return;
+    const pending = loadCloudHistoryOutbox(cloudUser.id);
+    saveCloudHistoryOutbox(cloudUser.id, {
+      snapshots: mergeForecastHistory(pending.snapshots, snapshots),
+      lastSavedAt: pending.lastSavedAt,
+    });
   }
 
   function captureCachedPredictionHistory(workspacePeriod: PeriodType, targetStockCode: string) {
@@ -777,18 +831,31 @@ export default function App() {
     setCloudSyncState('syncing');
     try {
       await cloudPredictionSaveQueueRef.current?.flush();
+      const predictionSaveError = cloudPredictionSaveQueueRef.current?.getLastError();
+      if (predictionSaveError) throw predictionSaveError;
+      await cloudHistorySaveQueueRef.current?.flush();
+      const historySaveError = cloudHistorySaveQueueRef.current?.getLastError();
+      if (historySaveError) throw historySaveError;
       const workspace = cloudWorkspaceRef.current;
       if (!workspace) throw new Error('云端工作区尚未加载完成');
-      await replaceMyCloudWorkspace(workspace);
+      await saveMyWorkspacePreferences(
+        workspace.workspace.stockCode,
+        workspace.workspace.period,
+        workspace.workspace.baseDate,
+      );
+      const verifiedRecord = await loadMyCloudWorkspace();
+      if (!verifiedRecord) throw new Error('云端保存后无法读取工作区');
+      assertCloudWorkspaceContainsLocalData(workspace, verifiedRecord.payload);
       cloudPredictionSaveQueueRef.current?.markAllSaved();
-      cloudWorkspaceBaselineRef.current = workspace;
+      cloudHistorySaveQueueRef.current?.markAllSaved();
+      cloudWorkspaceBaselineRef.current = verifiedRecord.payload;
       setCloudSyncState('ready');
       const predictionScopes = Object.keys(workspace.predictions).length;
       const historyCount = Object.values(workspace.forecastHistory).reduce(
         (total, rows) => total + rows.length,
         0,
       );
-      showToast(`已覆盖保存全部预测：${predictionScopes} 个范围，${historyCount} 条历史记录`, 'success');
+      showToast(`已安全保存到云端：${predictionScopes} 个范围，${historyCount} 条历史记录已校验`, 'success');
     } catch (err) {
       setCloudSyncState('error');
       showToast(err instanceof Error ? `向云端保存失败：${err.message}` : '向云端保存失败', 'warning');
@@ -836,6 +903,7 @@ export default function App() {
       await signOutOfCloud();
       cloudSessionGenerationRef.current += 1;
       cloudPredictionSaveQueueRef.current?.switchAccount('');
+      cloudHistorySaveQueueRef.current?.switchAccount('');
       cloudWorkspaceRef.current = null;
       cloudWorkspaceBaselineRef.current = null;
       setCloudUser(null);
@@ -854,7 +922,8 @@ export default function App() {
       setCloudEmail('');
       setCloudPassword('');
       marketDataRef.current.clear();
-      setCloudSaveState({ status: 'idle', pendingCount: 0, lastSavedAt: null, error: null });
+      setCloudPredictionSaveState({ status: 'idle', pendingCount: 0, lastSavedAt: null, error: null });
+      setCloudHistorySaveState({ status: 'idle', pendingCount: 0, lastSavedAt: null, error: null });
       setCloudSyncState('signed-out');
       setIsCloudAccountOpen(false);
       showToast('已退出云端账户。本地预测仍保留在本机。', 'info');
@@ -1189,11 +1258,17 @@ export default function App() {
       }
       if (!cloudUser) throw new Error('Please sign in before importing data.');
       await cloudPredictionSaveQueueRef.current?.flush();
+      await cloudHistorySaveQueueRef.current?.flush();
       cloudPredictionSaveQueueRef.current?.switchAccount('');
+      cloudHistorySaveQueueRef.current?.switchAccount('');
       predictionQueueDetached = true;
       await replaceMyCloudWorkspace(workspace);
       saveCloudPredictionOutbox(cloudUser.id, {
         mutations: [],
+        lastSavedAt: new Date().toISOString(),
+      });
+      saveCloudHistoryOutbox(cloudUser.id, {
+        snapshots: [],
         lastSavedAt: new Date().toISOString(),
       });
       await loadCloudWorkspace(cloudUser);
@@ -1209,6 +1284,10 @@ export default function App() {
         cloudPredictionSaveQueueRef.current = createPredictionSaveQueueForUser(
           cloudUser,
           loadCloudPredictionOutbox(cloudUser.id),
+        );
+        cloudHistorySaveQueueRef.current = createHistorySaveQueueForUser(
+          cloudUser,
+          loadCloudHistoryOutbox(cloudUser.id),
         );
       }
       showToast(err instanceof Error ? err.message : 'Import failed.', 'warning');
@@ -1532,7 +1611,10 @@ export default function App() {
                     <button
                       type="button"
                       className="cloud-save-retry"
-                      onClick={() => cloudPredictionSaveQueueRef.current?.retry()}
+                      onClick={() => {
+                        cloudPredictionSaveQueueRef.current?.retry();
+                        cloudHistorySaveQueueRef.current?.retry();
+                      }}
                     >
                       重试
                     </button>
@@ -2131,6 +2213,34 @@ function formatCloudSaveError(error: Error | null) {
   }
   if (!message) return '向云端保存失败，请稍后重试。';
   return `向云端保存失败：${message}`;
+}
+
+function combineCloudSaveStates(
+  prediction: CloudPredictionSaveState,
+  history: CloudPredictionSaveState,
+): CloudPredictionSaveState {
+  const states = [prediction, history];
+  const errorState = states.find((state) => state.status === 'error');
+  const status: CloudPredictionSaveState['status'] = errorState
+    ? 'error'
+    : states.some((state) => state.status === 'saving')
+      ? 'saving'
+      : states.some((state) => state.status === 'pending')
+        ? 'pending'
+        : states.some((state) => state.status === 'saved')
+          ? 'saved'
+          : 'idle';
+  const lastSavedAt = states
+    .map((state) => state.lastSavedAt)
+    .filter((value): value is string => value !== null)
+    .sort()
+    .at(-1) ?? null;
+  return {
+    status,
+    pendingCount: states.reduce((total, state) => total + state.pendingCount, 0),
+    lastSavedAt,
+    error: errorState?.error ?? null,
+  };
 }
 
 function formatCloudSaveState(state: CloudPredictionSaveState) {

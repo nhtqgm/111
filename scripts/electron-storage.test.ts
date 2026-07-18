@@ -60,6 +60,8 @@ test('browser legacy cleanup removes prior app caches once without touching auth
   storage.setItem('prediction-ma:000166:day:v2', 'old prediction');
   storage.setItem('prediction-ma40:kline-cache:000166:day:v1', 'old kline');
   storage.setItem('prediction-ma:forecast-history:000166:day:v1', 'old history');
+  storage.setItem('prediction-ma:cloud-outbox:user-a:v1', 'pending prediction');
+  storage.setItem('prediction-ma:cloud-history-outbox:user-a:v1', 'pending history');
   storage.setItem('sb-supabase-auth-token', 'keep signed in');
   storage.setItem('unrelated', 'keep');
 
@@ -67,6 +69,8 @@ test('browser legacy cleanup removes prior app caches once without touching auth
   assert.equal(storage.getItem('prediction-ma:000166:day:v2'), null);
   assert.equal(storage.getItem('prediction-ma40:kline-cache:000166:day:v1'), null);
   assert.equal(storage.getItem('prediction-ma:forecast-history:000166:day:v1'), null);
+  assert.equal(storage.getItem('prediction-ma:cloud-outbox:user-a:v1'), 'pending prediction');
+  assert.equal(storage.getItem('prediction-ma:cloud-history-outbox:user-a:v1'), 'pending history');
   assert.equal(storage.getItem('sb-supabase-auth-token'), 'keep signed in');
   assert.equal(storage.getItem('unrelated'), 'keep');
 

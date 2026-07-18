@@ -26,8 +26,14 @@ test('every signed-in account gets a stock selector from its workspace code even
   assert.match(appSource, /setCloudStockCodes\(collectCloudStockCodes\(next\)\)/);
 });
 
-test('explicit cloud save replaces the remote prediction snapshot instead of flushing appended events', () => {
-  assert.match(appSource, /replaceCloudPredictionEvents\(cloudUser, snapshotEvents\)/);
-  assert.doesNotMatch(appSource, /const uploaded = await flushCloudOutbox\(cloudUser\)/);
-  assert.match(supabaseSource, /\.rpc\('replace_prediction_events'/);
+test('manual cloud save flushes durable prediction and history queues and verifies the readback', () => {
+  const activeSave = appSource.slice(
+    appSource.lastIndexOf('  async function saveCurrentWorkspaceToCloud()'),
+    appSource.indexOf('  async function submitCloudAccount'),
+  );
+  assert.match(activeSave, /cloudPredictionSaveQueueRef\.current\?\.flush\(\)/);
+  assert.match(activeSave, /cloudHistorySaveQueueRef\.current\?\.flush\(\)/);
+  assert.match(activeSave, /assertCloudWorkspaceContainsLocalData\(workspace, verifiedRecord\.payload\)/);
+  assert.doesNotMatch(activeSave, /replaceMyCloudWorkspace\(/);
+  assert.match(supabaseSource, /\.rpc\('save_my_prediction_values'/);
 });

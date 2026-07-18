@@ -4,11 +4,15 @@ import test from 'node:test';
 
 import type { PredictionPoint } from '../src/types.ts';
 import {
+  applyForecastHistoryOutboxToWorkspace,
+  assertCloudWorkspaceContainsLocalData,
   createCloudWorkspaceFromLegacyBackup,
   createEmptyCloudWorkspace,
   createWorkspaceSaveQueue,
   getWorkspacePredictions,
+  mergeCloudForecastHistory,
   mergeCloudWorkspaceAfterRevisionConflict,
+  setWorkspaceForecastHistory,
   setWorkspacePredictions,
 } from '../src/utils/cloudWorkspace.ts';
 
@@ -88,6 +92,45 @@ test('revision conflict merge retains remote forecast history when local history
   assert.deepEqual(merged.forecastHistory, remote.forecastHistory);
 });
 
+test('cloud history merge keeps local and remote snapshots from the same scope', () => {
+  const localHistory = { '000166:month': [historySnapshot('2026-07-17')] };
+  const remoteHistory = { '000166:month': [historySnapshot('2026-07-16')] };
+
+  const merged = mergeCloudForecastHistory(localHistory, remoteHistory);
+
+  assert.deepEqual(
+    merged['000166:month'].map((snapshot) => snapshot.targetDate),
+    ['2026-07-16', '2026-07-17'],
+  );
+});
+
+test('pending history outbox is merged into the full cloud workspace without changing other history', () => {
+  let workspace = createEmptyCloudWorkspace();
+  workspace = setWorkspaceForecastHistory(workspace, scope, [historySnapshot('2026-07-16')]);
+
+  const restored = applyForecastHistoryOutboxToWorkspace(workspace, {
+    snapshots: [historySnapshot('2026-07-17')],
+    lastSavedAt: null,
+  });
+
+  assert.deepEqual(
+    restored.forecastHistory['000166:month'].map((snapshot) => snapshot.targetDate),
+    ['2026-07-16', '2026-07-17'],
+  );
+});
+
+test('cloud save verification accepts a complete remote copy and rejects missing history', () => {
+  let local = createEmptyCloudWorkspace();
+  local = setWorkspacePredictions(local, scope, predictionRows('4.8300'));
+  local = setWorkspaceForecastHistory(local, scope, [historySnapshot('2026-07-17')]);
+
+  assert.equal(assertCloudWorkspaceContainsLocalData(local, local), true);
+  assert.throws(
+    () => assertCloudWorkspaceContainsLocalData(local, setWorkspacePredictions(createEmptyCloudWorkspace(), scope, predictionRows('4.8300'))),
+    /Cloud history verification failed/,
+  );
+});
+
 test('save queue coalesces rapid changes and never sends an old account payload after switching accounts', async () => {
   const sent: Array<{ accountId: string; value: string }> = [];
   const queue = createWorkspaceSaveQueue({
@@ -148,4 +191,20 @@ function predictionRows(value: string): PredictionPoint[] {
       note: '',
     },
   ];
+}
+
+function historySnapshot(targetDate: string) {
+  return {
+    schema: 'gupiao-forecast-history/v1' as const,
+    id: `000166:month:${targetDate}:MA40`,
+    stockCode: '000166',
+    period: 'month' as const,
+    targetDate,
+    inputMaWindow: 40 as const,
+    inputMaValue: 4.83,
+    predictedClose: 4.9,
+    predictedMaValues: { 5: 4.8, 10: 4.8, 20: 4.8, 40: 4.83, 60: 4.8 },
+    note: '',
+    savedAt: `${targetDate}T10:00:00.000Z`,
+  };
 }

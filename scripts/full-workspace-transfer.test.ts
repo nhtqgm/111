@@ -44,14 +44,25 @@ test('full export preserves every stock, period, prediction and forecast history
   assert.equal(restored.forecastHistory['688571:day'][0].predictedClose, 9.17);
 });
 
-test('manual cloud save and import both use atomic full-workspace replacement', () => {
+test('manual cloud save preserves history while explicit import keeps atomic replacement', () => {
   const appSource = fs.readFileSync('src/App.tsx', 'utf8');
   const supabaseSource = fs.readFileSync('src/utils/supabase.ts', 'utf8');
   const sqlSource = fs.readFileSync('supabase/20260711_replace_prediction_workspace.sql', 'utf8');
+  const manualSaveSource = appSource.slice(
+    appSource.lastIndexOf('  async function saveCurrentWorkspaceToCloud()'),
+    appSource.indexOf('  async function submitCloudAccount'),
+  );
+  const importSource = appSource.slice(
+    appSource.indexOf('  async function importPredictions'),
+    appSource.indexOf('  function renderPredictionTable'),
+  );
 
   assert.match(supabaseSource, /replaceMyCloudWorkspace/);
   assert.match(supabaseSource, /rpc\('replace_my_prediction_workspace'/);
-  assert.ok((appSource.match(/replaceMyCloudWorkspace\(/g) ?? []).length >= 2);
+  assert.doesNotMatch(manualSaveSource, /replaceMyCloudWorkspace\(/);
+  assert.match(manualSaveSource, /cloudHistorySaveQueueRef\.current\?\.flush\(\)/);
+  assert.match(manualSaveSource, /assertCloudWorkspaceContainsLocalData\(workspace, verifiedRecord\.payload\)/);
+  assert.match(importSource, /replaceMyCloudWorkspace\(workspace\)/);
   assert.match(sqlSource, /delete from public\.user_prediction_values/i);
   assert.match(sqlSource, /delete from public\.user_forecast_history/i);
   assert.match(sqlSource, /insert into public\.user_prediction_values/i);
