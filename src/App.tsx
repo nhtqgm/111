@@ -81,6 +81,13 @@ import {
   selectPredictionRowsForInputTable,
 } from './utils/predictions';
 import { ALL_KLINE_PERIODS, refreshAllKLinePeriods } from './utils/periodRefresh';
+import {
+  getDueAStockRefreshEvent,
+  isAStockRefreshEventFresh,
+  MARKET_AUTO_REFRESH_CHECK_MS,
+  shouldAttemptAStockRefresh,
+  type AStockRefreshPhase,
+} from './utils/marketAutoRefresh';
 
 const periods: Array<{ value: PeriodType; label: string; unit: string }> = [
   { value: 'day', label: '日K', unit: '日' },
@@ -135,6 +142,12 @@ interface UpdateState {
 }
 
 type CloudSyncState = 'unconfigured' | 'signed-out' | 'ready' | 'syncing' | 'error';
+
+interface MarketRefreshResult {
+  successfulPeriods: PeriodType[];
+  failedPeriods: PeriodType[];
+  lastCompletedDates: Partial<Record<PeriodType, string | null>>;
+}
 
 export default function App() {
   const [stockCode, setStockCode] = useState('000166');
@@ -195,6 +208,30 @@ export default function App() {
   const cloudHistorySaveQueueRef = useRef<ReturnType<typeof createForecastHistorySaveQueue> | null>(null);
   const cloudSessionGenerationRef = useRef(0);
   const marketDataRef = useRef(new Map<string, StockKLineResponse>());
+  const marketRefreshInFlightRef = useRef<{
+    requestKey: string;
+    promise: Promise<MarketRefreshResult>;
+  } | null>(null);
+  const autoRefreshCompletedEventsRef = useRef(new Map<string, string>());
+  const autoRefreshLastAttemptsRef = useRef(
+    new Map<string, { eventId: string; at: number }>(),
+  );
+  const selectedMarketScopeRef = useRef({ stockCode: normalizeStockCode(queryCode), period });
+  const automaticMarketRefreshRunnerRef = useRef(
+    (_phase: AStockRefreshPhase): Promise<MarketRefreshResult> =>
+      Promise.resolve({
+        successfulPeriods: [],
+        failedPeriods: [...ALL_KLINE_PERIODS],
+        lastCompletedDates: {},
+      }),
+  );
+  selectedMarketScopeRef.current = { stockCode: normalizeStockCode(queryCode), period };
+  automaticMarketRefreshRunnerRef.current = (phase) =>
+    refreshHistoricalData({
+      targetStockCode: queryCode,
+      targetPeriod: period,
+      trigger: phase,
+    });
   const activeScope = resolveActiveWorkspaceScope({
     dataStockCode: data?.code,
     dataPeriod,
@@ -235,6 +272,66 @@ export default function App() {
 
     return () => window.clearTimeout(timer);
   }, []);
+
+  useEffect(() => {
+    if (!cloudUser || !cloudWorkspace) return;
+
+    let cancelled = false;
+
+    const checkMarketSession = async () => {
+      const event = getDueAStockRefreshEvent();
+      if (!event || cancelled) return;
+      const requestedStockCode = normalizeStockCode(queryCode);
+      if (requestedStockCode.length !== 6) return;
+      if (
+        !shouldAttemptAStockRefresh(
+          event,
+          autoRefreshCompletedEventsRef.current.get(requestedStockCode) ?? null,
+          autoRefreshLastAttemptsRef.current.get(requestedStockCode) ?? null,
+        )
+      ) {
+        return;
+      }
+
+      autoRefreshLastAttemptsRef.current.set(requestedStockCode, {
+        eventId: event.id,
+        at: Date.now(),
+      });
+      const result = await automaticMarketRefreshRunnerRef.current(event.phase);
+      if (cancelled) return;
+
+      const allPeriodsSucceeded =
+        result.successfulPeriods.length === ALL_KLINE_PERIODS.length &&
+        result.failedPeriods.length === 0;
+      const closeDataIsFresh = isAStockRefreshEventFresh(event, result.lastCompletedDates.day);
+
+      if (allPeriodsSucceeded && !closeDataIsFresh && event.phase === 'close') {
+        showToast('收盘最终K线尚未返回，系统将在稍后自动重试', 'warning');
+      }
+
+      if (allPeriodsSucceeded && closeDataIsFresh) {
+        autoRefreshCompletedEventsRef.current.set(requestedStockCode, event.id);
+        autoRefreshLastAttemptsRef.current.delete(requestedStockCode);
+      }
+    };
+
+    void checkMarketSession();
+    const timer = window.setInterval(() => void checkMarketSession(), MARKET_AUTO_REFRESH_CHECK_MS);
+    const onFocus = () => void checkMarketSession();
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') void checkMarketSession();
+    };
+
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [cloudUser?.id, Boolean(cloudWorkspace), period, queryCode]);
 
   useEffect(() => {
     if (!cloudWorkspace) return;
@@ -392,10 +489,12 @@ export default function App() {
       cloudHistorySaveQueueRef.current = createHistorySaveQueueForUser(user, historyOutbox);
       setCloudSyncState('ready');
       if (!quiet) showToast('Cloud workspace loaded.', 'success');
+      const dueEvent = getDueAStockRefreshEvent();
       void refreshHistoricalData({
         targetStockCode: workspace.workspace.stockCode,
         targetPeriod: workspace.workspace.period,
         skipCurrentCapture: true,
+        trigger: dueEvent?.phase ?? 'startup',
       });
     } catch (err) {
       if (generation !== cloudSessionGenerationRef.current) return;
@@ -1055,15 +1154,43 @@ export default function App() {
     window.open(updateState.downloadUrl, '_blank', 'noopener,noreferrer');
   }
 
-  async function refreshHistoricalData({
+  async function refreshHistoricalData(options: {
+    targetStockCode?: string;
+    targetPeriod?: PeriodType;
+    skipCurrentCapture?: boolean;
+    trigger?: 'manual' | 'startup' | AStockRefreshPhase;
+  } = {}): Promise<MarketRefreshResult> {
+    const requestedStockCode = normalizeStockCode(options.targetStockCode ?? stockCode);
+    const requestKey = `${requestedStockCode}:${options.trigger ?? 'manual'}`;
+    const inFlight = marketRefreshInFlightRef.current;
+    if (inFlight) {
+      if (inFlight.requestKey === requestKey) return inFlight.promise;
+      await inFlight.promise;
+      return refreshHistoricalData(options);
+    }
+
+    const task = performHistoricalDataRefresh(options);
+    marketRefreshInFlightRef.current = { requestKey, promise: task };
+    try {
+      return await task;
+    } finally {
+      if (marketRefreshInFlightRef.current?.promise === task) {
+        marketRefreshInFlightRef.current = null;
+      }
+    }
+  }
+
+  async function performHistoricalDataRefresh({
     targetStockCode = stockCode,
     targetPeriod = period,
     skipCurrentCapture = false,
+    trigger = 'manual',
   }: {
     targetStockCode?: string;
     targetPeriod?: PeriodType;
     skipCurrentCapture?: boolean;
-  } = {}) {
+    trigger?: 'manual' | 'startup' | AStockRefreshPhase;
+  } = {}): Promise<MarketRefreshResult> {
     const requestedStockCode = normalizeStockCode(targetStockCode);
     if (!skipCurrentCapture && activeData && activeScope) {
       capturePredictionHistory(predictions, activeData, activeScope.period, baseDate);
@@ -1073,7 +1200,13 @@ export default function App() {
     );
     setIsLoading(true);
     setError('');
-    showToast('正在联网更新日K、周K、月K历史收盘价...', 'info');
+    const refreshMessage =
+      trigger === 'open'
+        ? 'A股开盘，正在自动更新日K、周K、月K...'
+        : trigger === 'close'
+          ? 'A股收盘，正在自动更新日K、周K、月K...'
+          : '正在联网更新日K、周K、月K历史收盘价...';
+    showToast(refreshMessage, 'info');
 
     try {
       const results = await refreshAllKLinePeriods((workspacePeriod) =>
@@ -1102,7 +1235,12 @@ export default function App() {
         }
       });
 
-      if (active) {
+      const selectedScope = selectedMarketScopeRef.current;
+      if (
+        active &&
+        selectedScope.stockCode === requestedStockCode &&
+        selectedScope.period === targetPeriod
+      ) {
         setData(active.completed.data);
         setDataPeriod(targetPeriod);
         setBaseDate(active.completed.lastCompletedDate ?? todayDate);
@@ -1124,10 +1262,26 @@ export default function App() {
       } else if (!successful.length) {
         setError('日K、周K、月K联网更新均失败，请检查网络后重试');
       }
+
+      return {
+        successfulPeriods: successful.map(({ period: successfulPeriod }) => successfulPeriod),
+        failedPeriods: failed.map(({ period: failedPeriod }) => failedPeriod),
+        lastCompletedDates: Object.fromEntries(
+          successful.map(({ period: successfulPeriod, completed }) => [
+            successfulPeriod,
+            completed.lastCompletedDate,
+          ]),
+        ),
+      };
     } catch (err) {
       const message = err instanceof Error ? err.message : '联网更新失败';
       setError(`联网更新异常：${message}`);
       showToast('联网更新异常，继续使用本地缓存', 'warning');
+      return {
+        successfulPeriods: [],
+        failedPeriods: [...ALL_KLINE_PERIODS],
+        lastCompletedDates: {},
+      };
     } finally {
       setIsLoading(false);
     }
