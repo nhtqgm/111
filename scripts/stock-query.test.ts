@@ -33,25 +33,40 @@ test('manual market refresh uses the typed-code query path and supports Enter', 
   );
 });
 
+test('selecting a previous cloud stock immediately reloads that stock instead of showing an empty scope', () => {
+  const queryStart = appSource.indexOf('async function queryStockCode');
+  const selectStart = appSource.lastIndexOf('function selectCloudStockCode', queryStart);
+  const selectSource = appSource.slice(selectStart, queryStart);
+
+  assert.match(selectSource, /void queryStockCode\(code\)/);
+  assert.match(appSource.slice(queryStart), /async function queryStockCode\(code = stockCode\)/);
+});
+
 test('cloud schema accepts any valid six-digit stock code without a stock master dependency', () => {
   assert.match(normalizedSchema, /stock_code text not null check \(stock_code ~ '\^\\d\{6\}\$'\)/);
   assert.doesNotMatch(normalizedSchema, /stock_code[^\n]+references\s+public\./i);
 });
 
-test('a successful new-stock query is remembered before later workspace updates', () => {
+test('every new-stock query is registered before market loading and receives the full canonical list', () => {
+  const queryStart = appSource.indexOf('async function queryStockCode');
+  const periodStart = appSource.indexOf('function selectKLinePeriod');
+  const querySource = appSource.slice(queryStart, periodStart);
+  const rememberIndex = querySource.indexOf('await rememberMyStockCode(requestedStockCode)');
+  const refreshIndex = querySource.indexOf('await refreshHistoricalData({');
+
+  assert.ok(rememberIndex >= 0 && refreshIndex > rememberIndex);
+  assert.match(querySource, /setCloudStockCodes\(canonicalStockCodes\)/);
+  assert.match(querySource, /saveMyWorkspacePreferences\(requestedStockCode, period, selectedBaseDate\)/);
+  assert.doesNotMatch(querySource, /mergeStockCodeLists/);
+});
+
+test('a stale earlier query cannot overwrite the latest selected workspace', () => {
   const queryStart = appSource.indexOf('async function queryStockCode');
   const periodStart = appSource.indexOf('function selectKLinePeriod');
   const querySource = appSource.slice(queryStart, periodStart);
 
-  assert.match(querySource, /if \(!result\.successfulPeriods\.length \|\| !cloudUser\) return;/);
-  assert.match(querySource, /Promise\.allSettled\(\[/);
-  assert.match(querySource, /saveMyWorkspacePreferences\(requestedStockCode, period, selectedBaseDate\)/);
-  assert.match(querySource, /rememberMyStockCode\(requestedStockCode\)/);
-  assert.match(querySource, /const stockRegistrySaved = stockRegistryResult\.status === 'fulfilled'/);
-  assert.match(
-    querySource,
-    /if \(stockRegistrySaved\) \{[\s\S]+setCloudStockCodes\(\(current\) => mergeStockCodeLists\(current, \[requestedStockCode\]\)\)/,
-  );
+  assert.match(querySource, /const queryGeneration = \+\+stockQueryGenerationRef\.current/);
+  assert.match(querySource, /if \(queryGeneration !== stockQueryGenerationRef\.current\) return;/);
 });
 
 test('cloud workspace reload restores the full account stock registry from the database', () => {

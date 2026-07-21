@@ -90,7 +90,6 @@ import {
   shouldAttemptAStockRefresh,
   type AStockRefreshPhase,
 } from './utils/marketAutoRefresh';
-import { mergeStockCodeLists } from './utils/stockCodes';
 
 const periods: Array<{ value: PeriodType; label: string; unit: string }> = [
   { value: 'day', label: '日K', unit: '日' },
@@ -210,6 +209,7 @@ export default function App() {
   const cloudPredictionSaveQueueRef = useRef<ReturnType<typeof createPredictionValueSaveQueue> | null>(null);
   const cloudHistorySaveQueueRef = useRef<ReturnType<typeof createForecastHistorySaveQueue> | null>(null);
   const cloudSessionGenerationRef = useRef(0);
+  const stockQueryGenerationRef = useRef(0);
   const marketDataRef = useRef(new Map<string, StockKLineResponse>());
   const marketRefreshInFlightRef = useRef<{
     requestKey: string;
@@ -913,11 +913,12 @@ export default function App() {
 
   function selectCloudStockCode(code: string) {
     if (!code) return;
-    activateStockCode(code);
+    void queryStockCode(code);
   }
 
-  async function queryStockCode() {
-    const requestedStockCode = normalizeStockCode(stockCode);
+  async function queryStockCode(code = stockCode) {
+    const queryGeneration = ++stockQueryGenerationRef.current;
+    const requestedStockCode = normalizeStockCode(code);
     if (requestedStockCode.length !== 6) {
       setError('股票代码需要是6位数字');
       showToast('请输入完整的6位股票代码', 'warning');
@@ -925,13 +926,37 @@ export default function App() {
     }
 
     const scopeChanged = activateStockCode(requestedStockCode);
+    let registryError: unknown = null;
+    if (cloudUser) {
+      try {
+        const canonicalStockCodes = await rememberMyStockCode(requestedStockCode);
+        setCloudStockCodes(canonicalStockCodes);
+      } catch (err) {
+        registryError = err;
+      }
+    }
+
     const result = await refreshHistoricalData({
       targetStockCode: requestedStockCode,
       targetPeriod: period,
       skipCurrentCapture: scopeChanged,
       trigger: 'manual',
     });
-    if (!result.successfulPeriods.length || !cloudUser) return;
+    if (!result.successfulPeriods.length || !cloudUser) {
+      if (registryError) {
+        showToast(
+          registryError instanceof Error
+            ? `股票列表保存失败：${registryError.message}`
+            : '股票列表保存失败，请稍后重试',
+          'warning',
+        );
+      }
+      return;
+    }
+
+    // A slower earlier query may finish after the user has already selected
+    // another stock. It must never replace the latest workspace preference.
+    if (queryGeneration !== stockQueryGenerationRef.current) return;
 
     const selectedBaseDate = result.lastCompletedDates[period] ?? baseDate;
     updateCloudWorkspace((workspace) => ({
@@ -943,19 +968,25 @@ export default function App() {
       },
       updatedAt: new Date().toISOString(),
     }));
-    const cloudRegistryResults = await Promise.allSettled([
-      saveMyWorkspacePreferences(requestedStockCode, period, selectedBaseDate),
-      rememberMyStockCode(requestedStockCode),
-    ]);
-    const [preferenceResult, stockRegistryResult] = cloudRegistryResults;
-    const stockRegistrySaved = stockRegistryResult.status === 'fulfilled';
-    if (stockRegistrySaved) {
-      setCloudStockCodes((current) => mergeStockCodeLists(current, [requestedStockCode]));
+    let preferenceError: unknown = null;
+    try {
+      await saveMyWorkspacePreferences(requestedStockCode, period, selectedBaseDate);
+    } catch (err) {
+      preferenceError = err;
+    }
+    if (registryError) {
+      try {
+        const canonicalStockCodes = await rememberMyStockCode(requestedStockCode);
+        setCloudStockCodes(canonicalStockCodes);
+        registryError = null;
+      } catch (err) {
+        registryError = err;
+      }
     }
 
     const failedDatabaseWrites = [
-      preferenceResult.status === 'rejected' ? preferenceResult.reason : null,
-      stockRegistryResult.status === 'rejected' ? stockRegistryResult.reason : null,
+      preferenceError,
+      registryError,
     ].filter((reason) => reason !== null);
     if (failedDatabaseWrites.length) {
       const firstError = failedDatabaseWrites[0];

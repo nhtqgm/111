@@ -152,14 +152,7 @@ export async function loadMyStockCodes() {
   const api = requireCloudClient();
   const { data, error } = await api.rpc('get_my_stock_codes');
   if (error) throw error;
-
-  return [
-    ...new Set(
-      (Array.isArray(data) ? data : [])
-        .map((row) => (typeof row?.stock_code === 'string' ? row.stock_code : ''))
-        .filter((code) => /^\d{6}$/.test(code)),
-    ),
-  ].sort();
+  return normalizeStockCodeRows(data);
 }
 
 export async function rememberMyStockCode(stockCode: string) {
@@ -167,10 +160,25 @@ export async function rememberMyStockCode(stockCode: string) {
   if (normalizedCode.length !== 6) throw new Error('股票代码需要是6位数字');
 
   const api = requireCloudClient();
-  const { error } = await api.rpc('remember_my_stock_code', {
+  const { data, error } = await api.rpc('remember_and_get_my_stock_codes', {
     p_stock_code: normalizedCode,
   });
   if (error) throw error;
+  return normalizeStockCodeRows(data);
+}
+
+function normalizeStockCodeRows(data: unknown) {
+  return [
+    ...new Set(
+      (Array.isArray(data) ? data : [])
+        .map((row) =>
+          row && typeof row === 'object' && 'stock_code' in row && typeof row.stock_code === 'string'
+            ? row.stock_code
+            : '',
+        )
+        .filter((code) => /^\d{6}$/.test(code)),
+    ),
+  ].sort();
 }
 
 export async function upsertMyForecastHistory(snapshots: ForecastHistorySnapshot[]) {

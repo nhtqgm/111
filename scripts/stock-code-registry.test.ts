@@ -6,6 +6,10 @@ import { mergeStockCodeLists } from '../src/utils/stockCodes.ts';
 const appSource = fs.readFileSync('src/App.tsx', 'utf8');
 const supabaseSource = fs.readFileSync('src/utils/supabase.ts', 'utf8');
 const migrationSource = fs.readFileSync('supabase/20260721_account_stock_codes.sql', 'utf8');
+const atomicMigrationSource = fs.readFileSync(
+  'supabase/20260721_atomic_stock_code_registry.sql',
+  'utf8',
+);
 
 test('stock-code lists merge valid codes without duplicates', () => {
   assert.deepEqual(
@@ -41,14 +45,32 @@ test('database triggers register codes saved through predictions, history, prefe
   assert.match(migrationSource, /on conflict \(user_id, stock_code\) do update[\s\S]+last_opened_at = now\(\)/i);
 });
 
-test('frontend reads and remembers stock codes only through database RPCs', () => {
+test('one atomic database RPC remembers a code and returns the complete account list', () => {
+  assert.match(
+    atomicMigrationSource,
+    /function public\.remember_and_get_my_stock_codes\(p_stock_code text\)/i,
+  );
+  assert.match(atomicMigrationSource, /insert into public\.user_stock_codes \(user_id, stock_code\)/i);
+  assert.match(
+    atomicMigrationSource,
+    /on conflict on constraint user_stock_codes_pkey do update/i,
+  );
+  assert.match(atomicMigrationSource, /return query[\s\S]+where registry\.user_id = auth\.uid\(\)/i);
+  assert.match(
+    atomicMigrationSource,
+    /grant execute on function public\.remember_and_get_my_stock_codes\(text\) to authenticated/i,
+  );
+});
+
+test('frontend reads and remembers stock codes only through canonical database RPCs', () => {
   const stockCodeApiSource = supabaseSource.slice(
     supabaseSource.indexOf('export async function loadMyStockCodes'),
     supabaseSource.indexOf('export async function upsertMyForecastHistory'),
   );
 
   assert.match(stockCodeApiSource, /rpc\('get_my_stock_codes'\)/);
-  assert.match(stockCodeApiSource, /rpc\('remember_my_stock_code'/);
+  assert.match(stockCodeApiSource, /rpc\('remember_and_get_my_stock_codes'/);
+  assert.match(stockCodeApiSource, /return normalizeStockCodeRows\(data\)/);
   assert.doesNotMatch(stockCodeApiSource, /localStorage|user_metadata|updateUser/);
   assert.doesNotMatch(appSource, /stockCodeRegistry|loadStoredStockCodes|rememberStockCodes/);
 });
