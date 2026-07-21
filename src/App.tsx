@@ -881,8 +881,15 @@ export default function App() {
   }
 
   */
-  function selectCloudStockCode(code: string) {
-    if (!code) return;
+  function activateStockCode(code: string) {
+    const normalizedCode = normalizeStockCode(code);
+    if (normalizedCode.length !== 6) return false;
+
+    const currentCode = normalizeStockCode(queryCode);
+    selectedMarketScopeRef.current = { stockCode: normalizedCode, period };
+    setStockCode(normalizedCode);
+    if (normalizedCode === currentCode) return false;
+
     if (activeData && activeScope) {
       capturePredictionHistory(predictions, activeData, activeScope.period, baseDate);
     }
@@ -891,9 +898,33 @@ export default function App() {
     setPredictions([]);
     setPredictionScope(null);
     setForecastHistory([]);
+    setDetailTargetDate(null);
     setHasUnsavedChanges(false);
-    setStockCode(code);
-    setQueryCode(code);
+    setError('');
+    setQueryCode(normalizedCode);
+    return true;
+  }
+
+  function selectCloudStockCode(code: string) {
+    if (!code) return;
+    activateStockCode(code);
+  }
+
+  async function queryStockCode() {
+    const requestedStockCode = normalizeStockCode(stockCode);
+    if (requestedStockCode.length !== 6) {
+      setError('股票代码需要是6位数字');
+      showToast('请输入完整的6位股票代码', 'warning');
+      return;
+    }
+
+    const scopeChanged = activateStockCode(requestedStockCode);
+    await refreshHistoricalData({
+      targetStockCode: requestedStockCode,
+      targetPeriod: period,
+      skipCurrentCapture: scopeChanged,
+      trigger: 'manual',
+    });
   }
 
   function selectKLinePeriod(nextPeriod: PeriodType) {
@@ -1598,7 +1629,12 @@ export default function App() {
             value={stockCode}
             inputMode="numeric"
             maxLength={6}
-            onChange={(event) => setStockCode(event.target.value)}
+            onChange={(event) => setStockCode(event.target.value.replace(/\D/g, '').slice(0, 6))}
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter') return;
+              event.preventDefault();
+              void queryStockCode();
+            }}
           />
           {cloudStockCodes.length ? (
             <select
@@ -1616,7 +1652,7 @@ export default function App() {
               ))}
             </select>
           ) : null}
-          <button type="button" onClick={() => void refreshHistoricalData()} disabled={isLoading}>
+          <button type="button" onClick={() => void queryStockCode()} disabled={isLoading}>
             {isLoading ? '更新中' : '联网更新'}
           </button>
           <button
