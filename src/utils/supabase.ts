@@ -148,6 +148,31 @@ export async function saveMyWorkspacePreferences(
   if (error) throw error;
 }
 
+export async function loadMyStockCodes() {
+  const api = requireCloudClient();
+  const { data, error } = await api.rpc('get_my_stock_codes');
+  if (error) throw error;
+
+  return [
+    ...new Set(
+      (Array.isArray(data) ? data : [])
+        .map((row) => (typeof row?.stock_code === 'string' ? row.stock_code : ''))
+        .filter((code) => /^\d{6}$/.test(code)),
+    ),
+  ].sort();
+}
+
+export async function rememberMyStockCode(stockCode: string) {
+  const normalizedCode = stockCode.replace(/\D/g, '').slice(0, 6);
+  if (normalizedCode.length !== 6) throw new Error('股票代码需要是6位数字');
+
+  const api = requireCloudClient();
+  const { error } = await api.rpc('remember_my_stock_code', {
+    p_stock_code: normalizedCode,
+  });
+  if (error) throw error;
+}
+
 export async function upsertMyForecastHistory(snapshots: ForecastHistorySnapshot[]) {
   if (!snapshots.length) return;
   const api = requireCloudClient();

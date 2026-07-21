@@ -37,3 +37,25 @@ test('cloud schema accepts any valid six-digit stock code without a stock master
   assert.match(normalizedSchema, /stock_code text not null check \(stock_code ~ '\^\\d\{6\}\$'\)/);
   assert.doesNotMatch(normalizedSchema, /stock_code[^\n]+references\s+public\./i);
 });
+
+test('a successful new-stock query is remembered before later workspace updates', () => {
+  const queryStart = appSource.indexOf('async function queryStockCode');
+  const periodStart = appSource.indexOf('function selectKLinePeriod');
+  const querySource = appSource.slice(queryStart, periodStart);
+
+  assert.match(querySource, /if \(!result\.successfulPeriods\.length \|\| !cloudUser\) return;/);
+  assert.match(querySource, /Promise\.allSettled\(\[/);
+  assert.match(querySource, /saveMyWorkspacePreferences\(requestedStockCode, period, selectedBaseDate\)/);
+  assert.match(querySource, /rememberMyStockCode\(requestedStockCode\)/);
+  assert.match(querySource, /const stockRegistrySaved = stockRegistryResult\.status === 'fulfilled'/);
+  assert.match(
+    querySource,
+    /if \(stockRegistrySaved\) \{[\s\S]+setCloudStockCodes\(\(current\) => mergeStockCodeLists\(current, \[requestedStockCode\]\)\)/,
+  );
+});
+
+test('cloud workspace reload restores the full account stock registry from the database', () => {
+  assert.match(appSource, /loadMyStockCodes\(\)/);
+  assert.match(appSource, /setCloudStockCodes\(remoteStockCodes\)/);
+  assert.doesNotMatch(appSource, /collectCloudStockCodes|loadStoredStockCodes/);
+});

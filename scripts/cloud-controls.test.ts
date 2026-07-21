@@ -19,11 +19,11 @@ test('cloud-loaded stock codes are offered through a selector next to the stock 
   assert.match(appSource, /onChange=\{\(event\) => selectCloudStockCode\(event\.target\.value\)\}/);
 });
 
-test('every signed-in account gets a stock selector from its workspace code even before it has predictions', () => {
-  assert.match(appSource, /function collectCloudStockCodes\(workspace: CloudWorkspace\)/);
-  assert.match(appSource, /workspace\.workspace\.stockCode/);
-  assert.match(appSource, /setCloudStockCodes\(collectCloudStockCodes\(workspace\)\)/);
-  assert.match(appSource, /setCloudStockCodes\(collectCloudStockCodes\(next\)\)/);
+test('every signed-in account gets its stock selector from the database registry', () => {
+  assert.match(appSource, /loadMyStockCodes\(\)/);
+  assert.match(appSource, /setCloudStockCodes\(remoteStockCodes\)/);
+  assert.match(supabaseSource, /rpc\('get_my_stock_codes'\)/);
+  assert.doesNotMatch(appSource, /collectCloudStockCodes|loadStoredStockCodes|rememberStockCodes/);
 });
 
 test('manual cloud save flushes durable prediction and history queues and verifies the readback', () => {

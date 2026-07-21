@@ -11,7 +11,9 @@ import {
   getCloudProfile,
   getCloudUser,
   isCloudSyncConfigured,
+  loadMyStockCodes,
   loadMyCloudWorkspace,
+  rememberMyStockCode,
   replaceMyCloudWorkspace,
   saveMyPredictionValues,
   saveMyWorkspacePreferences,
@@ -88,6 +90,7 @@ import {
   shouldAttemptAStockRefresh,
   type AStockRefreshPhase,
 } from './utils/marketAutoRefresh';
+import { mergeStockCodeLists } from './utils/stockCodes';
 
 const periods: Array<{ value: PeriodType; label: string; unit: string }> = [
   { value: 'day', label: '日K', unit: '日' },
@@ -416,7 +419,6 @@ export default function App() {
     const next = transform(current);
     cloudWorkspaceRef.current = next;
     setCloudWorkspace(next);
-    setCloudStockCodes(collectCloudStockCodes(next));
   }
 
   function createPredictionSaveQueueForUser(user: User, outbox: CloudPredictionOutboxSnapshot) {
@@ -462,7 +464,11 @@ export default function App() {
     setCloudSyncState('syncing');
 
     try {
-      const [profile, record] = await Promise.all([getCloudProfile(), loadMyCloudWorkspace()]);
+      const [profile, record, remoteStockCodes] = await Promise.all([
+        getCloudProfile(),
+        loadMyCloudWorkspace(),
+        loadMyStockCodes(),
+      ]);
       if (generation !== cloudSessionGenerationRef.current) return;
       if (!profile || profile.userId !== user.id) throw new Error('Cloud account profile is unavailable.');
 
@@ -484,7 +490,7 @@ export default function App() {
       setQueryCode(workspace.workspace.stockCode);
       setPeriod(workspace.workspace.period);
       setBaseDate(workspace.workspace.baseDate || todayDate);
-      setCloudStockCodes(collectCloudStockCodes(workspace));
+      setCloudStockCodes(remoteStockCodes);
       cloudPredictionSaveQueueRef.current = createPredictionSaveQueueForUser(user, outbox);
       cloudHistorySaveQueueRef.current = createHistorySaveQueueForUser(user, historyOutbox);
       setCloudSyncState('ready');
@@ -919,12 +925,47 @@ export default function App() {
     }
 
     const scopeChanged = activateStockCode(requestedStockCode);
-    await refreshHistoricalData({
+    const result = await refreshHistoricalData({
       targetStockCode: requestedStockCode,
       targetPeriod: period,
       skipCurrentCapture: scopeChanged,
       trigger: 'manual',
     });
+    if (!result.successfulPeriods.length || !cloudUser) return;
+
+    const selectedBaseDate = result.lastCompletedDates[period] ?? baseDate;
+    updateCloudWorkspace((workspace) => ({
+      ...workspace,
+      workspace: {
+        stockCode: requestedStockCode,
+        period,
+        baseDate: selectedBaseDate,
+      },
+      updatedAt: new Date().toISOString(),
+    }));
+    const cloudRegistryResults = await Promise.allSettled([
+      saveMyWorkspacePreferences(requestedStockCode, period, selectedBaseDate),
+      rememberMyStockCode(requestedStockCode),
+    ]);
+    const [preferenceResult, stockRegistryResult] = cloudRegistryResults;
+    const stockRegistrySaved = stockRegistryResult.status === 'fulfilled';
+    if (stockRegistrySaved) {
+      setCloudStockCodes((current) => mergeStockCodeLists(current, [requestedStockCode]));
+    }
+
+    const failedDatabaseWrites = [
+      preferenceResult.status === 'rejected' ? preferenceResult.reason : null,
+      stockRegistryResult.status === 'rejected' ? stockRegistryResult.reason : null,
+    ].filter((reason) => reason !== null);
+    if (failedDatabaseWrites.length) {
+      const firstError = failedDatabaseWrites[0];
+      showToast(
+        firstError instanceof Error
+          ? `数据库保存失败：${firstError.message}`
+          : '数据库保存失败，请稍后重试',
+        'warning',
+      );
+    }
   }
 
   function selectKLinePeriod(nextPeriod: PeriodType) {
@@ -2315,16 +2356,6 @@ function isPeriodType(value: string): value is PeriodType {
 
 function marketScopeKey(stockCode: string, period: PeriodType) {
   return `${stockCode.replace(/\D/g, '').slice(0, 6)}:${period}`;
-}
-
-function collectCloudStockCodes(workspace: CloudWorkspace) {
-  return [
-    ...new Set([
-      workspace.workspace.stockCode,
-      ...Object.keys(workspace.predictions).map((key) => key.split(':')[0]),
-      ...Object.keys(workspace.forecastHistory).map((key) => key.split(':')[0]),
-    ].filter((code) => /^\d{6}$/.test(code))),
-  ].sort();
 }
 
 function formatDecimalInput(value: string) {

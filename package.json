@@ -10,7 +10,7 @@
     "test:storage": "node --test scripts/app-storage.test.cjs scripts/electron-storage.test.ts",
     "test:chart": "node --test scripts/chart-viewport.test.ts",
     "test:history": "node --test scripts/forecast-history.test.ts",
-    "test:refresh": "node --test scripts/period-refresh.test.ts scripts/stock-query.test.ts",
+    "test:refresh": "node --test scripts/period-refresh.test.ts scripts/stock-query.test.ts scripts/stock-code-registry.test.ts",
     "test:cloud": "node --test scripts/cloud-predictions.test.ts scripts/cloud-workspace.test.ts scripts/cloud-prediction-storage.test.ts",
     "verify:ma": "node scripts/verify-ma-periods.mjs",
     "preview": "vite preview --host 0.0.0.0",
