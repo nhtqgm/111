@@ -516,7 +516,7 @@ h2 {
 .chart-hint {
   position: absolute;
   right: 10px;
-  bottom: 32px; /* 避开 KLineChart 底部 slider（bottom 8 + height 18） */
+  bottom: 56px; /* 避开 X 轴日期标签与底部 slider（bottom 8 + height 18 + 标签区） */
   z-index: 5;
   padding: 3px 9px;
   border-radius: 999px;
@@ -525,6 +525,15 @@ h2 {
   font-size: 11px;
   font-weight: 700;
   pointer-events: none;
+  /* 展示 7 秒后淡出，不长期遮挡图表内容 */
+  animation: chart-hint-fade 0.6s ease 7s forwards;
+}
+
+@keyframes chart-hint-fade {
+  to {
+    opacity: 0;
+    visibility: hidden;
+  }
 }
 
 .empty-state {
