@@ -589,6 +589,24 @@ h2 {
   }
 }
 
+/* 数据滞后角标：常驻显示（不淡出），解释过去日期为何仍是预测菱形 */
+.chart-stale-hint {
+  position: absolute;
+  left: 10px;
+  bottom: 56px;
+  z-index: 5;
+  max-width: min(320px, 60%);
+  padding: 3px 9px;
+  border: 1px solid #a87935;
+  border-radius: 999px;
+  background: #fff6df;
+  color: #7a5a22;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.5;
+  pointer-events: none;
+}
+
 .empty-state {
   display: grid;
   gap: 10px;

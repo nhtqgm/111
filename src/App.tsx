@@ -84,6 +84,7 @@ import {
   selectPredictionRowsForInputTable,
 } from './utils/predictions';
 import { ALL_KLINE_PERIODS, refreshAllKLinePeriods } from './utils/periodRefresh';
+import { isAStockTradingDay } from './utils/aShareTradingCalendar';
 import {
   getDueAStockRefreshEvent,
   isAStockRefreshEventFresh,
@@ -116,6 +117,16 @@ const TOAST_DURATION = { info: 5000, success: 6000, warning: 12000 } as const;
 const STOCK_NAME_CACHE_KEY = 'stock-name-cache:v1';
 // 已提示过的"预测出结果"记录（设备本地、按账户分桶，避免重复提示与串号）。
 const FORECAST_RESULT_SEEN_KEY = 'forecast-result-seen:v1';
+
+// 现在应当已经收盘定稿的最近交易日（15:10 前当天收盘价未定稿，不计入）。
+// 用于检测本地行情数据是否落后于真实日历。
+function latestExpectedSettledTradingDay(now: Date) {
+  const cursor = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const closeFinalized = now.getHours() > 15 || (now.getHours() === 15 && now.getMinutes() >= 10);
+  if (!closeFinalized) cursor.setDate(cursor.getDate() - 1);
+  while (!isAStockTradingDay(cursor)) cursor.setDate(cursor.getDate() - 1);
+  return formatDate(cursor);
+}
 
 // 只有在此日期之后结算的结果才值得用"已收盘"的即时口吻播报；更早的按旧结果静默登记。
 function recentSettlementCutoff(period: PeriodType) {
@@ -854,6 +865,16 @@ export default function App() {
   const predictionTableRows = useMemo(
     () => selectPredictionRowsForInputTable(projection.rows, inputHorizonDates),
     [inputHorizonDates, projection.rows],
+  );
+  // 日线数据落后于真实日历时提醒用户：图上"过去日期还挂着预测菱形"是因为数据未更新。
+  // 周/月线在期中未收盘属正常状态，不做此判断。
+  const isMarketDataLagging = useMemo(
+    () =>
+      period === 'day' &&
+      Boolean(activeData) &&
+      Boolean(baseDate) &&
+      latestExpectedSettledTradingDay(new Date()) > baseDate,
+    [activeData, baseDate, period],
   );
   const updateButtonText =
     updateState.status === 'checking'
@@ -2308,6 +2329,11 @@ export default function App() {
           {activeData && activeScope && !isLoading ? (
             <div className="chart-hint" aria-hidden="true">
               滚轮缩放 · 拖动平移 · 点图后 ↑↓ 缩放 ←→ 平移
+            </div>
+          ) : null}
+          {activeData && activeScope && !isLoading && isMarketDataLagging ? (
+            <div className="chart-stale-hint" role="status">
+              行情数据截至 {baseDate}，之后日期的预测待联网更新后结算
             </div>
           ) : null}
         </div>
