@@ -933,14 +933,52 @@ h2 {
 }
 
 .derived-close-cell {
+  position: relative;
   min-height: 28px;
   display: inline-grid;
   place-items: center;
   border-radius: 6px;
-  border: 1px dashed #9d927f;
+  border: 1px solid #9d927f;
   background: #f6f1e8;
   color: #20251f;
   font-weight: 900;
+}
+
+/* 含未收盘周期预测成分的暂估值：虚线 + 角标，收盘后自动转为实线"已定"态 */
+.derived-close-cell.provisional {
+  border-style: dashed;
+  border-color: #a87935;
+  background: #fbf6ed;
+}
+
+.provisional-tag {
+  position: absolute;
+  top: -6px;
+  right: -4px;
+  padding: 0 4px;
+  border: 1px solid #a87935;
+  border-radius: 999px;
+  background: #fff7e0;
+  color: #8a5f22;
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 900;
+  line-height: 1.4;
+}
+
+.modal-hint {
+  margin: 8px 16px 0;
+  padding: 6px 10px;
+  border-left: 4px solid #c9beac;
+  background: #f2eadc;
+  color: #5f5747;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* 明细弹窗体内已有左右内边距，避免双重缩进 */
+.detail-section .modal-hint {
+  margin: 8px 0 0;
 }
 
 .detail-button {

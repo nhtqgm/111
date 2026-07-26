@@ -114,6 +114,8 @@ const TOAST_PRIORITY = { info: 0, success: 1, warning: 2 } as const;
 const TOAST_DURATION = { info: 5000, success: 6000, warning: 12000 } as const;
 // 名称是公开行情数据，只做本机缓存，不进云端数据库。
 const STOCK_NAME_CACHE_KEY = 'stock-name-cache:v1';
+// 已提示过的"预测出结果"记录（设备本地，避免重复提示）。
+const FORECAST_RESULT_SEEN_KEY = 'forecast-result-seen:v1';
 
 function loadStockNameCache(): Record<string, string> {
   try {
@@ -763,6 +765,48 @@ export default function App() {
     [visibleHistoryRows],
   );
   const summary = useMemo(() => summarizeForecastHistory(visibleHistoryRows), [visibleHistoryRows]);
+
+  useEffect(() => {
+    // 某期真实收盘回填后主动告知结果，并解释"暂估"值为何更新。
+    // 已看过的结果记录在本机；首次在新设备登录时只登记、不轰炸。
+    if (!completedHistoryRows.length) return;
+    let seen: Set<string>;
+    try {
+      seen = new Set(JSON.parse(localStorage.getItem(FORECAST_RESULT_SEEN_KEY) ?? '[]') as string[]);
+    } catch {
+      seen = new Set();
+    }
+    const fresh = completedHistoryRows.filter((row) => !seen.has(row.id));
+    if (!fresh.length) return;
+    const isFirstUseOnDevice = seen.size === 0;
+    fresh.forEach((row) => seen.add(row.id));
+    try {
+      localStorage.setItem(
+        FORECAST_RESULT_SEEN_KEY,
+        JSON.stringify(Array.from(seen).slice(-1000)),
+      );
+    } catch {
+      // 记录失败最多导致重复提示一次，不影响主流程
+    }
+    if (isFirstUseOnDevice) return;
+
+    const sorted = [...fresh].sort((a, b) =>
+      (a.actualDate ?? a.targetDate).localeCompare(b.actualDate ?? b.targetDate),
+    );
+    const latest =
+      [...sorted].reverse().find((row) => row.inputMaWindow === inputMaWindow) ?? sorted[sorted.length - 1];
+    if (latest.actualClose === null || latest.predictedClose === null) return;
+    const dateCount = new Set(sorted.map((row) => row.actualDate ?? row.targetDate)).size;
+    const pct =
+      latest.closeDiff !== null && latest.actualClose
+        ? `，偏差 ${formatSignedNumber(latest.closeDiff)}（${((latest.closeDiff / latest.actualClose) * 100).toFixed(2)}%）`
+        : '';
+    const extra = dateCount > 1 ? `等 ${dateCount} 期预测已出结果。` : '';
+    showToast(
+      `${latest.actualDate ?? latest.targetDate} 已收盘：真实收盘 ${formatNumber(latest.actualClose)}，你的预测 ${formatNumber(latest.predictedClose)}${pct}。${extra}表中"暂估"值已按真实价自动校正。`,
+      'success',
+    );
+  }, [completedHistoryRows, inputMaWindow]);
   const latest = activeData?.points.at(-1);
   const unit = periods.find((item) => item.value === period)?.unit ?? '';
   const inputHorizonDates = useMemo(
@@ -1857,7 +1901,12 @@ export default function App() {
         <div className="prediction-row table-head" style={predictionTableStyle} role="row">
           <span role="columnheader">目标周期</span>
           <span role="columnheader">预测MA{inputMaWindow}</span>
-          <span role="columnheader">反推收盘</span>
+          <span
+            role="columnheader"
+            title={`反推收盘 = 预测MA${inputMaWindow} × ${inputMaWindow} − 前 ${inputMaWindow - 1} 期收盘合计。带"暂估"标记的值含未收盘周期的预测成分，收盘后自动按真实价校正。`}
+          >
+            反推收盘
+          </span>
           <span className="num-cell" role="columnheader">真实收盘</span>
           <span role="columnheader">明细</span>
           {visibleMaWindows.map((windowSize) => (
@@ -1866,6 +1915,16 @@ export default function App() {
         </div>
         {predictionTableRows.map((row) => {
           const isFilled = getPredictionInputValue(row, inputMaWindow).trim() !== '';
+          const predictedInputs = row.calculation.reverse.previousValues.filter(
+            (item) => item.source === 'predicted',
+          ).length;
+          const isProvisional = row.derivedClose !== null && predictedInputs > 0;
+          const derivedTitle =
+            row.derivedClose === null
+              ? undefined
+              : isProvisional
+                ? `暂估值：参与反推的收盘价中有 ${predictedInputs} 期尚未收盘，暂用你的预测价计算；对应周期收盘后自动换成真实价，此值会相应更新。`
+                : '参与反推的收盘价均为真实值，此值不再随行情变动（除非修改预测MA）。';
           return (
             <div
               className={`prediction-row ${isFilled ? 'row-filled' : 'row-empty'}`}
@@ -1896,7 +1955,14 @@ export default function App() {
                   placeholder="0.0000"
                 />
               </div>
-              <span className="derived-close-cell" role="cell">{formatNumber(row.derivedClose)}</span>
+              <span
+                className={`derived-close-cell ${isProvisional ? 'provisional' : ''}`}
+                role="cell"
+                title={derivedTitle}
+              >
+                {formatNumber(row.derivedClose)}
+                {isProvisional ? <i className="provisional-tag" aria-hidden="true">暂估</i> : null}
+              </span>
               <span className="num-cell" role="cell">{formatNumber(row.actualClose)}</span>
               <span role="cell">
                 <button
@@ -2535,6 +2601,9 @@ function ForecastHistoryModal({
             关闭
           </button>
         </div>
+        <p className="modal-hint">
+          预测提交后即锁定：下表记录的是你当时的预测与真实结果的对照，不随行情变动。
+        </p>
         <div className="history-table" role="table" aria-label="历史预测与真实价格对比表">
           <div className="history-row history-head" role="row">
             <span role="columnheader">预测日期</span>
@@ -2633,6 +2702,11 @@ function CalculationDetailModal({
               <h3>前{inputMaWindow - 1}期参与反推的收盘价</h3>
               <span>{reverse.previousValues.length}条</span>
             </div>
+            {reverse.previousValues.some((item) => item.source === 'predicted') ? (
+              <p className="modal-hint">
+                标为"预测"的周期尚未收盘，先用你的预测价参与计算；对应周期收盘后自动替换为真实价，反推结果会相应更新。
+              </p>
+            ) : null}
             <ValueList values={reverse.previousValues} emptyText={reverse.reason ?? '暂无参与数据'} />
           </section>
 
