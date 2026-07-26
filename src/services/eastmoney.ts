@@ -36,7 +36,7 @@ interface FetchKLineOptions {
   referenceData?: StockKLineResponse | null;
 }
 
-function getMarketId(code: string) {
+export function getMarketId(code: string) {
   return code.startsWith('6') || code.startsWith('9') ? 1 : 0;
 }
 
@@ -287,7 +287,7 @@ function isValidDate(value: string) {
   return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
 }
 
-async function requestJson(url: string) {
+export async function requestJson(url: string) {
   if (Capacitor.isNativePlatform()) {
     const response = await CapacitorHttp.get({
       url,

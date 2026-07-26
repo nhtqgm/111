@@ -115,7 +115,7 @@ h2 {
 
 .stock-search {
   display: grid;
-  grid-template-columns: auto 120px 96px repeat(4, auto);
+  grid-template-columns: auto 150px 132px repeat(4, auto);
   align-items: center;
   gap: 6px;
   padding: 5px;
@@ -143,6 +143,59 @@ h2 {
   padding: 0 9px;
   background: #f7f4ee;
   color: #111611;
+}
+
+.stock-search-box {
+  position: relative;
+  min-width: 0;
+}
+
+.stock-suggest {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 60;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  min-width: 250px;
+  max-height: 320px;
+  overflow: auto;
+  border: 2px solid #2d342e;
+  border-radius: 8px;
+  background: #fffdf8;
+  color: #20251f;
+  box-shadow: 5px 5px 0 rgba(45, 52, 46, 0.55);
+}
+
+.stock-suggest li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.stock-suggest li.active {
+  background: #f2eadc;
+}
+
+.stock-suggest li b {
+  font-variant-numeric: tabular-nums;
+}
+
+.stock-suggest li span {
+  flex: 1 1 auto;
+  font-weight: 800;
+}
+
+.stock-suggest li small {
+  color: #746b5d;
+  font-size: 11px;
 }
 
 .stock-search select {
@@ -1515,5 +1568,9 @@ h2 {
   .stock-search input,
   .cloud-account-form input {
     font-size: 16px;
+  }
+
+  .stock-suggest li {
+    min-height: 44px;
   }
 }

@@ -5,6 +5,7 @@ import KLineChart, {
   type ChartPointSeries,
 } from './components/KLineChart';
 import { fetchKLines } from './services/eastmoney';
+import { fetchStockNames, searchStocks, type StockSuggestion } from './services/stockSearch';
 import type { PeriodType, PredictionPoint, StockKLineResponse } from './types';
 import { filterCompletedKLineData } from './utils/completedPeriods';
 import {
@@ -111,6 +112,30 @@ const lineColors: Record<MaWindow, string> = {
 };
 const TOAST_PRIORITY = { info: 0, success: 1, warning: 2 } as const;
 const TOAST_DURATION = { info: 5000, success: 6000, warning: 12000 } as const;
+// 名称是公开行情数据，只做本机缓存，不进云端数据库。
+const STOCK_NAME_CACHE_KEY = 'stock-name-cache:v1';
+
+function loadStockNameCache(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(STOCK_NAME_CACHE_KEY);
+    const parsed = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+    return Object.fromEntries(
+      Object.entries(parsed).filter(
+        ([code, name]) => /^\d{6}$/.test(code) && typeof name === 'string' && name,
+      ),
+    ) as Record<string, string>;
+  } catch {
+    return {};
+  }
+}
+
+function saveStockNameCache(names: Record<string, string>) {
+  try {
+    localStorage.setItem(STOCK_NAME_CACHE_KEY, JSON.stringify(names));
+  } catch {
+    // 缓存失败不影响主流程
+  }
+}
 
 function movePredictionFocus(current: HTMLInputElement, offset: number) {
   const table = current.closest('.prediction-table');
@@ -239,6 +264,12 @@ export default function App() {
     confirmLabel: string;
     onConfirm: () => void;
   } | null>(null);
+  const [stockNames, setStockNames] = useState<Record<string, string>>(loadStockNameCache);
+  const [searchCandidates, setSearchCandidates] = useState<StockSuggestion[]>([]);
+  const [searchActiveIndex, setSearchActiveIndex] = useState(0);
+  const searchTimerRef = useRef<number | null>(null);
+  const searchGenerationRef = useRef(0);
+  const nameResolveAttemptsRef = useRef(new Set<string>());
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const toastRef = useRef<{ message: string; type: 'info' | 'success' | 'warning' } | null>(null);
   const expandedDialogRef = useRef<HTMLElement | null>(null);
@@ -480,6 +511,101 @@ export default function App() {
     }
     prevSaveStatusRef.current = cloudSaveState.status;
   }, [cloudSaveState.status]);
+
+  useEffect(() => {
+    saveStockNameCache(stockNames);
+  }, [stockNames]);
+
+  useEffect(() => {
+    // 每个代码本次会话只尝试解析一次，避免接口不可用时反复重试
+    const missing = cloudStockCodes.filter(
+      (code) => !stockNames[code] && !nameResolveAttemptsRef.current.has(code),
+    );
+    if (!missing.length) return;
+    missing.forEach((code) => nameResolveAttemptsRef.current.add(code));
+    let cancelled = false;
+    void fetchStockNames(missing)
+      .then((resolved) => {
+        if (!cancelled && resolved.size) mergeStockNames(Array.from(resolved));
+      })
+      .catch(() => {
+        // 名称解析失败不影响主流程，下拉退回只显示代码
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [cloudStockCodes, stockNames]);
+
+  useEffect(() => {
+    if (data?.code && data.name) {
+      mergeStockNames([[normalizeStockCode(data.code), data.name]]);
+    }
+  }, [data]);
+
+  useEffect(
+    () => () => {
+      if (searchTimerRef.current !== null) window.clearTimeout(searchTimerRef.current);
+    },
+    [],
+  );
+
+  function mergeStockNames(entries: Array<[string, string]>) {
+    setStockNames((current) => {
+      const fresh = entries.filter(
+        ([code, name]) => /^\d{6}$/.test(code) && name && current[code] !== name,
+      );
+      if (!fresh.length) return current;
+      return { ...current, ...Object.fromEntries(fresh) };
+    });
+  }
+
+  function closeStockSearch() {
+    searchGenerationRef.current += 1;
+    if (searchTimerRef.current !== null) {
+      window.clearTimeout(searchTimerRef.current);
+      searchTimerRef.current = null;
+    }
+    setSearchCandidates([]);
+    setSearchActiveIndex(0);
+  }
+
+  function handleStockInputChange(value: string) {
+    setStockCode(value);
+    const trimmed = value.trim();
+    if (/^\d{6}$/.test(trimmed) || trimmed.length < 2) {
+      closeStockSearch();
+      return;
+    }
+    if (searchTimerRef.current !== null) window.clearTimeout(searchTimerRef.current);
+    searchTimerRef.current = window.setTimeout(() => {
+      searchTimerRef.current = null;
+      void runStockSearch(trimmed, false);
+    }, 300);
+  }
+
+  async function runStockSearch(keyword: string, autoSelectFirst: boolean) {
+    const generation = ++searchGenerationRef.current;
+    try {
+      const results = await searchStocks(keyword);
+      if (generation !== searchGenerationRef.current) return;
+      mergeStockNames(results.map((item) => [item.code, item.name] as [string, string]));
+      setSearchCandidates(results);
+      setSearchActiveIndex(0);
+      if (autoSelectFirst) {
+        if (results.length) selectSearchCandidate(results[0]);
+        else showToast('未找到匹配的股票，请检查名称或直接输入6位代码', 'warning');
+      }
+    } catch {
+      if (generation === searchGenerationRef.current && autoSelectFirst) {
+        showToast('股票搜索失败，请检查网络或直接输入6位代码', 'warning');
+      }
+    }
+  }
+
+  function selectSearchCandidate(candidate: StockSuggestion) {
+    closeStockSearch();
+    void queryStockCode(candidate.code);
+  }
 
   function updateCloudWorkspace(transform: (workspace: CloudWorkspace) => CloudWorkspace) {
     const current = cloudWorkspaceRef.current;
@@ -1843,21 +1969,76 @@ export default function App() {
           <h1>人工预测 MA{inputMaWindow} 走势</h1>
         </div>
         <div className="stock-search">
-          <label htmlFor="stockCode">股票代码</label>
-          <input
-            id="stockCode"
-            value={stockCode}
-            inputMode="numeric"
-            enterKeyHint="go"
-            maxLength={6}
-            onChange={(event) => setStockCode(event.target.value.replace(/\D/g, '').slice(0, 6))}
-            onFocus={(event) => event.currentTarget.select()}
-            onKeyDown={(event) => {
-              if (event.key !== 'Enter') return;
-              event.preventDefault();
-              void queryStockCode();
-            }}
-          />
+          <label htmlFor="stockCode">股票</label>
+          <div className="stock-search-box">
+            <input
+              id="stockCode"
+              value={stockCode}
+              enterKeyHint="go"
+              maxLength={20}
+              placeholder="代码 / 名称 / 拼音"
+              autoComplete="off"
+              role="combobox"
+              aria-expanded={searchCandidates.length > 0}
+              aria-autocomplete="list"
+              aria-controls="stock-suggest-list"
+              onChange={(event) => handleStockInputChange(event.target.value)}
+              onFocus={(event) => event.currentTarget.select()}
+              onBlur={() => window.setTimeout(closeStockSearch, 150)}
+              onKeyDown={(event) => {
+                if (searchCandidates.length) {
+                  if (event.key === 'ArrowDown') {
+                    event.preventDefault();
+                    setSearchActiveIndex((index) => (index + 1) % searchCandidates.length);
+                    return;
+                  }
+                  if (event.key === 'ArrowUp') {
+                    event.preventDefault();
+                    setSearchActiveIndex(
+                      (index) => (index - 1 + searchCandidates.length) % searchCandidates.length,
+                    );
+                    return;
+                  }
+                  if (event.key === 'Escape') {
+                    closeStockSearch();
+                    return;
+                  }
+                }
+                if (event.key !== 'Enter') return;
+                event.preventDefault();
+                const trimmed = stockCode.trim();
+                if (/^\d{6}$/.test(trimmed)) {
+                  closeStockSearch();
+                  void queryStockCode();
+                  return;
+                }
+                if (searchCandidates.length) {
+                  selectSearchCandidate(searchCandidates[searchActiveIndex] ?? searchCandidates[0]);
+                } else if (trimmed.length >= 2) {
+                  void runStockSearch(trimmed, true);
+                }
+              }}
+            />
+            {searchCandidates.length ? (
+              <ul className="stock-suggest" id="stock-suggest-list" role="listbox" aria-label="股票搜索候选">
+                {searchCandidates.map((candidate, index) => (
+                  <li
+                    key={candidate.code}
+                    role="option"
+                    aria-selected={index === searchActiveIndex}
+                    className={index === searchActiveIndex ? 'active' : ''}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => selectSearchCandidate(candidate)}
+                    onMouseEnter={() => setSearchActiveIndex(index)}
+                  >
+                    <b>{candidate.code}</b>
+                    <span>{candidate.name}</span>
+                    <small>{candidate.typeName}</small>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
           <select
             aria-label="云端预测股票代码"
             disabled={!cloudStockCodes.length}
@@ -1869,7 +2050,7 @@ export default function App() {
             </option>
             {cloudStockCodes.map((code) => (
               <option key={code} value={code}>
-                {code}
+                {stockNames[code] ? `${code} ${stockNames[code]}` : code}
               </option>
             ))}
           </select>
