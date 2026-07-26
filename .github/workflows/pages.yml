@@ -33,13 +33,6 @@ jobs:
           ref: 预览-方案回放整合版
           path: preview-site
 
-      - name: Checkout UI overhaul preview branch
-        uses: actions/checkout@v4
-        continue-on-error: true
-        with:
-          ref: 优化-界面体验
-          path: ui-preview-site
-
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
@@ -68,18 +61,6 @@ jobs:
             echo "Preview branch is not available; only publishing production root."
           fi
 
-      - name: Build UI overhaul preview if branch is available
-        run: |
-          if [ -f ui-preview-site/package.json ]; then
-            cd ui-preview-site
-            export VITE_SUPABASE_URL=https://svupnipcyekyvdhhpbec.supabase.co
-            export VITE_SUPABASE_ANON_KEY="${{ secrets.VITE_SUPABASE_ANON_KEY }}"
-            npm ci
-            npm run build
-          else
-            echo "UI overhaul branch is not available; skipping its preview."
-          fi
-
       - name: Compose Pages artifact
         run: |
           mkdir -p pages-site
@@ -87,10 +68,6 @@ jobs:
           if [ -d preview-site/dist ]; then
             mkdir -p pages-site/preview/codex-plan-replay-integrated-v1
             cp -R preview-site/dist/. pages-site/preview/codex-plan-replay-integrated-v1/
-          fi
-          if [ -d ui-preview-site/dist ]; then
-            mkdir -p pages-site/preview/ui
-            cp -R ui-preview-site/dist/. pages-site/preview/ui/
           fi
           touch pages-site/.nojekyll
           test -f pages-site/index.html
