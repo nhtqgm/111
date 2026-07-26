@@ -271,3 +271,42 @@ test('same-week in-period settlement is not marked as fallback', async () => {
   assert.equal(row.actualDate, '2026-07-09');
   assert.equal(row.settledByFallback, false);
 });
+
+test('a stamped snapshot survives merges against unstamped copies with newer savedAt', async () => {
+  const { createForecastHistorySnapshots, mergeForecastHistory } = await loadHistoryModule();
+  const base = createForecastHistorySnapshots('000166', 'day', 40, [createRow('2026-07-24')], '2026-07-24T08:00:00.000Z')[0];
+  const stamped = { ...base, settledAt: '2026-07-24', settledClose: 4.56, savedAt: '2026-07-24T08:00:00.000Z' };
+  const newerUnstamped = { ...base, predictedClose: 9.99, savedAt: '2026-07-25T08:00:00.000Z' };
+
+  const merged = mergeForecastHistory([stamped], [newerUnstamped]);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].settledAt, '2026-07-24');
+  assert.equal(merged[0].predictedClose, base.predictedClose);
+
+  const equalSavedAtStamp = { ...base, settledAt: '2026-07-24', settledClose: 4.56 };
+  const stampedWins = mergeForecastHistory([base], [equalSavedAtStamp]);
+  assert.equal(stampedWins.length, 1);
+  assert.equal(stampedWins[0].settledAt, '2026-07-24');
+});
+
+test('settled facts pin the displayed settlement when the K-line window slides or backfills', async () => {
+  const { buildForecastHistoryRows, createForecastHistorySnapshots } = await loadHistoryModule();
+  const base = createForecastHistorySnapshots('000166', 'day', 40, [createRow('2026-07-22')])[0];
+  const stamped = { ...base, settledAt: '2026-07-24', settledClose: 4.5 };
+
+  const slidOut = buildForecastHistoryRows([stamped], [makePoint('2026-07-24', 4.5), makePoint('2026-07-27', 4.6)]);
+  assert.equal(slidOut[0].actualDate, '2026-07-24');
+  assert.equal(slidOut[0].actualClose, 4.5);
+
+  const windowGone = buildForecastHistoryRows([stamped], [makePoint('2026-07-27', 4.6)]);
+  assert.equal(windowGone[0].actualDate, '2026-07-24');
+  assert.equal(windowGone[0].actualClose, 4.5);
+
+  const backfilled = buildForecastHistoryRows(
+    [stamped],
+    [makePoint('2026-07-22', 4.9), makePoint('2026-07-24', 4.5)],
+  );
+  assert.equal(backfilled[0].actualDate, '2026-07-24');
+  assert.equal(backfilled[0].actualClose, 4.5);
+  assert.equal(backfilled[0].settledByFallback, true);
+});

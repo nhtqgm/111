@@ -28,6 +28,11 @@ export interface ForecastHistorySnapshot {
    * 云端按 JSONB 整体存 payload，可选字段可安全往返；旧快照缺省视为未定格。
    */
   settledAt?: string;
+  /**
+   * 结算时的真实收盘价。展示层优先使用定格值，K线窗口滑动或数据回填
+   * 都不再改变已定格行的展示结果。
+   */
+  settledClose?: number;
 }
 
 export interface ForecastHistoryRow extends ForecastHistorySnapshot {
@@ -259,11 +264,18 @@ export function buildForecastHistoryRows(
   ) as Record<MaWindow, Map<string, number | null>>;
 
   return snapshots.map((snapshot) => {
-    const actual = findActualPoint(snapshot.targetDate, snapshot.period, points);
-    const actualClose = actual?.close ?? null;
+    // 已定格的快照优先使用定格时记录的结算日期与收盘价：
+    // K线窗口滑出（腾讯源固定回溯 800 根）或数据源回填目标日K线时，
+    // 已向用户播报过的结算结果不得消失或改写。
+    const hasSettledFacts = Boolean(snapshot.settledAt) && Number.isFinite(snapshot.settledClose);
+    const actual = hasSettledFacts
+      ? points.find((point) => point.date === snapshot.settledAt) ?? null
+      : findActualPoint(snapshot.targetDate, snapshot.period, points);
+    const actualDate = hasSettledFacts ? snapshot.settledAt ?? null : actual?.date ?? null;
+    const actualClose = hasSettledFacts ? snapshot.settledClose ?? null : actual?.close ?? null;
     return {
       ...snapshot,
-      actualDate: actual?.date ?? null,
+      actualDate,
       actualClose,
       actualMaValues: Object.fromEntries(
         MA_WINDOWS.map((windowSize) => [
@@ -272,8 +284,8 @@ export function buildForecastHistoryRows(
         ]),
       ) as Record<MaWindow, number | null>,
       closeDiff: actualClose === null ? null : snapshot.predictedClose - actualClose,
-      settledByFallback: actual
-        ? isFallbackSettlement(snapshot.targetDate, actual.date, snapshot.period)
+      settledByFallback: actualDate
+        ? isFallbackSettlement(snapshot.targetDate, actualDate, snapshot.period)
         : false,
     };
   });
@@ -317,6 +329,9 @@ function normalizeSnapshot(
     savedAt: typeof candidate.savedAt === 'string' ? candidate.savedAt : '',
     ...(typeof candidate.settledAt === 'string' && candidate.settledAt
       ? { settledAt: candidate.settledAt }
+      : {}),
+    ...(Number.isFinite(candidate.settledClose)
+      ? { settledClose: Number(candidate.settledClose) }
       : {}),
   };
 }
@@ -403,11 +418,26 @@ function normalizeMaValues(value: unknown) {
   ) as Record<MaWindow, number | null>;
 }
 
+/**
+ * 同 id 快照的胜出规则：带定格戳（settledAt）者永远优先——防止旧版本客户端
+ * 或时钟偏移设备的无戳副本覆盖已定格记录；同为带戳/无戳时 savedAt 新者胜
+ * （相等时取后写入者，保证补戳副本在同 savedAt 下也能落地）。
+ */
+export function prefersIncomingForecastSnapshot(
+  existing: ForecastHistorySnapshot,
+  incoming: ForecastHistorySnapshot,
+) {
+  const existingStamped = Boolean(existing.settledAt);
+  const incomingStamped = Boolean(incoming.settledAt);
+  if (existingStamped !== incomingStamped) return incomingStamped;
+  return incoming.savedAt >= existing.savedAt;
+}
+
 function deduplicate(snapshots: ForecastHistorySnapshot[]) {
   const byId = new Map<string, ForecastHistorySnapshot>();
   for (const snapshot of snapshots) {
     const existing = byId.get(snapshot.id);
-    if (!existing || snapshot.savedAt >= existing.savedAt) byId.set(snapshot.id, snapshot);
+    if (!existing || prefersIncomingForecastSnapshot(existing, snapshot)) byId.set(snapshot.id, snapshot);
   }
   return Array.from(byId.values()).sort(
     (left, right) => left.targetDate.localeCompare(right.targetDate) || left.id.localeCompare(right.id),
@@ -438,6 +468,26 @@ function findActualPoint(targetDate: string, period: PeriodType, points: KLinePo
   const hasEarlierPoint = points.some((point) => point.date < targetDate);
   if (!hasEarlierPoint) return null;
   return points.find((point) => point.date > targetDate) ?? null;
+}
+
+/**
+ * 同一展示日期上多行（顺延结算/日历漂移）的择优规则：
+ * 非顺延行 > 目标日与展示日一致的行 > savedAt 更新的行。
+ * 图表菱形与预测MA桥接必须用同一规则，否则同一天两处取值矛盾。
+ */
+export function pickCanonicalSettledRow(
+  previous: ForecastHistoryRow | undefined,
+  candidate: ForecastHistoryRow,
+  displayDate: string,
+) {
+  if (!previous) return candidate;
+  if (previous.settledByFallback !== candidate.settledByFallback) {
+    return candidate.settledByFallback ? previous : candidate;
+  }
+  const previousExact = previous.targetDate === displayDate;
+  const candidateExact = candidate.targetDate === displayDate;
+  if (previousExact !== candidateExact) return candidateExact ? candidate : previous;
+  return candidate.savedAt > previous.savedAt ? candidate : previous;
 }
 
 /** 结算K线是否落在目标周期之外（顺延结算） */

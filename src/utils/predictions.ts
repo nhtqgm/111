@@ -166,12 +166,16 @@ export function hydratePredictionRows(
     if (!saved) {
       // 日历表变更会让同一周/月重新生成不同的目标日。旧目标日行如果与当前地平线
       // 目标同周期且带有已填值，就把值迁移到新目标日，避免图上出现表格里改不了的孤儿预测。
-      const legacy = [...savedByDate.values()].find(
+      // 同周期有多条旧行时取目标日最大（最接近新目标、通常最后生成）的一条。
+      const candidates = [...savedByDate.values()].filter(
         (item) =>
           !horizonDates.has(item.targetDate) &&
           toPeriodKey(item.targetDate) === toPeriodKey(row.targetDate) &&
           hasAnyPredictionValue(item),
       );
+      const legacy = candidates.length
+        ? candidates.reduce((best, item) => (item.targetDate > best.targetDate ? item : best))
+        : undefined;
       if (legacy) {
         migratedDates.add(legacy.targetDate);
         saved = legacy;
@@ -198,6 +202,10 @@ function hasAnyPredictionValue(row: PredictionPoint) {
     row.predictedMa40.trim() !== '' ||
     Object.values(row.predictedMaValues).some((value) => value.trim() !== '')
   );
+}
+
+export function predictionPeriodKey(period: PeriodType) {
+  return createPredictionPeriodKey(period);
 }
 
 function createPredictionPeriodKey(period: PeriodType) {

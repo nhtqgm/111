@@ -206,3 +206,32 @@ test('a legacy same-week row is kept as history when the new horizon date alread
   assert.equal(rows.find((row) => row.targetDate === '2026-09-30')?.predictedMa40, '111.0');
   assert.equal(rows.find((row) => row.targetDate === '2026-10-02')?.predictedMa40, '112.0');
 });
+
+test('with several legacy same-week rows the migration picks the latest target date', () => {
+  const rows = hydratePredictionRows(
+    [
+      {
+        targetDate: '2026-10-01',
+        predictedMa40: '110.0',
+        predictedMaValues: { 40: '110.0' },
+        note: 'older drift',
+      },
+      {
+        targetDate: '2026-10-02',
+        predictedMa40: '112.0',
+        predictedMaValues: { 40: '112.0' },
+        note: 'newer drift',
+      },
+    ],
+    [point('2026-09-18')],
+    'week',
+    '2026-09-18',
+    2,
+  );
+
+  assert.equal(rows.find((row) => row.targetDate === '2026-09-30')?.predictedMa40, '112.0');
+  assert.deepEqual(
+    rows.filter((row) => row.targetDate.startsWith('2026-10')).map((row) => row.targetDate),
+    ['2026-10-01'],
+  );
+});

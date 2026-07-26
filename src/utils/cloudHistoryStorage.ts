@@ -1,6 +1,6 @@
 import type { CloudPredictionSaveState } from './cloudPredictionStorage.ts';
 import type { ElectronStorageApi, StorageLike } from './electronStorage.ts';
-import type { ForecastHistorySnapshot } from './forecastHistory.ts';
+import { prefersIncomingForecastSnapshot, type ForecastHistorySnapshot } from './forecastHistory.ts';
 
 const OUTBOX_SCHEMA = 'gupiao-cloud-history-outbox/v1';
 const OUTBOX_PREFIX = 'prediction-ma:cloud-history-outbox:';
@@ -278,7 +278,7 @@ function setNewestSnapshot(
   snapshot: ForecastHistorySnapshot,
 ) {
   const existing = values.get(id);
-  if (!existing || snapshot.savedAt >= existing.savedAt) {
+  if (!existing || prefersIncomingForecastSnapshot(existing, snapshot)) {
     values.set(id, cloneSnapshot(snapshot));
   }
 }
