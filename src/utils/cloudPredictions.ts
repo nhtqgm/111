@@ -109,7 +109,7 @@ export function parsePredictionEventsFromFullBackup(
 ) {
   const backup = value as BackupFile;
   if (backup?.schema !== 'gupiao-ma40-full-backup/v1' || !backup.storage) {
-    throw new Error('Backup is not a supported full data export.');
+    throw new Error('该文件不是本系统导出的备份文件');
   }
 
   const events: PredictionEvent[] = [];

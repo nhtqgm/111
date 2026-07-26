@@ -127,7 +127,7 @@ test('cloud save verification accepts a complete remote copy and rejects missing
   assert.equal(assertCloudWorkspaceContainsLocalData(local, local), true);
   assert.throws(
     () => assertCloudWorkspaceContainsLocalData(local, setWorkspacePredictions(createEmptyCloudWorkspace(), scope, predictionRows('4.8300'))),
-    /Cloud history verification failed/,
+    /云端历史校验失败/,
   );
 });
 

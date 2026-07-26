@@ -159,6 +159,7 @@ export default function KLineChart({
           .map((row) => [row.targetDate, row.value as number]),
       ),
     }));
+    const coarsePointer = window.matchMedia?.('(pointer: coarse)').matches ?? false;
 
     chart.setOption({
       backgroundColor: '#f7f4ee',
@@ -242,14 +243,17 @@ export default function KLineChart({
           id: 'keyboard-inside-zoom',
           type: 'inside',
           xAxisIndex: showVolume ? [0, 1] : [0],
+          // 触屏上把竖向滑动交还给页面滚动；横向拖动平移、双指捏合缩放不受影响
+          preventDefaultMouseMove: !coarsePointer,
           ...activeZoomRange,
         },
         {
           id: 'keyboard-slider-zoom',
           type: 'slider',
           xAxisIndex: showVolume ? [0, 1] : [0],
-          bottom: 8,
-          height: 18,
+          bottom: coarsePointer ? 4 : 8,
+          height: coarsePointer ? 30 : 18,
+          moveHandleSize: coarsePointer ? 14 : 7,
           ...activeZoomRange,
         },
       ],
@@ -271,10 +275,10 @@ export default function KLineChart({
                     : ['-', '-', '-', '-'];
                 }),
                 itemStyle: {
-                  color: '#b43d31',
-                  color0: '#1f8b74',
-                  borderColor: '#b43d31',
-                  borderColor0: '#1f8b74',
+                  color: '#a72d25',
+                  color0: '#14745f',
+                  borderColor: '#a72d25',
+                  borderColor0: '#14745f',
                 },
                 markLine: createBaseDateMarkLine(baseDate),
               },
@@ -352,8 +356,19 @@ export default function KLineChart({
                 type: 'bar',
                 xAxisIndex: 1,
                 yAxisIndex: 1,
-                data: xAxis.map((date) => pointByDate.get(date)?.volume ?? 0),
-                itemStyle: { color: '#9e9587' },
+                data: xAxis.map((date) => {
+                  const point = pointByDate.get(date);
+                  if (!point) return 0;
+                  return {
+                    value: point.volume,
+                    itemStyle: {
+                      color:
+                        point.close >= point.open
+                          ? 'rgba(167, 45, 37, 0.5)'
+                          : 'rgba(20, 116, 95, 0.5)',
+                    },
+                  };
+                }),
               },
             ]
           : []),

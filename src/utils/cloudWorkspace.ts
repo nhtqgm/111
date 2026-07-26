@@ -114,7 +114,7 @@ export function createEmptyCloudWorkspace(): CloudWorkspace {
 export function createCloudWorkspaceFromLegacyBackup(value: unknown): CloudWorkspace {
   const backup = value as LegacyBackup;
   if (backup?.schema !== 'gupiao-ma40-full-backup/v1' || !backup.storage) {
-    throw new Error('Backup is not a supported full data export.');
+    throw new Error('该文件不是本系统导出的备份文件');
   }
 
   const workspace = createEmptyCloudWorkspace();
@@ -229,7 +229,7 @@ export function assertCloudWorkspaceContainsLocalData(
       return !persisted || !sameForecastHistorySnapshot(snapshot, persisted);
     });
   if (missingHistory.length) {
-    throw new Error(`Cloud history verification failed: ${missingHistory.length} snapshot(s) were not persisted.`);
+    throw new Error(`云端历史校验失败：${missingHistory.length} 条历史记录未写入云端`);
   }
 
   const remotePredictions = new Map<string, PredictionPoint>();
@@ -246,7 +246,7 @@ export function assertCloudWorkspaceContainsLocalData(
     }),
   );
   if (missingPredictions.length) {
-    throw new Error(`Cloud prediction verification failed: ${missingPredictions.length} row(s) were not persisted.`);
+    throw new Error(`云端预测校验失败：${missingPredictions.length} 条预测值未写入云端`);
   }
   return true;
 }
@@ -418,22 +418,22 @@ function toScopeKey(stockCode: string, period: PeriodType) {
 
 function normalizeCloudWorkspace(value: unknown): CloudWorkspace {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error('Cloud workspace payload is invalid.');
+    throw new Error('云端数据格式异常');
   }
   const candidate = value as Partial<CloudWorkspace>;
   if (candidate.schema !== 'gupiao-cloud-workspace/v1') {
-    throw new Error('Cloud workspace payload is invalid.');
+    throw new Error('云端数据格式异常');
   }
   const selectedCode = normalizeStockCode(candidate.workspace?.stockCode ?? '');
   const selectedPeriod = candidate.workspace?.period;
   if (selectedCode.length !== 6 || !isPeriodType(selectedPeriod)) {
-    throw new Error('Cloud workspace selection is invalid.');
+    throw new Error('云端数据格式异常：所选股票或周期无效');
   }
 
   const predictions: CloudWorkspace['predictions'] = {};
   for (const [scopeKey, rows] of Object.entries(candidate.predictions ?? {})) {
     const scope = SCOPE_KEY.exec(scopeKey);
-    if (!scope || !Array.isArray(rows)) throw new Error(`Prediction scope is invalid: ${scopeKey}`);
+    if (!scope || !Array.isArray(rows)) throw new Error(`云端预测数据格式异常：${scopeKey}`);
     predictions[scopeKey] = rows
       .map(normalizeImportedPredictionRow)
       .filter((row): row is PredictionPoint => row !== null);
@@ -442,7 +442,7 @@ function normalizeCloudWorkspace(value: unknown): CloudWorkspace {
   const forecastHistory: CloudWorkspace['forecastHistory'] = {};
   for (const [scopeKey, rows] of Object.entries(candidate.forecastHistory ?? {})) {
     const scope = SCOPE_KEY.exec(scopeKey);
-    if (!scope || !Array.isArray(rows)) throw new Error(`Forecast history scope is invalid: ${scopeKey}`);
+    if (!scope || !Array.isArray(rows)) throw new Error(`云端历史数据格式异常：${scopeKey}`);
     forecastHistory[scopeKey] = rows
       .map((row) => normalizeImportedHistoryRow(row, scope[1], scope[2] as PeriodType))
       .filter((row): row is ForecastHistorySnapshot => row !== null);

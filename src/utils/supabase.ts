@@ -102,7 +102,7 @@ export async function loadMyCloudWorkspace(): Promise<CloudWorkspaceRecord | nul
     typeof row.payload !== 'object' ||
     (row.payload as CloudWorkspace).schema !== 'gupiao-cloud-workspace/v1'
   ) {
-    throw new Error('Cloud workspace payload is invalid.');
+    throw new Error('云端数据格式异常');
   }
   return {
     revision: 0,
@@ -233,6 +233,6 @@ export async function downloadPredictionEvents(user: User) {
 
 function requireCloudClient() {
   const api = getSupabaseClient();
-  if (!api) throw new Error('Cloud sync is not configured yet.');
+  if (!api) throw new Error('云端同步尚未配置');
   return api;
 }

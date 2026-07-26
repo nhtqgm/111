@@ -109,6 +109,38 @@ const lineColors: Record<MaWindow, string> = {
   40: '#8f4d6b',
   60: '#555a9b',
 };
+const TOAST_PRIORITY = { info: 0, success: 1, warning: 2 } as const;
+const TOAST_DURATION = { info: 5000, success: 6000, warning: 12000 } as const;
+
+function movePredictionFocus(current: HTMLInputElement, offset: number) {
+  const table = current.closest('.prediction-table');
+  if (!table) return;
+  const inputs = Array.from(table.querySelectorAll<HTMLInputElement>('input.prediction-input'));
+  const next = inputs[inputs.indexOf(current) + offset];
+  if (next) {
+    next.focus();
+    next.select();
+  }
+}
+
+function translateCloudError(err: unknown, fallback = '云端账户操作失败'): string {
+  const message = err instanceof Error ? err.message : '';
+  if (/invalid login credentials/i.test(message)) return '邮箱或密码不正确，请重新输入';
+  if (/email not confirmed/i.test(message)) return '邮箱尚未完成确认，请先到邮箱点击确认链接';
+  if (/failed to fetch|network|timeout/i.test(message)) return '网络连接失败，请检查网络后重试';
+  if (/rate limit/i.test(message)) return '尝试次数过多，请稍后再试';
+  return message ? `${fallback}：${message}` : `${fallback}，请稍后重试`;
+}
+
+function useDialogFocus() {
+  const ref = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    const previousFocus = document.activeElement as HTMLElement | null;
+    ref.current?.focus();
+    return () => previousFocus?.focus?.();
+  }, []);
+  return ref;
+}
 
 interface PredictionFileV5 {
   schema: 'gupiao-ma40-predictions/v1';
@@ -201,7 +233,15 @@ export default function App() {
   const [toast, setToast] = useState<{ message: string; type: 'info' | 'success' | 'warning' } | null>(
     null,
   );
+  const [confirmAction, setConfirmAction] = useState<{
+    title: string;
+    body: string;
+    confirmLabel: string;
+    onConfirm: () => void;
+  } | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const toastRef = useRef<{ message: string; type: 'info' | 'success' | 'warning' } | null>(null);
+  const expandedDialogRef = useRef<HTMLElement | null>(null);
   const importedPlanRef = useRef<PredictionFileV5 | null>(null);
   const toastTimerRef = useRef<number | null>(null);
   const cloudWorkspaceRef = useRef<CloudWorkspace | null>(null);
@@ -348,7 +388,7 @@ export default function App() {
       setPredictionScope({ stockCode: normalizeStockCode(queryCode), period });
       setForecastHistory(getWorkspaceForecastHistory(cloudWorkspace, { stockCode: queryCode, period }));
       setBaseDate(cloudWorkspace.workspace.baseDate || todayDate);
-      setError('暂无本地历史数据，请点击“联网更新”拉取最近历史收盘价');
+      // 缓存未命中是首次使用/离线的正常空态，由图表区的引导空态处理，不弹红色错误横幅。
       return;
     }
 
@@ -413,6 +453,34 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, [activeData, activeScope?.period, baseDate, hasUnsavedChanges, predictions]);
 
+  useEffect(() => {
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      if (confirmAction) setConfirmAction(null);
+      else if (detailTargetDate) setDetailTargetDate(null);
+      else if (isHistoryModalOpen) setIsHistoryModalOpen(false);
+      else if (isTableExpanded) setIsTableExpanded(false);
+      else if (isCloudAccountOpen && cloudUser) setIsCloudAccountOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [confirmAction, detailTargetDate, isHistoryModalOpen, isTableExpanded, isCloudAccountOpen, cloudUser]);
+
+  useEffect(() => {
+    if (!isTableExpanded) return;
+    const previousFocus = document.activeElement as HTMLElement | null;
+    expandedDialogRef.current?.focus();
+    return () => previousFocus?.focus?.();
+  }, [isTableExpanded]);
+
+  const prevSaveStatusRef = useRef(cloudSaveState.status);
+  useEffect(() => {
+    if (cloudSaveState.status === 'error' && prevSaveStatusRef.current !== 'error') {
+      showToast(formatCloudSaveError(cloudSaveState.error), 'warning');
+    }
+    prevSaveStatusRef.current = cloudSaveState.status;
+  }, [cloudSaveState.status]);
+
   function updateCloudWorkspace(transform: (workspace: CloudWorkspace) => CloudWorkspace) {
     const current = cloudWorkspaceRef.current;
     if (!current) return;
@@ -470,7 +538,7 @@ export default function App() {
         loadMyStockCodes(),
       ]);
       if (generation !== cloudSessionGenerationRef.current) return;
-      if (!profile || profile.userId !== user.id) throw new Error('Cloud account profile is unavailable.');
+      if (!profile || profile.userId !== user.id) throw new Error('云端账户信息读取失败，请退出后重新登录');
 
       const remoteWorkspace = record?.payload ?? createEmptyCloudWorkspace();
       const outbox = loadCloudPredictionOutbox(user.id);
@@ -494,7 +562,7 @@ export default function App() {
       cloudPredictionSaveQueueRef.current = createPredictionSaveQueueForUser(user, outbox);
       cloudHistorySaveQueueRef.current = createHistorySaveQueueForUser(user, historyOutbox);
       setCloudSyncState('ready');
-      if (!quiet) showToast('Cloud workspace loaded.', 'success');
+      if (!quiet) showToast('云端数据已加载', 'success');
       const dueEvent = getDueAStockRefreshEvent();
       void refreshHistoricalData({
         targetStockCode: workspace.workspace.stockCode,
@@ -505,7 +573,7 @@ export default function App() {
     } catch (err) {
       if (generation !== cloudSessionGenerationRef.current) return;
       setCloudSyncState('error');
-      if (!quiet) showToast(err instanceof Error ? err.message : 'Cloud workspace load failed.', 'warning');
+      if (!quiet) showToast(translateCloudError(err, '云端数据加载失败'), 'warning');
     } finally {
       if (generation === cloudSessionGenerationRef.current) setIsCloudWorkspaceLoading(false);
     }
@@ -527,7 +595,7 @@ export default function App() {
     capturePredictionHistory(predictions, activeData, activeScope.period, baseDate);
     persistPredictionDraft(predictions);
     setHasUnsavedChanges(false);
-    if (notice === 'manual') showToast('Saved to cloud.', 'success');
+    if (notice === 'manual') showToast('已保存到云端', 'success');
   }
 
   const projection = useMemo(
@@ -571,13 +639,15 @@ export default function App() {
   const summary = useMemo(() => summarizeForecastHistory(visibleHistoryRows), [visibleHistoryRows]);
   const latest = activeData?.points.at(-1);
   const unit = periods.find((item) => item.value === period)?.unit ?? '';
-  const filledCount = predictions.filter(
-    (row) => getPredictionInputValue(row, inputMaWindow).trim() !== '',
-  ).length;
   const inputHorizonDates = useMemo(
     () => new Set(activeData ? generatePredictionRows(activeData.points, period, baseDate, inputMaWindow).map((row) => row.targetDate) : []),
     [activeData, baseDate, inputMaWindow, period],
   );
+  const filledCount = predictions.filter(
+    (row) =>
+      inputHorizonDates.has(row.targetDate) &&
+      getPredictionInputValue(row, inputMaWindow).trim() !== '',
+  ).length;
   const predictionTableRows = useMemo(
     () => selectPredictionRowsForInputTable(projection.rows, inputHorizonDates),
     [inputHorizonDates, projection.rows],
@@ -921,7 +991,6 @@ export default function App() {
     const requestedStockCode = normalizeStockCode(code);
     if (requestedStockCode.length !== 6) {
       setError('股票代码需要是6位数字');
-      showToast('请输入完整的6位股票代码', 'warning');
       return;
     }
 
@@ -1004,8 +1073,17 @@ export default function App() {
     if (activeData && activeScope) {
       capturePredictionHistory(predictions, activeData, activeScope.period, baseDate);
     }
-    setData(null);
-    setDataPeriod(null);
+    // 命中缓存时同步水合，避免图表先卸载再重建（339 行 effect 会幂等重放同样的数据）。
+    const cached = marketDataRef.current.get(marketScopeKey(queryCode, nextPeriod));
+    if (cached) {
+      const completed = filterCompletedKLineData(cached, nextPeriod);
+      setData(completed.data);
+      setDataPeriod(nextPeriod);
+      setBaseDate(completed.lastCompletedDate ?? todayDate);
+    } else {
+      setData(null);
+      setDataPeriod(null);
+    }
     setPredictions([]);
     setPredictionScope(null);
     setForecastHistory([]);
@@ -1058,7 +1136,7 @@ export default function App() {
         (total, rows) => total + rows.length,
         0,
       );
-      showToast(`已安全保存到云端：${predictionScopes} 个范围，${historyCount} 条历史记录已校验`, 'success');
+      showToast(`已保存到云端并校验通过：${predictionScopes} 组预测、${historyCount} 条历史记录`, 'success');
     } catch (err) {
       setCloudSyncState('error');
       showToast(err instanceof Error ? `向云端保存失败：${err.message}` : '向云端保存失败', 'warning');
@@ -1097,7 +1175,7 @@ export default function App() {
       await loadCloudWorkspace(user);
     } catch (err) {
       setCloudSyncState('error');
-      showToast(err instanceof Error ? `云端账户操作失败：${err.message}` : '云端账户操作失败', 'warning');
+      showToast(translateCloudError(err), 'warning');
     }
   }
 
@@ -1166,15 +1244,20 @@ export default function App() {
   }
 
   function showToast(message: string, type: 'info' | 'success' | 'warning' = 'info') {
+    // 低级别提示（如自动刷新进度）不得顶掉正在显示的警告。
+    const current = toastRef.current;
+    if (current && TOAST_PRIORITY[current.type] > TOAST_PRIORITY[type]) return;
     if (toastTimerRef.current !== null) {
       window.clearTimeout(toastTimerRef.current);
     }
 
-    setToast({ message, type });
+    toastRef.current = { message, type };
+    setToast(toastRef.current);
     toastTimerRef.current = window.setTimeout(() => {
+      toastRef.current = null;
       setToast(null);
       toastTimerRef.current = null;
-    }, 10000);
+    }, TOAST_DURATION[type]);
   }
 
   function closeToast() {
@@ -1183,6 +1266,7 @@ export default function App() {
       toastTimerRef.current = null;
     }
 
+    toastRef.current = null;
     setToast(null);
   }
 
@@ -1199,12 +1283,12 @@ export default function App() {
         cache: 'no-store',
       });
       if (!response.ok) {
-        throw new Error(`Update check failed: ${response.status}`);
+        throw new Error(`检查更新失败（HTTP ${response.status}）`);
       }
 
       const manifest = normalizeUpdateManifest(await response.json());
       if (!manifest) {
-        throw new Error('Update manifest is invalid');
+        throw new Error('更新信息格式异常，请稍后重试');
       }
 
       const hasNewVersion = compareVersions(manifest.version, currentVersion) > 0;
@@ -1398,11 +1482,17 @@ export default function App() {
 
   function resetRows() {
     if (!activeData || !activeScope || !baseDate) return;
-    const confirmed = window.confirm(
-      `确认重置 ${activeData.code} 的当前${getPeriodLabel(activeScope.period)}预测表吗？\n已填写的预测值将被清空。`,
-    );
-    if (!confirmed) return;
+    // Android WebView 的 window.confirm 可能恒返回 false，必须用应用内确认弹窗。
+    setConfirmAction({
+      title: '重置预测表',
+      body: `确认重置 ${activeData.code} 的当前${getPeriodLabel(activeScope.period)}预测表吗？已填写的预测值将被清空。`,
+      confirmLabel: '清空重置',
+      onConfirm: doResetRows,
+    });
+  }
 
+  function doResetRows() {
+    if (!activeData || !activeScope || !baseDate) return;
     const nextRows = generatePredictionRows(activeData.points, activeScope.period, baseDate, forecastRowCount);
     setPredictions(nextRows);
     persistPredictionDraft(nextRows);
@@ -1413,7 +1503,7 @@ export default function App() {
     saveCurrentWorkspace({ force: true, notice: 'silent' });
     const workspace = cloudWorkspaceRef.current;
     if (!workspace) {
-      showToast('No cloud workspace is loaded.', 'warning');
+      showToast('云端数据尚未加载，无法导出', 'warning');
       return;
     }
     const backup = createFullWorkspaceBackup(workspace, appVersion);
@@ -1433,7 +1523,7 @@ export default function App() {
       (total, rows) => total + rows.length,
       0,
     );
-    showToast(`已导出全部预测：${predictionScopes} 个范围，${historyCount} 条历史记录`, 'success');
+    showToast(`已导出全部数据：${predictionScopes} 组预测、${historyCount} 条历史记录`, 'success');
     return;
     /*
     if (data && baseDate && predictions.length) {
@@ -1505,7 +1595,8 @@ export default function App() {
   async function importPredictions(file: File | undefined) {
     if (!file) return;
 
-    let predictionQueueDetached = false;
+    // 只解析并确认；真正覆盖云端在 applyImportedWorkspace 里执行，
+    // 避免误选文件时零确认覆盖且不可撤销。
     try {
       const rawFile = JSON.parse(await file.text()) as unknown;
       let workspace: CloudWorkspace;
@@ -1514,7 +1605,30 @@ export default function App() {
       } catch {
         workspace = createCloudWorkspaceFromLegacyBackup(rawFile);
       }
-      if (!cloudUser) throw new Error('Please sign in before importing data.');
+      if (!cloudUser) throw new Error('请先登录云端账户，再导入数据');
+      const predictionScopes = Object.keys(workspace.predictions).length;
+      const historyCount = Object.values(workspace.forecastHistory).reduce(
+        (total, rows) => total + rows.length,
+        0,
+      );
+      setConfirmAction({
+        title: '导入并覆盖云端',
+        body: `文件包含 ${predictionScopes} 组预测、${historyCount} 条历史记录。导入会完全覆盖云端现有数据，无法撤销。建议先点“导出”备份。`,
+        confirmLabel: '覆盖云端',
+        onConfirm: () => void applyImportedWorkspace(workspace),
+      });
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '导入失败', 'warning');
+    } finally {
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  }
+
+  async function applyImportedWorkspace(workspace: CloudWorkspace) {
+    if (!cloudUser) return;
+
+    let predictionQueueDetached = false;
+    try {
       await cloudPredictionSaveQueueRef.current?.flush();
       await cloudHistorySaveQueueRef.current?.flush();
       cloudPredictionSaveQueueRef.current?.switchAccount('');
@@ -1536,7 +1650,7 @@ export default function App() {
         (total, rows) => total + rows.length,
         0,
       );
-      showToast(`已全量导入并覆盖云端：${predictionScopes} 个范围，${historyCount} 条历史记录`, 'success');
+      showToast(`已导入并覆盖云端：${predictionScopes} 组预测、${historyCount} 条历史记录`, 'success');
     } catch (err) {
       if (predictionQueueDetached && cloudUser) {
         cloudPredictionSaveQueueRef.current = createPredictionSaveQueueForUser(
@@ -1548,9 +1662,7 @@ export default function App() {
           loadCloudHistoryOutbox(cloudUser.id),
         );
       }
-      showToast(err instanceof Error ? err.message : 'Import failed.', 'warning');
-    } finally {
-      if (fileInputRef.current) fileInputRef.current.value = '';
+      showToast(err instanceof Error ? err.message : '导入失败', 'warning');
     }
     return;
     /*
@@ -1611,63 +1723,95 @@ export default function App() {
 
   function renderPredictionTable(expanded = false) {
     return (
-      <div className={`prediction-table ma40-table ${expanded ? 'expanded-table' : ''}`}>
-        <div className="prediction-row table-head" style={predictionTableStyle}>
-          <span>目标周期</span>
-          <span>预测MA{inputMaWindow}</span>
-          <span>反推收盘</span>
-          <span>真实收盘</span>
-          <span>明细</span>
+      <div
+        className={`prediction-table ma40-table ${expanded ? 'expanded-table' : ''}`}
+        role="table"
+        aria-label={`预测MA${inputMaWindow}输入表`}
+      >
+        <div className="prediction-row table-head" style={predictionTableStyle} role="row">
+          <span role="columnheader">目标周期</span>
+          <span role="columnheader">预测MA{inputMaWindow}</span>
+          <span role="columnheader">反推收盘</span>
+          <span className="num-cell" role="columnheader">真实收盘</span>
+          <span role="columnheader">明细</span>
           {visibleMaWindows.map((windowSize) => (
-            <span key={windowSize}>MA{windowSize}</span>
+            <span className="num-cell" key={windowSize} role="columnheader">MA{windowSize}</span>
           ))}
         </div>
-        {predictionTableRows.map((row) => (
-          <div className="prediction-row" key={row.targetDate} style={predictionTableStyle}>
-            <span className="date-cell">{row.targetDate}</span>
-            <input
-              className="prediction-input forecast-ma40-input"
-              aria-label={`${row.targetDate} 预测MA${inputMaWindow}`}
-              type="text"
-              inputMode="decimal"
-              value={getPredictionInputValue(row, inputMaWindow)}
-              onChange={(event) => updatePrediction(row.targetDate, event.target.value)}
-              onBlur={() => formatPredictionInput(row.targetDate)}
-              placeholder="0.0000"
-            />
-            <span className="derived-close-cell">{formatNumber(row.derivedClose)}</span>
-            <span>{formatNumber(row.actualClose)}</span>
-            <button
-              type="button"
-              className="detail-button"
-              onClick={() => setDetailTargetDate(row.targetDate)}
+        {predictionTableRows.map((row) => {
+          const isFilled = getPredictionInputValue(row, inputMaWindow).trim() !== '';
+          return (
+            <div
+              className={`prediction-row ${isFilled ? 'row-filled' : 'row-empty'}`}
+              key={row.targetDate}
+              style={predictionTableStyle}
+              role="row"
             >
-              明细
-            </button>
-            {visibleMaWindows.map((windowSize) => (
-              <span key={windowSize}>{formatNumber(row.maValues[windowSize])}</span>
-            ))}
-          </div>
-        ))}
+              <span className="date-cell" role="cell">{row.targetDate}</span>
+              <div role="cell">
+                <input
+                  className="prediction-input forecast-ma40-input"
+                  aria-label={`${row.targetDate} 预测MA${inputMaWindow}`}
+                  type="text"
+                  inputMode="decimal"
+                  value={getPredictionInputValue(row, inputMaWindow)}
+                  onChange={(event) => updatePrediction(row.targetDate, event.target.value)}
+                  onBlur={() => formatPredictionInput(row.targetDate)}
+                  onFocus={(event) => event.currentTarget.select()}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === 'ArrowDown') {
+                      event.preventDefault();
+                      movePredictionFocus(event.currentTarget, 1);
+                    } else if (event.key === 'ArrowUp') {
+                      event.preventDefault();
+                      movePredictionFocus(event.currentTarget, -1);
+                    }
+                  }}
+                  placeholder="0.0000"
+                />
+              </div>
+              <span className="derived-close-cell" role="cell">{formatNumber(row.derivedClose)}</span>
+              <span className="num-cell" role="cell">{formatNumber(row.actualClose)}</span>
+              <span role="cell">
+                <button
+                  type="button"
+                  className="detail-button"
+                  tabIndex={-1}
+                  onClick={() => setDetailTargetDate(row.targetDate)}
+                >
+                  明细
+                </button>
+              </span>
+              {visibleMaWindows.map((windowSize) => (
+                <span className="num-cell" key={windowSize} role="cell">{formatNumber(row.maValues[windowSize])}</span>
+              ))}
+            </div>
+          );
+        })}
       </div>
     );
   }
 
   if (!isCloudSyncConfigured()) {
-    return <main className="app-shell"><div className="error-banner">Cloud configuration is required.</div></main>;
+    return (
+      <main className="app-shell">
+        <div className="error-banner" role="alert">云端服务未配置，请使用正式打包版本，或联系管理员。</div>
+      </main>
+    );
   }
 
   if (!cloudUser || isCloudWorkspaceLoading || !cloudWorkspace) {
     return (
       <main className="app-shell">
         <div className="loading">
-          {isCloudWorkspaceLoading ? 'Loading cloud workspace...' : 'Please sign in to use your cloud workspace.'}
+          {isCloudWorkspaceLoading ? '正在加载云端数据…' : '请先登录云端账户'}
         </div>
         <CloudAccountModal
           email={cloudEmail}
           password={cloudPassword}
           cloudUser={cloudUser}
           isBusy={cloudSyncState === 'syncing'}
+          dismissible={false}
           onEmailChange={setCloudEmail}
           onPasswordChange={setCloudPassword}
           onSignIn={() => void submitCloudAccount('sign-in')}
@@ -1680,8 +1824,12 @@ export default function App() {
 
   return (
     <main className="app-shell">
+      <div className="sr-only" role="status" aria-live="polite">
+        {toast && toast.type !== 'warning' ? toast.message : ''}
+      </div>
+      <div className="sr-only" role="alert">{toast?.type === 'warning' ? toast.message : ''}</div>
       {toast ? (
-        <div className={`top-toast ${toast.type}`} role="status">
+        <div className={`top-toast ${toast.type}`}>
           <span>{toast.message}</span>
           <button type="button" onClick={closeToast} aria-label="关闭提示">
             关闭
@@ -1691,7 +1839,7 @@ export default function App() {
 
       <section className="topbar">
         <div>
-          <p className="eyebrow">MA{inputMaWindow} Forecast Console</p>
+          <p className="eyebrow">MA{inputMaWindow} 预测工作台</p>
           <h1>人工预测 MA{inputMaWindow} 走势</h1>
         </div>
         <div className="stock-search">
@@ -1700,35 +1848,37 @@ export default function App() {
             id="stockCode"
             value={stockCode}
             inputMode="numeric"
+            enterKeyHint="go"
             maxLength={6}
             onChange={(event) => setStockCode(event.target.value.replace(/\D/g, '').slice(0, 6))}
+            onFocus={(event) => event.currentTarget.select()}
             onKeyDown={(event) => {
               if (event.key !== 'Enter') return;
               event.preventDefault();
               void queryStockCode();
             }}
           />
-          {cloudStockCodes.length ? (
-            <select
-              aria-label="云端预测股票代码"
-              value={cloudStockCodes.includes(stockCode) ? stockCode : ''}
-              onChange={(event) => selectCloudStockCode(event.target.value)}
-            >
-              <option value="" disabled>
-                云端股票
+          <select
+            aria-label="云端预测股票代码"
+            disabled={!cloudStockCodes.length}
+            value={cloudStockCodes.includes(stockCode) ? stockCode : ''}
+            onChange={(event) => selectCloudStockCode(event.target.value)}
+          >
+            <option value="" disabled>
+              {cloudStockCodes.length ? '云端股票' : '暂无云端股票'}
+            </option>
+            {cloudStockCodes.map((code) => (
+              <option key={code} value={code}>
+                {code}
               </option>
-              {cloudStockCodes.map((code) => (
-                <option key={code} value={code}>
-                  {code}
-                </option>
-              ))}
-            </select>
-          ) : null}
+            ))}
+          </select>
           <button type="button" onClick={() => void queryStockCode()} disabled={isLoading}>
             {isLoading ? '更新中' : '联网更新'}
           </button>
           <button
             type="button"
+            className="secondary-action"
             onClick={updateState.status === 'available' ? openUpdateDownload : () => checkAppUpdate()}
             disabled={updateState.status === 'checking'}
           >
@@ -1762,12 +1912,13 @@ export default function App() {
       </section>
 
       <section className="control-band">
-        <div className="segmented">
+        <div className="segmented" role="group" aria-label="K线周期选择">
           {periods.map((item) => (
             <button
               key={item.value}
               type="button"
               className={period === item.value ? 'active' : ''}
+              aria-pressed={period === item.value}
               onClick={() => selectKLinePeriod(item.value)}
             >
               {item.label}
@@ -1775,7 +1926,8 @@ export default function App() {
           ))}
         </div>
 
-        <div className="horizon-display ma-display" aria-label="均线显示选择">
+        <div className="horizon-display ma-display" role="group" aria-label="图表均线显示选择">
+          <span className="group-label" aria-hidden="true">图表均线</span>
           {MA_WINDOWS.map((windowSize) => {
             const selected = visibleMaWindows.includes(windowSize);
 
@@ -1784,6 +1936,7 @@ export default function App() {
                 key={windowSize}
                 type="button"
                 className={`horizon-${windowSize} ${selected ? 'selected' : 'muted'}`}
+                aria-pressed={selected}
                 onClick={() => toggleMaWindow(windowSize)}
                 style={{ '--horizon-color': lineColors[windowSize] } as CSSProperties}
               >
@@ -1797,6 +1950,7 @@ export default function App() {
         <button
           type="button"
           className={`actual-line-toggle ${showActualMaLines ? 'active' : ''}`}
+          aria-pressed={showActualMaLines}
           onClick={() => setShowActualMaLines((current) => !current)}
         >
           {showActualMaLines ? '显示真实均线' : '只看预测线'}
@@ -1804,7 +1958,7 @@ export default function App() {
 
       </section>
 
-      {error ? <div className="error-banner">{error}</div> : null}
+      {error ? <div className="error-banner" role="alert">{error}</div> : null}
 
       <section className="market-strip">
         <Metric label="股票" value={activeData ? `${activeData.name} ${activeData.code}` : `${queryCode}`} />
@@ -1812,7 +1966,7 @@ export default function App() {
         <Metric label="最新周期" value={latest?.date ?? '--'} />
         <Metric label="历史数量" value={activeData ? `${activeData.points.length}` : '--'} />
         <Metric label="预测窗口" value={`${inputMaWindow}${unit}`} />
-        <Metric label="已填写" value={`${filledCount}/${inputMaWindow}`} />
+        <Metric label="已填写" value={`${filledCount}/${inputHorizonDates.size || inputMaWindow}`} />
         <Metric label="可对比" value={`${summary.compared}`} />
         <Metric label="MAE" value={summary.mae === null ? '--' : summary.mae.toFixed(2)} />
         <Metric label="MAPE" value={summary.mape === null ? '--' : `${summary.mape.toFixed(2)}%`} />
@@ -1840,20 +1994,29 @@ export default function App() {
               showVolume={showActualMaLines}
             />
           ) : (
-            <div className="loading">暂无K线数据</div>
+            <div className="loading">
+              <div className="empty-state">
+                <span>尚未获取 {queryCode || '该股票'} 的{getPeriodLabel(period)}行情数据</span>
+                <button type="button" className="ghost" onClick={() => void queryStockCode()} disabled={isLoading}>
+                  立即联网更新
+                </button>
+              </div>
+            </div>
           )}
+          {activeData && activeScope && !isLoading ? (
+            <div className="chart-hint" aria-hidden="true">
+              滚轮缩放 · 拖动平移 · 点图后 ↑↓ 缩放 ←→ 平移
+            </div>
+          ) : null}
         </div>
 
         <aside className="input-panel">
           <div className="panel-head">
             <div>
-              <p className="eyebrow">Manual MA Input</p>
+              <p className="eyebrow">手动填写均线</p>
               <h2>预测MA{inputMaWindow}</h2>
             </div>
             <div className="panel-actions">
-              <button type="button" className="ghost" onClick={exportAllData}>
-                导出
-              </button>
               <button
                 type="button"
                 className="ghost primary-save"
@@ -1884,12 +2047,17 @@ export default function App() {
                   ) : null}
                 </div>
               ) : null}
+              <span className="action-divider" aria-hidden="true" />
+              <button type="button" className="ghost" onClick={exportAllData}>
+                导出
+              </button>
               <button type="button" className="ghost" onClick={() => fileInputRef.current?.click()}>
                 导入
               </button>
-              <button type="button" className="ghost" onClick={resetRows}>
+              <button type="button" className="ghost danger" onClick={resetRows}>
                 重置
               </button>
+              <span className="action-divider" aria-hidden="true" />
               <button
                 type="button"
                 className="ghost history-open-button"
@@ -1910,13 +2078,29 @@ export default function App() {
             </div>
           </div>
 
-          <div className="input-mode-strip" aria-label="预测输入均线选择">
+          {cloudUser && cloudSaveState.status === 'error' ? (
+            <div className="save-error-banner">
+              <span>{formatCloudSaveError(cloudSaveState.error)}</span>
+              <button
+                type="button"
+                onClick={() => {
+                  cloudPredictionSaveQueueRef.current?.retry();
+                  cloudHistorySaveQueueRef.current?.retry();
+                }}
+              >
+                重试保存
+              </button>
+            </div>
+          ) : null}
+
+          <div className="input-mode-strip" role="group" aria-label="预测输入均线选择">
             <span>预测输入</span>
             {MA_WINDOWS.map((windowSize) => (
               <button
                 key={windowSize}
                 type="button"
                 className={inputMaWindow === windowSize ? 'active' : ''}
+                aria-pressed={inputMaWindow === windowSize}
                 onClick={() => setInputMaWindow(windowSize)}
               >
                 MA{windowSize}
@@ -1938,11 +2122,24 @@ export default function App() {
       </section>
 
       {isTableExpanded ? (
-        <div className="table-modal-backdrop" role="presentation">
-          <section className="table-modal" role="dialog" aria-modal="true" aria-label="完整预测表">
+        <div
+          className="table-modal-backdrop"
+          role="presentation"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) setIsTableExpanded(false);
+          }}
+        >
+          <section
+            className="table-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="完整预测表"
+            ref={expandedDialogRef}
+            tabIndex={-1}
+          >
             <div className="table-modal-head">
               <div>
-                <p className="eyebrow">Full Table</p>
+                <p className="eyebrow">完整表格</p>
                 <h2>完整预测表</h2>
               </div>
               <button type="button" className="ghost" onClick={() => setIsTableExpanded(false)}>
@@ -1983,6 +2180,37 @@ export default function App() {
           onClose={() => setIsCloudAccountOpen(false)}
         />
       ) : null}
+
+      {confirmAction ? (
+        <div
+          className="detail-modal-backdrop"
+          role="presentation"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) setConfirmAction(null);
+          }}
+        >
+          <section className="cloud-account-modal" role="dialog" aria-modal="true" aria-label={confirmAction.title}>
+            <h2>{confirmAction.title}</h2>
+            <p className="confirm-body">{confirmAction.body}</p>
+            <div className="cloud-account-actions">
+              <button
+                type="button"
+                className="danger"
+                onClick={() => {
+                  const run = confirmAction.onConfirm;
+                  setConfirmAction(null);
+                  run();
+                }}
+              >
+                {confirmAction.confirmLabel}
+              </button>
+              <button type="button" className="ghost" onClick={() => setConfirmAction(null)}>
+                取消
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
     </main>
   );
 }
@@ -1992,6 +2220,7 @@ function CloudAccountModal({
   password,
   cloudUser,
   isBusy,
+  dismissible = true,
   onEmailChange,
   onPasswordChange,
   onSignIn,
@@ -2002,23 +2231,41 @@ function CloudAccountModal({
   password: string;
   cloudUser: User | null;
   isBusy: boolean;
+  dismissible?: boolean;
   onEmailChange: (value: string) => void;
   onPasswordChange: (value: string) => void;
   onSignIn: () => void;
   onSignOut: () => void;
   onClose: () => void;
 }) {
+  const dialogRef = useDialogFocus();
+
   return (
-    <div className="table-modal-backdrop" role="presentation">
-      <section className="cloud-account-modal" role="dialog" aria-modal="true" aria-label="云端账户">
+    <div
+      className="table-modal-backdrop"
+      role="presentation"
+      onClick={(event) => {
+        if (dismissible && event.target === event.currentTarget) onClose();
+      }}
+    >
+      <section
+        className="cloud-account-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label="云端账户"
+        ref={dialogRef}
+        tabIndex={-1}
+      >
         <div className="table-modal-head">
           <div>
-            <p className="eyebrow">Cloud Prediction Sync</p>
+            <p className="eyebrow">云端同步</p>
             <h2>云端账户</h2>
           </div>
-          <button type="button" className="ghost" onClick={onClose}>
-            关闭
-          </button>
+          {dismissible ? (
+            <button type="button" className="ghost" onClick={onClose}>
+              关闭
+            </button>
+          ) : null}
         </div>
         {cloudUser ? (
           <div className="cloud-account-signed-in">
@@ -2029,7 +2276,13 @@ function CloudAccountModal({
             </button>
           </div>
         ) : (
-          <div className="cloud-account-form">
+          <form
+            className="cloud-account-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              onSignIn();
+            }}
+          >
             <label>
               <span>邮箱</span>
               <input
@@ -2049,15 +2302,16 @@ function CloudAccountModal({
               />
             </label>
             <div className="cloud-account-actions">
-              <button type="button" onClick={onSignIn} disabled={isBusy}>
-                登录并同步
+              <button type="submit" disabled={isBusy}>
+                {isBusy ? '正在登录…' : '登录并同步'}
               </button>
               {/* Account provisioning is restricted to administrators.
               <button type="button" className="ghost" onClick={onSignUp} disabled={isBusy}>
                 注册账户
               </button> */}
             </div>
-          </div>
+            <p className="cloud-account-hint">账户由管理员分配，没有账户或忘记密码请联系管理员。</p>
+          </form>
         )}
       </section>
     </div>
@@ -2073,36 +2327,56 @@ function ForecastHistoryModal({
   inputMaWindow: MaWindow;
   onClose: () => void;
 }) {
+  const dialogRef = useDialogFocus();
+
   return (
-    <div className="detail-modal-backdrop" role="presentation">
-      <section className="history-modal" role="dialog" aria-modal="true" aria-label="历史预测对比">
+    <div
+      className="detail-modal-backdrop"
+      role="presentation"
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <section
+        className="history-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label="历史预测对比"
+        ref={dialogRef}
+        tabIndex={-1}
+      >
         <div className="detail-modal-head">
           <div>
-            <p className="eyebrow">Historical Forecasts</p>
+            <p className="eyebrow">历史预测</p>
             <h2>历史预测与真实价格对比</h2>
           </div>
           <button type="button" className="ghost" onClick={onClose}>
             关闭
           </button>
         </div>
-        <div className="history-table">
-          <div className="history-row history-head">
-            <span>预测日期</span>
-            <span>预测收盘</span>
-            <span>真实收盘</span>
-            <span>差值</span>
-            <span>预测MA{inputMaWindow}</span>
-            <span>真实MA{inputMaWindow}</span>
+        <div className="history-table" role="table" aria-label="历史预测与真实价格对比表">
+          <div className="history-row history-head" role="row">
+            <span role="columnheader">预测日期</span>
+            <span className="num-cell" role="columnheader">预测收盘</span>
+            <span className="num-cell" role="columnheader">真实收盘</span>
+            <span className="num-cell" role="columnheader">差值</span>
+            <span className="num-cell" role="columnheader">预测MA{inputMaWindow}</span>
+            <span className="num-cell" role="columnheader">真实MA{inputMaWindow}</span>
           </div>
           {rows.length ? (
             rows.map((row) => (
-              <div className="history-row" key={row.id}>
-                <span className="date-cell">{row.actualDate ?? row.targetDate}</span>
-                <strong className="history-predicted">{formatNumber(row.predictedClose)}</strong>
-                <strong>{formatNumber(row.actualClose)}</strong>
-                <span>{formatSignedNumber(row.closeDiff)}</span>
-                <span>{formatNumber(row.predictedMaValues[inputMaWindow])}</span>
-                <span>{formatNumber(row.actualMaValues[inputMaWindow])}</span>
+              <div className="history-row" key={row.id} role="row">
+                <span className="date-cell" role="cell">{row.actualDate ?? row.targetDate}</span>
+                <strong className="history-predicted num-cell" role="cell">{formatNumber(row.predictedClose)}</strong>
+                <strong className="num-cell" role="cell">{formatNumber(row.actualClose)}</strong>
+                <span
+                  className={`num-cell ${row.closeDiff === null ? '' : row.closeDiff > 0 ? 'up' : row.closeDiff < 0 ? 'down' : ''}`}
+                  role="cell"
+                >
+                  {formatSignedNumber(row.closeDiff)}
+                </span>
+                <span className="num-cell" role="cell">{formatNumber(row.predictedMaValues[inputMaWindow])}</span>
+                <span className="num-cell" role="cell">{formatNumber(row.actualMaValues[inputMaWindow])}</span>
               </div>
             ))
           ) : (
@@ -2131,12 +2405,27 @@ function CalculationDetailModal({
       ? `${formatNumber(reverse.predictedMa, 4)} × ${inputMaWindow} - ${formatNumber(reverse.previousSum)} = ${formatNumber(reverse.derivedClose)}`
       : reverse.reason ?? '暂无可计算的明细';
 
+  const dialogRef = useDialogFocus();
+
   return (
-    <div className="detail-modal-backdrop" role="presentation">
-      <section className="detail-modal" role="dialog" aria-modal="true" aria-label="计算明细">
+    <div
+      className="detail-modal-backdrop"
+      role="presentation"
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <section
+        className="detail-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label="计算明细"
+        ref={dialogRef}
+        tabIndex={-1}
+      >
         <div className="detail-modal-head">
           <div>
-            <p className="eyebrow">Calculation Detail</p>
+            <p className="eyebrow">计算过程</p>
             <h2>{row.targetDate} 计算明细</h2>
           </div>
           <button type="button" className="ghost" onClick={onClose}>
@@ -2493,17 +2782,17 @@ function combineCloudSaveStates(
 function formatCloudSaveState(state: CloudPredictionSaveState) {
   switch (state.status) {
     case 'pending':
-      return `待保存 ${state.pendingCount}`;
+      return `待保存 ${state.pendingCount} 条`;
     case 'saving':
-      return `正在保存 ${state.pendingCount}`;
+      return `正在保存 ${state.pendingCount} 条…`;
     case 'saved':
       return state.lastSavedAt
         ? `已保存 ${new Date(state.lastSavedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
         : '已保存';
     case 'error':
-      return `保存失败 ${state.pendingCount}`;
+      return `${state.pendingCount} 条未保存`;
     default:
-      return '云端待命';
+      return '已同步';
   }
 }
 
@@ -2521,7 +2810,7 @@ function Metric({ label, value }: { label: string; value: string }) {
   return (
     <div className="metric">
       <span>{label}</span>
-      <strong>{value}</strong>
+      <strong title={value}>{value}</strong>
     </div>
   );
 }

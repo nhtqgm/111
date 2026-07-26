@@ -5,6 +5,8 @@
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
+  /* 锁定浅色，防止 Android WebView 算法压暗与系统深色 UA 控件混搭 */
+  color-scheme: light;
 }
 
 html,
@@ -20,6 +22,7 @@ body {
   margin: 0;
   min-width: 320px;
   height: 100vh;
+  height: 100svh; /* 手机浏览器地址栏兜底，Chromium 108 起生效，旧内核忽略 */
   overflow: hidden;
   background:
     linear-gradient(90deg, rgba(49, 57, 47, 0.035) 1px, transparent 1px),
@@ -39,9 +42,34 @@ button {
   cursor: pointer;
 }
 
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid #d7a742;
+  outline-offset: 1px;
+}
+
+button:active:enabled {
+  transform: translateY(1px);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .app-shell {
   width: calc(100vw - 16px);
   height: 100vh;
+  height: 100svh;
   margin: 0 auto;
   padding: 4px 0 8px;
   display: flex;
@@ -61,10 +89,10 @@ button {
 
 .eyebrow {
   margin: 0 0 1px;
-  color: #80683d;
-  font-size: 10px;
+  color: #6b5433;
+  font-size: 11px;
   font-weight: 800;
-  letter-spacing: 0;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
@@ -104,9 +132,7 @@ h2 {
 
 .stock-search input,
 .stock-search select,
-.stock-search button,
-.select-field select,
-.select-field input {
+.stock-search button {
   height: 26px;
   border: 1px solid #877c6b;
   border-radius: 6px;
@@ -134,9 +160,25 @@ h2 {
   font-weight: 800;
 }
 
+.stock-search button:hover:enabled {
+  filter: brightness(1.07);
+}
+
 .stock-search button:disabled {
   cursor: wait;
   opacity: 0.65;
+}
+
+.stock-search select:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* 次要操作降权重，金色只留给“联网更新”主操作 */
+.stock-search button.secondary-action {
+  background: #3a4238;
+  border-color: #5a6355;
+  color: #e6e0d3;
 }
 
 .stock-search .cloud-sync-button {
@@ -181,12 +223,16 @@ h2 {
 
 .segmented button {
   min-width: 62px;
-  height: 25px;
+  height: 27px;
   border: 0;
   border-radius: 6px;
   background: transparent;
   color: #3d453f;
   font-weight: 800;
+}
+
+.segmented button:not(.active):hover {
+  background: rgba(38, 48, 42, 0.1);
 }
 
 .segmented button.active {
@@ -204,28 +250,11 @@ h2 {
   background: #f2eadc;
 }
 
-.ma40-badge {
-  display: grid;
-  min-height: 46px;
-  min-width: 138px;
-  place-items: center;
-  padding: 5px 14px;
-  border: 1px solid #2d342e;
-  border-radius: 8px;
-  background: #fffdf8;
-  color: #2f7893;
-  box-shadow: inset 0 -3px 0 #a87935;
-}
-
-.ma40-badge b {
-  font-size: 20px;
-  line-height: 1;
-}
-
-.ma40-badge span {
-  margin-top: 3px;
-  color: #766d60;
-  font-size: 11px;
+.horizon-display .group-label {
+  align-self: center;
+  padding: 0 4px 0 6px;
+  color: #615949;
+  font-size: 12px;
   font-weight: 900;
 }
 
@@ -237,7 +266,9 @@ h2 {
   align-items: center;
   justify-content: center;
   gap: 5px;
-  border: 1px solid color-mix(in srgb, var(--horizon-color) 34%, #c8beae);
+  /* Chromium 108（Win7 版）不解析 color-mix，先给纯色回退再覆盖 */
+  border: 1px solid #c8beae;
+  border-color: color-mix(in srgb, var(--horizon-color) 34%, #c8beae);
   border-radius: 6px;
   background: var(--horizon-soft);
   color: #2a302b;
@@ -304,7 +335,7 @@ h2 {
 }
 
 .actual-line-toggle {
-  min-height: 31px;
+  min-height: 33px;
   padding: 0 12px;
   border: 1px solid #2d342e;
   border-radius: 8px;
@@ -359,39 +390,6 @@ h2 {
   --horizon-soft: #f4f5fb;
 }
 
-.horizon-head {
-  display: inline-grid;
-  min-height: 28px;
-  place-items: center;
-  border-radius: 6px;
-  background: var(--horizon-bg);
-  color: var(--horizon-color);
-  border: 1px solid color-mix(in srgb, var(--horizon-color) 45%, transparent);
-}
-
-.select-field {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-left: 0;
-  color: #5e584d;
-  font-size: 13px;
-  font-weight: 800;
-}
-
-.ma40-badge + .select-field,
-.horizon-display + .select-field {
-  margin-left: auto;
-}
-
-.select-field select,
-.select-field input {
-  min-width: 150px;
-  padding: 0 10px;
-  background: #f8f4ec;
-  color: #242a25;
-}
-
 .error-banner {
   margin-bottom: 14px;
   padding: 12px 14px;
@@ -403,7 +401,7 @@ h2 {
 
 .top-toast {
   position: fixed;
-  top: 14px;
+  top: calc(14px + env(safe-area-inset-top, 0px));
   left: 50%;
   z-index: 80;
   display: flex;
@@ -413,6 +411,7 @@ h2 {
   gap: 16px;
   padding: 10px 12px 10px 14px;
   border: 2px solid #2d342e;
+  border-left-width: 6px;
   border-radius: 8px;
   background: #fffdf8;
   color: #20251f;
@@ -424,6 +423,7 @@ h2 {
 
 .top-toast.success {
   border-color: #2f6f5f;
+  background: #edf4ec;
 }
 
 .top-toast.warning {
@@ -447,10 +447,14 @@ h2 {
   font-weight: 900;
 }
 
+.top-toast button:hover {
+  background: #e2d7c3;
+}
+
 .market-strip {
   flex: 0 0 auto;
   display: grid;
-  grid-template-columns: repeat(9, minmax(96px, 1fr));
+  grid-template-columns: minmax(150px, 1.5fr) repeat(8, minmax(90px, 1fr));
   border: 1px solid #2d342e;
   border-radius: 6px;
   overflow: hidden;
@@ -470,9 +474,9 @@ h2 {
 .metric span {
   display: block;
   margin-bottom: 2px;
-  color: #746b5d;
+  color: #615949;
   font-size: 10px;
-  font-weight: 800;
+  font-weight: 500;
 }
 
 .metric strong {
@@ -480,7 +484,9 @@ h2 {
   color: #20251f;
   font-size: 14px;
   line-height: 1.12;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .workspace {
@@ -501,9 +507,30 @@ h2 {
 }
 
 .chart-panel {
+  position: relative;
   height: 100%;
   min-height: 0;
   overflow: hidden;
+}
+
+.chart-hint {
+  position: absolute;
+  right: 10px;
+  bottom: 32px; /* 避开 KLineChart 底部 slider（bottom 8 + height 18） */
+  z-index: 5;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(38, 48, 42, 0.72);
+  color: #f7f4ee;
+  font-size: 11px;
+  font-weight: 700;
+  pointer-events: none;
+}
+
+.empty-state {
+  display: grid;
+  gap: 10px;
+  justify-items: center;
 }
 
 .chart-surface {
@@ -558,35 +585,37 @@ h2 {
   font-weight: 800;
 }
 
+.ghost:hover {
+  background: #e2d7c3;
+  border-color: #5f5747;
+}
+
+.ghost.danger {
+  border-color: #a8332a;
+  color: #8b2d24;
+}
+
+.panel-actions .action-divider {
+  width: 1px;
+  align-self: stretch;
+  background: #c9beac;
+  margin: 0 3px;
+}
+
 .hidden-file {
   display: none;
-}
-
-.file-status {
-  margin-top: 10px;
-  padding: 8px 10px;
-  border: 1px solid #c8beae;
-  border-radius: 6px;
-  background: #ede4d5;
-  color: #5f5444;
-  font-size: 12px;
-  font-weight: 800;
-}
-
-.cache-status {
-  margin-top: 10px;
-  padding: 8px 10px;
-  border-radius: 6px;
-  background: #26302a;
-  color: #f7f4ee;
-  font-size: 12px;
-  font-weight: 800;
 }
 
 .primary-save {
   background: #26302a;
   color: #f7f4ee;
   border-color: #26302a;
+}
+
+/* 深底主按钮的 hover 单独覆盖，防止被 .ghost:hover 洗白 */
+.ghost.primary-save:hover {
+  background: #31402f;
+  border-color: #31402f;
 }
 
 .cloud-save-indicator {
@@ -617,6 +646,16 @@ h2 {
   background: #d7a742;
 }
 
+.cloud-save-indicator.saving .cloud-save-status-dot {
+  animation: cloud-dot-pulse 1s ease-in-out infinite;
+}
+
+@keyframes cloud-dot-pulse {
+  50% {
+    opacity: 0.25;
+  }
+}
+
 .cloud-save-indicator.saved .cloud-save-status-dot {
   background: #4f805c;
 }
@@ -631,25 +670,41 @@ h2 {
 }
 
 .cloud-save-retry {
-  height: 24px;
-  padding: 0 7px;
+  height: 26px;
+  padding: 0 8px;
   border: 1px solid #a65342;
-  border-radius: 5px;
+  border-radius: 6px;
   background: #fff8f4;
   color: #8b3d31;
   font-size: 11px;
   font-weight: 900;
 }
 
-.history-status {
-  margin-top: 10px;
+.save-error-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 8px;
   padding: 8px 10px;
-  border: 1px solid #c8beae;
+  border: 1px solid #a65342;
+  border-left-width: 5px;
   border-radius: 6px;
-  background: #fffdf8;
-  color: #5f5444;
+  background: #f4d6d0;
+  color: #76251f;
   font-size: 12px;
   font-weight: 800;
+}
+
+.save-error-banner button {
+  height: 28px;
+  flex: 0 0 auto;
+  padding: 0 12px;
+  border: 1px solid #a65342;
+  border-radius: 6px;
+  background: #fffdf8;
+  color: #8b3d31;
+  font-weight: 900;
 }
 
 .input-mode-strip {
@@ -680,6 +735,10 @@ h2 {
   color: #2c332d;
   font-size: 12px;
   font-weight: 900;
+}
+
+.input-mode-strip button:not(.active):hover {
+  border-color: #26302a;
 }
 
 .input-mode-strip button.active {
@@ -716,11 +775,7 @@ h2 {
   color: #343b35;
   font-size: 12px;
   line-height: 1.25;
-}
-
-.moving-average-table .prediction-row {
-  grid-template-columns: 132px 112px 78px 68px 68px 68px;
-  min-width: 560px;
+  font-variant-numeric: tabular-nums;
 }
 
 .ma40-table .prediction-row {
@@ -728,28 +783,62 @@ h2 {
   min-width: 456px;
 }
 
-.moving-average-table .prediction-row.columns-1 {
-  grid-template-columns: 132px 112px 78px 68px;
-  min-width: 410px;
-}
-
-.moving-average-table .prediction-row.columns-2 {
-  grid-template-columns: 132px 112px 78px 68px 68px;
-  min-width: 488px;
-}
-
-.moving-average-table .prediction-row.columns-3 {
-  grid-template-columns: 132px 112px 78px 68px 68px 68px;
-  min-width: 560px;
-}
-
 .prediction-row.table-head {
   min-height: 30px;
-  color: #766d60;
+  color: #645c50;
   font-size: 11px;
-  font-weight: 900;
+  font-weight: 700;
   text-transform: uppercase;
   white-space: nowrap;
+}
+
+/* 表头吸顶 + 日期列吸左：右栏 470-520px 必然横向滚动，滚动后仍能对照行/列 */
+.prediction-table .prediction-row.table-head {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: #f7f4ee;
+}
+
+.ma40-table .prediction-row .date-cell,
+.ma40-table .prediction-row.table-head span:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: #f7f4ee;
+  box-shadow: 2px 0 0 #e0d7ca;
+}
+
+.ma40-table .prediction-row.table-head span:first-child {
+  z-index: 4;
+}
+
+.num-cell {
+  text-align: right;
+  padding-right: 6px;
+}
+
+.ma40-table .date-cell::before {
+  content: '';
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: #d0c7b6;
+}
+
+.prediction-row.table-head span:first-child::before {
+  content: none;
+}
+
+.prediction-row.row-filled .date-cell::before {
+  background: #4f805c;
+}
+
+.prediction-row.row-empty input.prediction-input {
+  border-style: dashed;
+  border-left-style: solid;
 }
 
 .prediction-row input {
@@ -770,16 +859,12 @@ h2 {
 }
 
 .prediction-row input.prediction-input:focus {
-  outline: 2px solid color-mix(in srgb, var(--horizon-color) 35%, transparent);
+  /* Chromium 108 回退色在前，color-mix 在支持的内核覆盖 */
+  outline: 2px solid rgba(45, 52, 46, 0.35);
+  outline-color: color-mix(in srgb, var(--horizon-color) 35%, transparent);
   border-color: var(--horizon-color);
 }
 
-.forecast-close-input {
-  --horizon-color: #20251f;
-  --horizon-soft: #f1eee7;
-}
-
-.forecast-ma5-input,
 .forecast-ma40-input {
   --horizon-color: #2f7893;
   --horizon-soft: #e4f1f5;
@@ -797,6 +882,7 @@ h2 {
 }
 
 .detail-button {
+  width: 100%;
   height: 28px;
   border: 1px solid #7a6f60;
   border-radius: 6px;
@@ -810,26 +896,9 @@ h2 {
   background: #ffe790;
 }
 
-.ma-cell {
-  min-height: 28px;
-  display: inline-grid;
-  place-items: center;
-  border-radius: 6px;
-  background: var(--horizon-soft);
-  color: var(--horizon-color);
-  font-weight: 900;
-  white-space: nowrap;
-}
-
 .date-cell {
   font-weight: 800;
   white-space: nowrap;
-}
-
-.muted-cell {
-  color: #9b9183;
-  font-weight: 800;
-  text-align: center;
 }
 
 .table-modal-backdrop {
@@ -873,13 +942,6 @@ h2 {
   min-height: 44px;
 }
 
-.table-modal .prediction-row.table-head {
-  position: sticky;
-  top: 0;
-  z-index: 2;
-  background: #f7f4ee;
-}
-
 .history-modal {
   width: min(1020px, 96vw);
   max-height: 92vh;
@@ -906,6 +968,7 @@ h2 {
   border-bottom: 1px solid #e0d7ca;
   color: #343b35;
   font-size: 12px;
+  font-variant-numeric: tabular-nums;
 }
 
 .history-head {
@@ -914,14 +977,14 @@ h2 {
   z-index: 1;
   min-height: 32px;
   background: #f7f4ee;
-  color: #766d60;
+  color: #645c50;
   font-size: 11px;
-  font-weight: 900;
+  font-weight: 700;
   white-space: nowrap;
 }
 
 .history-predicted {
-  color: #9c7300;
+  color: #7a5a00;
 }
 
 .empty-history {
@@ -997,9 +1060,9 @@ h2 {
 
 .formula-card-head span,
 .detail-section-head span {
-  color: #7a6f60;
+  color: #6b6152;
   font-size: 12px;
-  font-weight: 900;
+  font-weight: 700;
 }
 
 .formula-card-head strong {
@@ -1074,9 +1137,9 @@ h2 {
   top: 0;
   z-index: 1;
   background: #ede4d5;
-  color: #766d60;
+  color: #645c50;
   font-size: 12px;
-  font-weight: 900;
+  font-weight: 700;
 }
 
 .value-list-row {
@@ -1176,13 +1239,18 @@ h2 {
 
 .note-field textarea {
   width: 100%;
-  min-height: 84px;
+  min-height: 44px;
   resize: vertical;
   padding: 10px;
   border: 1px solid #b9ad9d;
   border-radius: 6px;
   background: #fffdf8;
   color: #151a15;
+}
+
+/* 备注默认收窄，聚焦展开，把纵向空间还给预测表（1366x768 小屏多出约一行） */
+.note-field textarea:focus {
+  min-height: 84px;
 }
 
 .cloud-account-modal {
@@ -1192,6 +1260,31 @@ h2 {
   background: #f7f4ee;
   box-shadow: 0 20px 60px rgba(32, 37, 31, 0.3);
   padding: 14px;
+}
+
+/* 模态自身已有 14px 内边距，头部去掉双重缩进 */
+.cloud-account-modal .table-modal-head {
+  padding: 0 0 10px;
+}
+
+.cloud-account-hint {
+  margin: 0;
+  color: #655d52;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.confirm-body {
+  margin: 12px 0 0;
+  color: #3c433c;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.cloud-account-actions button.danger {
+  background: #a8332a;
+  border-color: #a8332a;
+  color: #fffdf8;
 }
 
 .cloud-account-form,
@@ -1252,12 +1345,14 @@ h2 {
   body {
     height: auto;
     min-height: 100vh;
+    min-height: 100svh;
     overflow: auto;
   }
 
   .app-shell {
     height: auto;
     min-height: 100vh;
+    min-height: 100svh;
     overflow: visible;
   }
 
@@ -1294,8 +1389,7 @@ h2 {
   }
 
   .segmented,
-  .horizon-display,
-  .select-field {
+  .horizon-display {
     width: 100%;
     margin-left: 0;
   }
@@ -1308,10 +1402,6 @@ h2 {
   .horizon-display button {
     flex: 1;
     min-width: 0;
-  }
-
-  .select-field {
-    justify-content: space-between;
   }
 
   .market-strip {
@@ -1334,8 +1424,8 @@ h2 {
   .chart-panel,
   .chart-surface,
   .loading {
-    min-height: 520px;
-    height: 520px;
+    min-height: 360px;
+    height: min(520px, 62vh);
   }
 
   .input-panel {
@@ -1353,19 +1443,68 @@ h2 {
     font-size: 12px;
   }
 
-  .moving-average-table .prediction-row {
-    grid-template-columns: 1.05fr 0.74fr 0.58fr 0.56fr 0.56fr 0.56fr;
+  .formula-meta,
+  .ma-detail-meta {
+    grid-template-columns: 1fr;
   }
 
-  .moving-average-table .prediction-row.columns-1 {
-    grid-template-columns: 1.05fr 0.78fr 0.58fr 0.6fr;
+  .ma-detail-grid {
+    grid-template-columns: 1fr;
   }
 
-  .moving-average-table .prediction-row.columns-2 {
-    grid-template-columns: 1.05fr 0.76fr 0.58fr 0.56fr 0.56fr;
+  .table-modal-backdrop,
+  .detail-modal-backdrop {
+    padding: 10px;
+  }
+}
+
+/* 触屏环境：触控目标提升到 38-42px，输入字号 16px 防 iOS 聚焦缩放；桌面鼠标环境不受影响 */
+@media (pointer: coarse) {
+  .stock-search input,
+  .stock-search select,
+  .stock-search button {
+    height: 42px;
   }
 
-  .moving-average-table .prediction-row.columns-3 {
-    grid-template-columns: 1.05fr 0.74fr 0.58fr 0.56fr 0.56fr 0.56fr;
+  .segmented button,
+  .input-mode-strip button {
+    height: 42px;
+  }
+
+  .horizon-display button {
+    min-height: 42px;
+  }
+
+  .actual-line-toggle {
+    min-height: 42px;
+  }
+
+  .detail-button {
+    height: 38px;
+  }
+
+  .top-toast button {
+    height: 40px;
+    padding: 0 16px;
+  }
+
+  .cloud-save-retry {
+    height: 34px;
+    padding: 0 12px;
+  }
+
+  .prediction-row input {
+    height: 42px;
+    font-size: 16px;
+  }
+
+  .ghost {
+    height: 42px;
+  }
+
+  .note-field textarea,
+  .stock-search input,
+  .cloud-account-form input {
+    font-size: 16px;
   }
 }
