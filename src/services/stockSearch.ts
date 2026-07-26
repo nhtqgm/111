@@ -53,7 +53,7 @@ export async function searchStocks(keyword: string): Promise<StockSuggestion[]> 
 
   const url =
     'https://searchapi.eastmoney.com/api/suggest/get' +
-    `?input=${encodeURIComponent(trimmed)}&type=14&token=${SUGGEST_TOKEN}&count=10`;
+    `?input=${encodeURIComponent(trimmed)}&type=14&token=${SUGGEST_TOKEN}&count=20`;
   const payload = Capacitor.isNativePlatform() ? await requestJson(url) : await jsonpRequest(url);
   return parseSuggestPayload(payload);
 }
