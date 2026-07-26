@@ -1,4 +1,4 @@
-import type { CloudPredictionValueMutation } from './cloudPredictionStorage.ts';
+import { advancePredictionEditClock, type CloudPredictionValueMutation } from './cloudPredictionStorage.ts';
 import type { ElectronStorageApi, StorageLike } from './electronStorage.ts';
 
 const OUTBOX_SCHEMA = 'gupiao-cloud-prediction-outbox/v1';
@@ -33,8 +33,16 @@ export function loadCloudPredictionOutbox(
   try {
     const parsed = JSON.parse(raw) as unknown;
     if (!isStoredOutbox(parsed, accountId)) return { mutations: [], lastSavedAt: null };
+    const mutations = parsed.mutations.map((mutation) => {
+      // Outboxes written before edit-time arbitration carry no editedAt; the
+      // outbox's own updatedAt is the closest record of when the device last
+      // held these edits, and keeps a stale replay from posing as fresh.
+      const next = { ...mutation, editedAt: mutation.editedAt ?? parsed.updatedAt };
+      advancePredictionEditClock(next.editedAt);
+      return next;
+    });
     return {
-      mutations: cloneMutations(parsed.mutations),
+      mutations,
       lastSavedAt: parsed.lastSavedAt,
     };
   } catch {
@@ -125,20 +133,21 @@ function isMutation(value: unknown): value is CloudPredictionValueMutation {
     typeof candidate.targetDate === 'string' &&
     /^\d{4}-\d{2}-\d{2}$/.test(candidate.targetDate) &&
     ['ma5', 'ma10', 'ma20', 'ma40', 'ma60', 'note'].includes(candidate.metric ?? '') &&
-    (candidate.value === null || typeof candidate.value === 'string')
+    (candidate.value === null || typeof candidate.value === 'string') &&
+    // editedAt is absent in outboxes written before edit-time arbitration.
+    (candidate.editedAt === undefined || isTimestamp(candidate.editedAt))
   );
 }
 
 function deduplicateMutations(mutations: CloudPredictionValueMutation[]) {
   const values = new Map<string, CloudPredictionValueMutation>();
   mutations.filter(isMutation).forEach((mutation) => {
-    values.set(mutationKey(mutation), { ...mutation });
+    const key = mutationKey(mutation);
+    const existing = values.get(key);
+    if (existing && Date.parse(existing.editedAt) > Date.parse(mutation.editedAt)) return;
+    values.set(key, { ...mutation });
   });
   return [...values.values()].sort((left, right) => mutationKey(left).localeCompare(mutationKey(right)));
-}
-
-function cloneMutations(mutations: CloudPredictionValueMutation[]) {
-  return mutations.map((mutation) => ({ ...mutation }));
 }
 
 function mutationKey(mutation: CloudPredictionValueMutation) {

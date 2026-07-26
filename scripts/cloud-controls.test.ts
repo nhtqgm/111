@@ -26,6 +26,31 @@ test('every signed-in account gets its stock selector from the database registry
   assert.doesNotMatch(appSource, /collectCloudStockCodes|loadStoredStockCodes|rememberStockCodes/);
 });
 
+test('hydrating cloud predictions never marks the workspace dirty; only real edits do', () => {
+  // A device that merely opens stale cloud data must not enter the 30s
+  // autosave loop — that loop is what let old devices overwrite newer edits.
+  assert.doesNotMatch(
+    appSource,
+    /useEffect\(\(\) => \{\s*if \(!activeData \|\| !activeScope \|\| !baseDate \|\| !predictions\.length\) return;\s*setHasUnsavedChanges\(true\);/,
+  );
+  const draft = appSource.slice(
+    appSource.indexOf('  function persistPredictionDraft('),
+    appSource.indexOf('  /*', appSource.indexOf('  function persistPredictionDraft(')),
+  );
+  assert.match(draft, /setHasUnsavedChanges\(true\);/);
+});
+
+test('prediction saves carry edit stamps and adopt newer surviving cloud values on rejection', () => {
+  assert.match(supabaseSource, /edited_at: mutation\.editedAt/);
+  assert.match(appSource, /advancePredictionEditClock\(record\?\.updatedAt\)/);
+  const queueSetup = appSource.slice(
+    appSource.indexOf('  function createPredictionSaveQueueForUser('),
+    appSource.indexOf('  function createHistorySaveQueueForUser('),
+  );
+  assert.match(queueSetup, /onRejected/);
+  assert.match(queueSetup, /applyPredictionValueMutationsToWorkspace\(workspace, mutations\)/);
+});
+
 test('manual cloud save flushes durable prediction and history queues and verifies the readback', () => {
   const activeSave = appSource.slice(
     appSource.lastIndexOf('  async function saveCurrentWorkspaceToCloud()'),

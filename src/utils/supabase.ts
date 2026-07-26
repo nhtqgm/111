@@ -1,6 +1,6 @@
 import { createClient, type SupabaseClient, type User } from '@supabase/supabase-js';
 import type { PredictionEvent } from './cloudPredictions.ts';
-import type { CloudPredictionValueMutation } from './cloudPredictionStorage.ts';
+import { normalizeRejectedPredictionRows, type CloudPredictionValueMutation } from './cloudPredictionStorage.ts';
 import type { CloudWorkspace } from './cloudWorkspace.ts';
 import type { ForecastHistorySnapshot } from './forecastHistory.ts';
 import type { PeriodType } from '../types.ts';
@@ -119,19 +119,23 @@ export async function replaceMyCloudWorkspace(workspace: CloudWorkspace) {
   if (error) throw error;
 }
 
-export async function saveMyPredictionValues(mutations: CloudPredictionValueMutation[]) {
-  if (!mutations.length) return;
+export async function saveMyPredictionValues(
+  mutations: CloudPredictionValueMutation[],
+): Promise<CloudPredictionValueMutation[]> {
+  if (!mutations.length) return [];
   const api = requireCloudClient();
-  const { error } = await api.rpc('save_my_prediction_values', {
+  const { data, error } = await api.rpc('save_my_prediction_values', {
     p_values: mutations.map((mutation) => ({
       stock_code: mutation.stockCode,
       period: mutation.period,
       target_date: mutation.targetDate,
       metric: mutation.metric,
       value: mutation.value,
+      edited_at: mutation.editedAt,
     })),
   });
   if (error) throw error;
+  return normalizeRejectedPredictionRows(data);
 }
 
 export async function saveMyWorkspacePreferences(

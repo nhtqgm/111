@@ -49,6 +49,7 @@ import {
   type CloudWorkspaceScope,
 } from './utils/cloudWorkspace';
 import {
+  advancePredictionEditClock,
   applyPredictionValueMutationsToWorkspace,
   createPredictionValueMutations,
   createPredictionValueSaveQueue,
@@ -400,12 +401,6 @@ export default function App() {
   }, [activeData, activeScope?.period, baseDate, cloudWorkspace, predictions]);
 
   useEffect(() => {
-    if (!activeData || !activeScope || !baseDate || !predictions.length) return;
-
-    setHasUnsavedChanges(true);
-  }, [activeData, activeScope?.period, baseDate, predictions]);
-
-  useEffect(() => {
     const timer = window.setInterval(() => {
       saveCurrentWorkspace({ notice: 'auto' });
     }, 30000);
@@ -426,11 +421,15 @@ export default function App() {
       accountId: user.id,
       initialMutations: outbox.mutations,
       initialLastSavedAt: outbox.lastSavedAt,
-      save: async (mutations) => {
-        await saveMyPredictionValues(mutations);
-      },
+      save: (mutations) => saveMyPredictionValues(mutations),
       persist: (snapshot) => saveCloudPredictionOutbox(user.id, snapshot),
       onStateChange: setCloudPredictionSaveState,
+      onRejected: (mutations) => {
+        // The cloud kept newer edits (another device wrote after ours) — adopt
+        // them locally so the on-screen table and the next save verification
+        // both agree with the surviving cloud values.
+        updateCloudWorkspace((workspace) => applyPredictionValueMutationsToWorkspace(workspace, mutations));
+      },
     });
   }
 
@@ -472,6 +471,9 @@ export default function App() {
       if (generation !== cloudSessionGenerationRef.current) return;
       if (!profile || profile.userId !== user.id) throw new Error('Cloud account profile is unavailable.');
 
+      // Seed the edit clock with server time so edits made on a device whose
+      // wall clock lags still outrank everything already stored in the cloud.
+      advancePredictionEditClock(record?.updatedAt);
       const remoteWorkspace = record?.payload ?? createEmptyCloudWorkspace();
       const outbox = loadCloudPredictionOutbox(user.id);
       const historyOutbox = loadCloudHistoryOutbox(user.id);
@@ -777,6 +779,10 @@ export default function App() {
     const current = cloudWorkspaceRef.current;
     const beforeRows = current ? getWorkspacePredictions(current, scope) : [];
     const mutations = createPredictionValueMutations(scope, beforeRows, rows);
+    // Only real edits may mark the workspace dirty. Hydrating rows straight
+    // from the cloud must not — otherwise merely opening stale data on an old
+    // device starts the 30s autosave loop and rewrites the cloud.
+    setHasUnsavedChanges(true);
     updateCloudWorkspace((workspace) => ({
       ...setWorkspacePredictions(workspace, scope, rows),
       workspace: { stockCode: scope.stockCode, period: scope.period, baseDate },

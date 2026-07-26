@@ -13,6 +13,7 @@ export interface CloudPredictionValueMutation {
   targetDate: string;
   metric: CloudPredictionMetric;
   value: string | null;
+  editedAt: string;
 }
 
 export type CloudPredictionSaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
@@ -38,26 +39,86 @@ const metrics: Array<{ metric: CloudPredictionMetric; window?: number }> = [
   { metric: 'note' },
 ];
 
+// Edit stamps arbitrate multi-device writes server-side, so they must never
+// move backwards — not across rapid same-millisecond edits, and not on devices
+// whose wall clock lags the server. Seed with every server timestamp we see.
+let lastEditedAtMs = 0;
+
+export function advancePredictionEditClock(timestamp: string | number | null | undefined) {
+  const parsed = typeof timestamp === 'number' ? timestamp : timestamp ? Date.parse(timestamp) : Number.NaN;
+  if (Number.isFinite(parsed) && parsed > lastEditedAtMs) lastEditedAtMs = parsed;
+}
+
+export function nextPredictionEditedAt() {
+  lastEditedAtMs = Math.max(Date.now(), lastEditedAtMs + 1);
+  return new Date(lastEditedAtMs).toISOString();
+}
+
+// Rows save_my_prediction_values kept because the cloud already held a newer
+// edit. The returned value is the surviving one, so the caller can converge
+// its local view. Malformed rows are dropped rather than trusted.
+export function normalizeRejectedPredictionRows(data: unknown): CloudPredictionValueMutation[] {
+  if (!Array.isArray(data)) return [];
+  return data.flatMap((row) => {
+    const candidate = (row ?? {}) as Record<string, unknown>;
+    if (
+      !row || typeof row !== 'object' ||
+      typeof candidate.r_stock_code !== 'string' ||
+      !/^\d{6}$/.test(candidate.r_stock_code) ||
+      !['day', 'week', 'month'].includes(candidate.r_period as string) ||
+      typeof candidate.r_target_date !== 'string' ||
+      !/^\d{4}-\d{2}-\d{2}/.test(candidate.r_target_date) ||
+      !['ma5', 'ma10', 'ma20', 'ma40', 'ma60', 'note'].includes(candidate.r_metric as string) ||
+      typeof candidate.r_edited_at !== 'string' ||
+      !Number.isFinite(Date.parse(candidate.r_edited_at))
+    ) {
+      return [];
+    }
+    const record = row as {
+      r_stock_code: string;
+      r_period: PeriodType;
+      r_target_date: string;
+      r_metric: CloudPredictionMetric;
+      r_value: unknown;
+      r_edited_at: string;
+    };
+    advancePredictionEditClock(record.r_edited_at);
+    const value = typeof record.r_value === 'string' ? record.r_value : '';
+    return [{
+      stockCode: record.r_stock_code,
+      period: record.r_period,
+      targetDate: record.r_target_date.slice(0, 10),
+      metric: record.r_metric,
+      value: value.trim() ? value : null,
+      editedAt: record.r_edited_at,
+    }];
+  });
+}
+
 export function createPredictionValueMutations(
   scope: { stockCode: string; period: PeriodType },
   beforeRows: PredictionPoint[],
   afterRows: PredictionPoint[],
+  options?: { editedAt?: string },
 ): CloudPredictionValueMutation[] {
   const beforeByDate = new Map(beforeRows.map((row) => [row.targetDate, row]));
   const afterByDate = new Map(afterRows.map((row) => [row.targetDate, row]));
   const targetDates = [...new Set([...beforeByDate.keys(), ...afterByDate.keys()])].sort();
+  let editedAt: string | null = options?.editedAt ?? null;
 
   return targetDates.flatMap((targetDate) =>
     metrics.flatMap(({ metric, window }) => {
       const before = valueForMetric(beforeByDate.get(targetDate), metric, window);
       const after = valueForMetric(afterByDate.get(targetDate), metric, window);
       if (before === after) return [];
+      editedAt ??= nextPredictionEditedAt();
       return [{
         stockCode: scope.stockCode,
         period: scope.period,
         targetDate,
         metric,
         value: after || null,
+        editedAt,
       }];
     }),
   );
@@ -104,9 +165,10 @@ export function createPredictionValueSaveQueue(options: {
   debounceMs?: number;
   initialMutations?: CloudPredictionValueMutation[];
   initialLastSavedAt?: string | null;
-  save: (mutations: CloudPredictionValueMutation[]) => Promise<void>;
+  save: (mutations: CloudPredictionValueMutation[]) => Promise<CloudPredictionValueMutation[] | void>;
   persist?: (snapshot: CloudPredictionQueueSnapshot) => void;
   onStateChange?: (state: CloudPredictionSaveState) => void;
+  onRejected?: (mutations: CloudPredictionValueMutation[]) => void;
 }) {
   let accountId = options.accountId;
   let pending = toMutationMap(options.initialMutations ?? []);
@@ -152,12 +214,19 @@ export function createPredictionValueSaveQueue(options: {
     lastError = null;
     setStatus('saving');
     active = options.save([...current.values()])
-      .then(() => {
+      .then((rejected) => {
         if (generation !== requestGeneration || accountId !== requestAccountId) return;
         activeBatch = null;
         lastError = null;
         lastSavedAt = new Date().toISOString();
         setStatus(pending.size ? 'pending' : 'saved');
+        if (Array.isArray(rejected) && rejected.length) {
+          // The server kept a newer edit for these cells. Let the app converge
+          // its local view — unless the user already re-edited the same cell,
+          // in which case the pending mutation is the newer truth.
+          const fresh = rejected.filter((mutation) => !pending.has(mutationKey(mutation)));
+          if (fresh.length) options.onRejected?.(fresh);
+        }
       })
       .catch((error: unknown) => {
         if (generation !== requestGeneration || accountId !== requestAccountId) return;

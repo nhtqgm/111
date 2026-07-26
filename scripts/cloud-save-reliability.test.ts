@@ -12,6 +12,7 @@ const mutation = {
   targetDate: '2026-07-14',
   metric: 'ma40' as const,
   value: '9.1500',
+  editedAt: '2026-07-13T09:59:00.000Z',
 };
 
 test('failed prediction saves remain durable and are retried after restart', async () => {
@@ -93,6 +94,40 @@ test('cloud outbox storage is isolated by account and retains last save time', (
     mutations: [],
     lastSavedAt: null,
   });
+});
+
+test('legacy outbox mutations without editedAt inherit the outbox updatedAt on load', () => {
+  const storage = new MemoryStorage();
+  const key = outboxModule.cloudPredictionOutboxKey!('account-719');
+  const { editedAt: _dropped, ...legacyMutation } = mutation;
+  storage.setItem(key, JSON.stringify({
+    schema: 'gupiao-cloud-prediction-outbox/v1',
+    accountId: 'account-719',
+    mutations: [legacyMutation],
+    lastSavedAt: null,
+    updatedAt: '2026-07-13T10:00:00.000Z',
+  }));
+
+  const loaded = outboxModule.loadCloudPredictionOutbox!('account-719', storage);
+  assert.deepEqual(loaded.mutations, [
+    { ...legacyMutation, editedAt: '2026-07-13T10:00:00.000Z' },
+  ]);
+});
+
+test('outbox deduplication keeps the newest edit of one cell', () => {
+  const storage = new MemoryStorage();
+  const older = { ...mutation, value: '8.0000', editedAt: '2026-07-14T10:00:00.000Z' };
+  const newer = { ...mutation, value: '9.0000', editedAt: '2026-07-14T11:00:00.000Z' };
+  // Regardless of array order, the newer edit must win the slot.
+  outboxModule.saveCloudPredictionOutbox!('account-719', {
+    mutations: [newer, older],
+    lastSavedAt: null,
+  }, storage, undefined);
+
+  assert.deepEqual(
+    outboxModule.loadCloudPredictionOutbox!('account-719', storage).mutations,
+    [newer],
+  );
 });
 
 test('detaching an account does not overwrite its durable pending outbox', () => {
