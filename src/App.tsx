@@ -67,7 +67,7 @@ import {
   type CloudHistoryOutboxSnapshot,
 } from './utils/cloudHistoryStorage';
 import { formatNumber, summarizeForecastHistory } from './utils/metrics';
-import { mergeLineValuePoints, mergeLineValuePointsPreservingEarlier } from './utils/linePoints';
+import { mergeLineValuePointsPreservingEarlier } from './utils/linePoints';
 import {
   buildMa40Projection,
   type LineValuePoint,
@@ -884,19 +884,26 @@ export default function App() {
   const pointSeries = useMemo<ChartPointSeries[]>(
     () => [
       {
+        // 已走完周期上的菱形是当时预测的锁定快照，不随行情变动
+        label: '当时预测收盘',
+        color: '#ffe600',
+        borderColor: '#8c6a3d',
+        rows: chartHistoryRows.map((row) => ({
+          targetDate: row.actualDate ?? row.targetDate,
+          value: row.predictedClose,
+        })),
+        symbol: 'diamond',
+        symbolSize: 12,
+        z: 119,
+      },
+      {
         label: '预测收盘价',
         color: '#ffe600',
         borderColor: '#20251f',
-        rows: mergeLineValuePoints(
-          chartHistoryRows.map((row) => ({
-            targetDate: row.actualDate ?? row.targetDate,
-            value: row.predictedClose,
-          })),
-          projection.rows.filter((row) => row.isForecast).map((row) => ({
-            targetDate: row.targetDate,
-            value: row.derivedClose,
-          })),
-        ),
+        rows: projection.rows.filter((row) => row.isForecast).map((row) => ({
+          targetDate: row.targetDate,
+          value: row.derivedClose,
+        })),
         symbol: 'diamond',
         symbolSize: 13,
         z: 120,
