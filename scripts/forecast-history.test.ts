@@ -200,3 +200,74 @@ test('a completed history snapshot is repaired when the same user MA input deriv
   assert.equal(shouldRepairFrozenForecastSnapshot(corrupted, rebuilt), true);
   assert.equal(shouldRepairFrozenForecastSnapshot({ ...corrupted, inputMaValue: 8.18 }, rebuilt), false);
 });
+
+test('a snapshot stamped settledAt is never repaired again', async () => {
+  const { createForecastHistorySnapshots, shouldRepairFrozenForecastSnapshot } = await loadHistoryModule();
+  const previous = createForecastHistorySnapshots('688571', 'week', 40, [createRow('2026-07-10', 8.17)])[0];
+  const rebuilt = { ...previous, predictedClose: 9.2 };
+  const settled = { ...previous, predictedClose: 9.26, settledAt: '2026-07-10' };
+
+  assert.equal(shouldRepairFrozenForecastSnapshot(settled, rebuilt), false);
+});
+
+function makePoint(date: string, close: number) {
+  return {
+    date,
+    open: close,
+    close,
+    high: close,
+    low: close,
+    volume: 1,
+    amount: 1,
+    amplitude: 0,
+    pctChange: 0,
+    change: 0,
+    turnover: 0,
+  };
+}
+
+test('a dead day target settles against the next real K-line and is marked as fallback', async () => {
+  const { buildForecastHistoryRows, createForecastHistorySnapshots } = await loadHistoryModule();
+  const snapshots = createForecastHistorySnapshots('000166', 'day', 40, [createRow('2026-07-28')]);
+  const settledPoints = [makePoint('2026-07-27', 4.4), makePoint('2026-07-29', 4.8)];
+  const pendingPoints = [makePoint('2026-07-27', 4.4)];
+
+  const settledRow = buildForecastHistoryRows(snapshots, settledPoints)[0];
+  assert.equal(settledRow.actualDate, '2026-07-29');
+  assert.equal(settledRow.actualClose, 4.8);
+  assert.equal(settledRow.settledByFallback, true);
+
+  const pendingRow = buildForecastHistoryRows(snapshots, pendingPoints)[0];
+  assert.equal(pendingRow.actualClose, null);
+  assert.equal(pendingRow.settledByFallback, false);
+});
+
+test('a ghost target older than the data window never settles against the first bar', async () => {
+  const { buildForecastHistoryRows, createForecastHistorySnapshots } = await loadHistoryModule();
+  const snapshots = createForecastHistorySnapshots('000166', 'day', 40, [createRow('2020-01-02')]);
+  const points = [makePoint('2026-07-27', 4.4), makePoint('2026-07-29', 4.8)];
+
+  const row = buildForecastHistoryRows(snapshots, points)[0];
+  assert.equal(row.actualClose, null);
+  assert.equal(row.settledByFallback, false);
+});
+
+test('a whole-closure week settles against the first K-line of the next week', async () => {
+  const { buildForecastHistoryRows, createForecastHistorySnapshots } = await loadHistoryModule();
+  const snapshots = createForecastHistorySnapshots('000166', 'week', 40, [createRow('2026-02-20')]);
+  const points = [makePoint('2026-02-13', 4.4), makePoint('2026-02-27', 4.9)];
+
+  const row = buildForecastHistoryRows(snapshots, points)[0];
+  assert.equal(row.actualDate, '2026-02-27');
+  assert.equal(row.settledByFallback, true);
+});
+
+test('same-week in-period settlement is not marked as fallback', async () => {
+  const { buildForecastHistoryRows, createForecastHistorySnapshots } = await loadHistoryModule();
+  const snapshots = createForecastHistorySnapshots('000166', 'week', 40, [createRow('2026-07-10')]);
+  const points = [makePoint('2026-07-09', 4.5)];
+
+  const row = buildForecastHistoryRows(snapshots, points)[0];
+  assert.equal(row.actualDate, '2026-07-09');
+  assert.equal(row.settledByFallback, false);
+});

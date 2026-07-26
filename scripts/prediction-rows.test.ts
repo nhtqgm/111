@@ -158,3 +158,51 @@ function point(date: string): KLinePoint {
     turnover: 0,
   };
 }
+
+test('a legacy same-week target date migrates its values onto the new horizon date', () => {
+  const rows = hydratePredictionRows(
+    [
+      {
+        targetDate: '2026-10-02',
+        predictedMa40: '112.0',
+        predictedMaValues: { 40: '112.0' },
+        note: 'legacy calendar target',
+      },
+    ],
+    [point('2026-09-18')],
+    'week',
+    '2026-09-18',
+    2,
+  );
+
+  assert.deepEqual(rows.map((row) => row.targetDate), ['2026-09-24', '2026-09-30']);
+  assert.equal(rows.find((row) => row.targetDate === '2026-09-30')?.predictedMa40, '112.0');
+  assert.equal(rows.find((row) => row.targetDate === '2026-09-30')?.note, 'legacy calendar target');
+});
+
+test('a legacy same-week row is kept as history when the new horizon date already has values', () => {
+  const rows = hydratePredictionRows(
+    [
+      {
+        targetDate: '2026-09-30',
+        predictedMa40: '111.0',
+        predictedMaValues: { 40: '111.0' },
+        note: '',
+      },
+      {
+        targetDate: '2026-10-02',
+        predictedMa40: '112.0',
+        predictedMaValues: { 40: '112.0' },
+        note: '',
+      },
+    ],
+    [point('2026-09-18')],
+    'week',
+    '2026-09-18',
+    2,
+  );
+
+  assert.deepEqual(rows.map((row) => row.targetDate), ['2026-09-24', '2026-09-30', '2026-10-02']);
+  assert.equal(rows.find((row) => row.targetDate === '2026-09-30')?.predictedMa40, '111.0');
+  assert.equal(rows.find((row) => row.targetDate === '2026-10-02')?.predictedMa40, '112.0');
+});

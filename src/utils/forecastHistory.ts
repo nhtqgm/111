@@ -23,6 +23,11 @@ export interface ForecastHistorySnapshot {
   predictedMaValues: Record<MaWindow, number | null>;
   note: string;
   savedAt: string;
+  /**
+   * 该期结算入档的定格戳（结算K线日期）。带此标记的快照永不再被 repair 重写。
+   * 云端按 JSONB 整体存 payload，可选字段可安全往返；旧快照缺省视为未定格。
+   */
+  settledAt?: string;
 }
 
 export interface ForecastHistoryRow extends ForecastHistorySnapshot {
@@ -30,6 +35,8 @@ export interface ForecastHistoryRow extends ForecastHistorySnapshot {
   actualClose: number | null;
   actualMaValues: Record<MaWindow, number | null>;
   closeDiff: number | null;
+  /** 目标周期没有任何K线（休市/停牌），顺延到下一根真实K线结算 */
+  settledByFallback: boolean;
 }
 
 export interface ForecastHistoryRecoveryResult {
@@ -130,13 +137,18 @@ export function mergeForecastHistory(
  * Completed forecasts are normally frozen for review. An older snapshot may
  * nevertheless have been produced from a stale chart state. When the saved
  * user MA is unchanged but its reverse-calculated close differs, the snapshot
- * is demonstrably inconsistent with that user input and can be repaired.
+ * is demonstrably inconsistent with that user input and can be repaired —
+ * but only ONCE, at settlement time: a snapshot already stamped `settledAt`
+ * has been shown to the user as final and must never be rewritten again
+ * (later recomputations can differ merely because dead periods dropped out
+ * of the projection window, which is not a data error).
  */
 export function shouldRepairFrozenForecastSnapshot(
   existing: ForecastHistorySnapshot | undefined,
   rebuilt: ForecastHistorySnapshot,
 ) {
   if (!existing || existing.id !== rebuilt.id) return false;
+  if (existing.settledAt) return false;
   if (existing.inputMaWindow !== rebuilt.inputMaWindow) return false;
   if (Math.abs(existing.inputMaValue - rebuilt.inputMaValue) > 1e-9) return false;
   return Math.abs(existing.predictedClose - rebuilt.predictedClose) > 1e-6;
@@ -260,6 +272,9 @@ export function buildForecastHistoryRows(
         ]),
       ) as Record<MaWindow, number | null>,
       closeDiff: actualClose === null ? null : snapshot.predictedClose - actualClose,
+      settledByFallback: actual
+        ? isFallbackSettlement(snapshot.targetDate, actual.date, snapshot.period)
+        : false,
     };
   });
 }
@@ -300,6 +315,9 @@ function normalizeSnapshot(
     predictedMaValues: normalizeMaValues(candidate.predictedMaValues),
     note: typeof candidate.note === 'string' ? candidate.note : '',
     savedAt: typeof candidate.savedAt === 'string' ? candidate.savedAt : '',
+    ...(typeof candidate.settledAt === 'string' && candidate.settledAt
+      ? { settledAt: candidate.settledAt }
+      : {}),
   };
 }
 
@@ -402,7 +420,7 @@ function findActualPoint(targetDate: string, period: PeriodType, points: KLinePo
 
   const target = parseDate(targetDate);
   if (!target) return null;
-  return (
+  const samePeriod =
     points
       .filter((point) => {
         const current = parseDate(point.date);
@@ -411,8 +429,29 @@ function findActualPoint(targetDate: string, period: PeriodType, points: KLinePo
         if (period === 'week') return getWeekStart(current) === getWeekStart(target);
         return false;
       })
-      .sort((left, right) => right.date.localeCompare(left.date))[0] ?? null
-  );
+      .sort((left, right) => right.date.localeCompare(left.date))[0] ?? null;
+  if (samePeriod) return samePeriod;
+
+  // 死目标日回退：目标周期整段没有任何K线（日历表未收录的休市日、个股停牌、
+  // 整周/整月休市），而市场已经走到了更后面 —— 顺延到目标日之后的第一根真实K线结算。
+  // 要求目标日之前也存在K线，防止把早于数据窗口起点的陈年幽灵快照错误结算到首根K线上。
+  const hasEarlierPoint = points.some((point) => point.date < targetDate);
+  if (!hasEarlierPoint) return null;
+  return points.find((point) => point.date > targetDate) ?? null;
+}
+
+/** 结算K线是否落在目标周期之外（顺延结算） */
+export function isFallbackSettlement(
+  targetDate: string,
+  actualDate: string,
+  period: PeriodType,
+) {
+  if (period === 'day') return actualDate !== targetDate;
+  const target = parseDate(targetDate);
+  const actual = parseDate(actualDate);
+  if (!target || !actual) return false;
+  if (period === 'month') return target.year !== actual.year || target.month !== actual.month;
+  return getWeekStart(target) !== getWeekStart(actual);
 }
 
 function storageKey(stockCode: string, period: PeriodType) {

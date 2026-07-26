@@ -158,9 +158,25 @@ export function hydratePredictionRows(
   const generatedRows = generatePredictionRows(points, period, baseDate, rowCount);
   const savedByDate = new Map(savedRows.map((row) => [row.targetDate, normalizePredictionPoint(row)]));
   const horizonDates = new Set(generatedRows.map((row) => row.targetDate));
+  const toPeriodKey = createPredictionPeriodKey(period);
+  const migratedDates = new Set<string>();
 
   const hydratedRows = generatedRows.map((row) => {
-    const saved = savedByDate.get(row.targetDate);
+    let saved = savedByDate.get(row.targetDate);
+    if (!saved) {
+      // 日历表变更会让同一周/月重新生成不同的目标日。旧目标日行如果与当前地平线
+      // 目标同周期且带有已填值，就把值迁移到新目标日，避免图上出现表格里改不了的孤儿预测。
+      const legacy = [...savedByDate.values()].find(
+        (item) =>
+          !horizonDates.has(item.targetDate) &&
+          toPeriodKey(item.targetDate) === toPeriodKey(row.targetDate) &&
+          hasAnyPredictionValue(item),
+      );
+      if (legacy) {
+        migratedDates.add(legacy.targetDate);
+        saved = legacy;
+      }
+    }
     if (!saved) return row;
 
     return {
@@ -171,8 +187,31 @@ export function hydratePredictionRows(
     };
   });
 
-  const historicalRows = [...savedByDate.values()].filter((row) => !horizonDates.has(row.targetDate));
+  const historicalRows = [...savedByDate.values()].filter(
+    (row) => !horizonDates.has(row.targetDate) && !migratedDates.has(row.targetDate),
+  );
   return [...historicalRows, ...hydratedRows].sort((left, right) => left.targetDate.localeCompare(right.targetDate));
+}
+
+function hasAnyPredictionValue(row: PredictionPoint) {
+  return (
+    row.predictedMa40.trim() !== '' ||
+    Object.values(row.predictedMaValues).some((value) => value.trim() !== '')
+  );
+}
+
+function createPredictionPeriodKey(period: PeriodType) {
+  if (period === 'month') return (date: string) => date.slice(0, 7);
+  if (period === 'week') {
+    return (date: string) => {
+      const parsed = new Date(`${date}T00:00:00Z`);
+      if (!Number.isFinite(parsed.getTime())) return date;
+      const day = parsed.getUTCDay() || 7;
+      parsed.setUTCDate(parsed.getUTCDate() - day + 1);
+      return parsed.toISOString().slice(0, 10);
+    };
+  }
+  return (date: string) => date;
 }
 
 /**

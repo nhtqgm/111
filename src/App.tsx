@@ -866,6 +866,15 @@ export default function App() {
     () => selectPredictionRowsForInputTable(projection.rows, inputHorizonDates),
     [inputHorizonDates, projection.rows],
   );
+  // 已填了预测值但因缺少前期收盘价而反推失败的期数（图上不会出现菱形，需要提示）
+  const underivableFilledCount = useMemo(
+    () =>
+      predictionTableRows.filter(
+        (row) =>
+          getPredictionInputValue(row, inputMaWindow).trim() !== '' && row.derivedClose === null,
+      ).length,
+    [inputMaWindow, predictionTableRows],
+  );
   // 日线数据落后于真实日历时提醒用户：图上"过去日期还挂着预测菱形"是因为数据未更新。
   // 周/月线在期中未收盘属正常状态，不做此判断。
   const isMarketDataLagging = useMemo(
@@ -937,15 +946,28 @@ export default function App() {
   );
   // 收盘后定格的历史预测（当前输入窗口的全部已出结果期），限制在图表可见的
   // 最近 180 根 K 线范围内，避免把坐标轴拉到更早的日期。
+  // 顺延结算的行画在原目标日（该日没有K线，但预测是对那一天做的）；
+  // 同一展示日期若有多行（顺延/日历漂移造成），优先非顺延行，再取最新保存的。
   const settledPointRows = useMemo<LineValuePoint[]>(() => {
     if (!activeData) return [];
     const earliestVisibleDate = activeData.points.at(-180)?.date ?? activeData.points[0]?.date ?? '';
-    return visibleHistoryRows
-      .filter((row) => (row.actualDate ?? row.targetDate) >= earliestVisibleDate)
-      .map((row) => ({
-        targetDate: row.actualDate ?? row.targetDate,
-        value: row.predictedClose,
-      }));
+    const byDate = new Map<string, (typeof visibleHistoryRows)[number]>();
+    for (const row of visibleHistoryRows) {
+      const displayDate = row.settledByFallback ? row.targetDate : row.actualDate ?? row.targetDate;
+      if (displayDate < earliestVisibleDate) continue;
+      const previous = byDate.get(displayDate);
+      if (
+        !previous ||
+        (previous.settledByFallback && !row.settledByFallback) ||
+        (previous.settledByFallback === row.settledByFallback && row.savedAt > previous.savedAt)
+      ) {
+        byDate.set(displayDate, row);
+      }
+    }
+    return Array.from(byDate.entries()).map(([displayDate, row]) => ({
+      targetDate: displayDate,
+      value: row.predictedClose,
+    }));
   }, [activeData, visibleHistoryRows]);
   const pointSeries = useMemo<ChartPointSeries[]>(
     () => [
@@ -994,10 +1016,11 @@ export default function App() {
       ? getWorkspaceForecastHistory(currentWorkspace, { stockCode: sourceData.code, period: workspacePeriod })
       : [];
     const existingById = new Map(existing.map((snapshot) => [snapshot.id, snapshot]));
-    const frozenIds = new Set(
+    // 已结算行 id → 结算K线日期。快照在结算入档时盖上 settledAt 定格戳，此后永不重写。
+    const settledDateById = new Map(
       buildForecastHistoryRows(existing, sourceData.points)
         .filter((row) => row.actualClose !== null)
-        .map((row) => row.id),
+        .map((row) => [row.id, row.actualDate ?? row.targetDate]),
     );
     const captureRows = getHistoryCaptureRows(rows);
     if (!captureRows.length) {
@@ -1006,18 +1029,38 @@ export default function App() {
       }
       return;
     }
-    const incoming = createForecastHistorySnapshotsForAllInputs(
+    const rebuilt = createForecastHistorySnapshotsForAllInputs(
       sourceData.code,
       workspacePeriod,
       sourceData.points,
       rows,
       workspaceBaseDate,
-    ).filter((snapshot) => {
-      const existingSnapshot = existingById.get(snapshot.id);
-      return !sameForecastSnapshot(existingSnapshot, snapshot) && (
-        !frozenIds.has(snapshot.id) || shouldRepairFrozenForecastSnapshot(existingSnapshot, snapshot)
-      );
+    );
+    const rebuiltById = new Map(rebuilt.map((snapshot) => [snapshot.id, snapshot]));
+    // 未结算行：收盘前随编辑/行情刷新持续更新（暂估收敛）
+    const incoming = rebuilt.filter((snapshot) => {
+      if (settledDateById.has(snapshot.id)) return false;
+      return !sameForecastSnapshot(existingById.get(snapshot.id), snapshot);
     });
+    // 已结算行：结算时刻做一次性收敛并盖 settledAt 定格戳，之后永不重写。
+    // 独立于 rebuilt 遍历，保证重建失败（如窗口断链）的行也能被定格。
+    const stampSavedAt = new Date().toISOString();
+    for (const [settledId, settledDate] of settledDateById) {
+      const existingSnapshot = existingById.get(settledId);
+      if (existingSnapshot?.settledAt) continue;
+      const rebuiltSnapshot = rebuiltById.get(settledId);
+      if (!existingSnapshot) {
+        // 迟到快照（本地没有存档）直接带定格戳入档
+        if (rebuiltSnapshot) incoming.push({ ...rebuiltSnapshot, settledAt: settledDate });
+        continue;
+      }
+      if (rebuiltSnapshot && shouldRepairFrozenForecastSnapshot(existingSnapshot, rebuiltSnapshot)) {
+        incoming.push({ ...rebuiltSnapshot, settledAt: settledDate });
+      } else {
+        // 数值一致或无法重建：保留原值，仅补盖定格戳（savedAt 取新值以便在去重合并中胜出）
+        incoming.push({ ...existingSnapshot, settledAt: settledDate, savedAt: stampSavedAt });
+      }
+    }
 
     if (!incoming.length) {
       if (workspacePeriod === period && normalizeStockCode(sourceData.code) === normalizeStockCode(queryCode)) {
@@ -1997,7 +2040,9 @@ export default function App() {
           const isProvisional = row.derivedClose !== null && predictedInputs > 0;
           const derivedTitle =
             row.derivedClose === null
-              ? undefined
+              ? isFilled
+                ? `无法反推：${row.calculation.reverse.reason ?? '缺少前期收盘价'}`
+                : undefined
               : isProvisional
                 ? `暂估值：参与反推的收盘价中有 ${predictedInputs} 期尚未收盘，暂用你的预测价计算；对应周期收盘后自动换成真实价，此值会相应更新。`
                 : '参与反推的收盘价均为真实值，此值不再随行情变动（除非修改预测MA）。';
@@ -2436,6 +2481,12 @@ export default function App() {
             ))}
           </div>
 
+          {underivableFilledCount > 0 ? (
+            <p className="panel-note">
+              有 {underivableFilledCount} 期已填预测因缺少前期收盘价暂无法反推显示，请从最早一期依次填写。
+            </p>
+          ) : null}
+
           {renderPredictionTable()}
 
           <label className="note-field">
@@ -2697,7 +2748,17 @@ function ForecastHistoryModal({
           {rows.length ? (
             rows.map((row) => (
               <div className="history-row" key={row.id} role="row">
-                <span className="date-cell" role="cell">{row.actualDate ?? row.targetDate}</span>
+                <span className="date-cell" role="cell">
+                  {row.actualDate ?? row.targetDate}
+                  {row.settledByFallback ? (
+                    <i
+                      className="fallback-tag"
+                      title={`目标日 ${row.targetDate} 无交易（休市或停牌），已顺延至下一交易日结算`}
+                    >
+                      顺延
+                    </i>
+                  ) : null}
+                </span>
                 <strong className="history-predicted num-cell" role="cell">{formatNumber(row.predictedClose)}</strong>
                 <strong className="num-cell" role="cell">{formatNumber(row.actualClose)}</strong>
                 <span

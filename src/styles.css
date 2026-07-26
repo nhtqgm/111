@@ -999,6 +999,34 @@ h2 {
   margin: 8px 0 0;
 }
 
+/* 面板内提示（如跳行填写导致反推失败） */
+.panel-note {
+  margin: 8px 0 0;
+  padding: 6px 10px;
+  border: 1px solid #a87935;
+  border-left-width: 4px;
+  border-radius: 6px;
+  background: #fff6df;
+  color: #7a5a22;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* 顺延结算角标（目标日无交易，结算顺延到下一交易日） */
+.fallback-tag {
+  margin-left: 5px;
+  padding: 0 4px;
+  border: 1px solid #a87935;
+  border-radius: 999px;
+  background: #fff7e0;
+  color: #8a5f22;
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 900;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
 .detail-button {
   width: 100%;
   height: 28px;
