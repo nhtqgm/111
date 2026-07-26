@@ -28,7 +28,9 @@ jobs:
         uses: actions/checkout@v4
         continue-on-error: true
         with:
-          ref: codex-plan-replay-integrated-v1
+          # 分支已改名（原 codex-plan-replay-integrated-v1）；
+          # 发布路径 preview/codex-plan-replay-integrated-v1 保持不变以免预览 URL 失效。
+          ref: 预览-方案回放整合版
           path: preview-site
 
       - name: Setup Node
