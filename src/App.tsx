@@ -114,8 +114,16 @@ const TOAST_PRIORITY = { info: 0, success: 1, warning: 2 } as const;
 const TOAST_DURATION = { info: 5000, success: 6000, warning: 12000 } as const;
 // 名称是公开行情数据，只做本机缓存，不进云端数据库。
 const STOCK_NAME_CACHE_KEY = 'stock-name-cache:v1';
-// 已提示过的"预测出结果"记录（设备本地，避免重复提示）。
+// 已提示过的"预测出结果"记录（设备本地、按账户分桶，避免重复提示与串号）。
 const FORECAST_RESULT_SEEN_KEY = 'forecast-result-seen:v1';
+
+// 只有在此日期之后结算的结果才值得用"已收盘"的即时口吻播报；更早的按旧结果静默登记。
+function recentSettlementCutoff(period: PeriodType) {
+  const days = period === 'day' ? 7 : period === 'week' ? 15 : 45;
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - days);
+  return formatDate(cutoff);
+}
 
 function loadStockNameCache(): Record<string, string> {
   try {
@@ -767,46 +775,71 @@ export default function App() {
   const summary = useMemo(() => summarizeForecastHistory(visibleHistoryRows), [visibleHistoryRows]);
 
   useEffect(() => {
-    // 某期真实收盘回填后主动告知结果，并解释"暂估"值为何更新。
-    // 已看过的结果记录在本机；首次在新设备登录时只登记、不轰炸。
-    if (!completedHistoryRows.length) return;
+    // 某期真实收盘回填后主动告知结果。账本按账户分桶存本机（共用设备互不干扰）；
+    // 只播报"近期"结算的结果，早于近期窗口的旧结果只登记不弹，
+    // 避免浏览旧股票/旧周期时被陈年结果轰炸，也让账本被截断后不会循环重弹。
+    if (!cloudUser || !completedHistoryRows.length) return;
+    const ledgerKey = `${FORECAST_RESULT_SEEN_KEY}:${cloudUser.id}`;
     let seen: Set<string>;
     try {
-      seen = new Set(JSON.parse(localStorage.getItem(FORECAST_RESULT_SEEN_KEY) ?? '[]') as string[]);
+      seen = new Set(JSON.parse(localStorage.getItem(ledgerKey) ?? '[]') as string[]);
     } catch {
       seen = new Set();
     }
     const fresh = completedHistoryRows.filter((row) => !seen.has(row.id));
     if (!fresh.length) return;
-    const isFirstUseOnDevice = seen.size === 0;
-    fresh.forEach((row) => seen.add(row.id));
-    try {
-      localStorage.setItem(
-        FORECAST_RESULT_SEEN_KEY,
-        JSON.stringify(Array.from(seen).slice(-1000)),
-      );
-    } catch {
-      // 记录失败最多导致重复提示一次，不影响主流程
-    }
-    if (isFirstUseOnDevice) return;
 
-    const sorted = [...fresh].sort((a, b) =>
+    const persist = () => {
+      try {
+        localStorage.setItem(ledgerKey, JSON.stringify(Array.from(seen).slice(-1000)));
+      } catch {
+        // 记录失败最多导致重复提示一次，不影响主流程
+      }
+    };
+    const cutoff = recentSettlementCutoff(period);
+    const recent = fresh.filter(
+      (row) =>
+        (row.actualDate ?? row.targetDate) >= cutoff &&
+        row.actualClose !== null &&
+        row.predictedClose !== null,
+    );
+    const stale = fresh.filter((row) => !recent.includes(row));
+    const isFirstUseForAccount = seen.size === 0;
+
+    stale.forEach((row) => seen.add(row.id));
+    if (isFirstUseForAccount || !recent.length) {
+      // 本账户在本机首次使用：全部静默登记，不补播旧结果
+      if (isFirstUseForAccount) recent.forEach((row) => seen.add(row.id));
+      persist();
+      return;
+    }
+
+    const sorted = [...recent].sort((a, b) =>
       (a.actualDate ?? a.targetDate).localeCompare(b.actualDate ?? b.targetDate),
     );
-    const latest =
-      [...sorted].reverse().find((row) => row.inputMaWindow === inputMaWindow) ?? sorted[sorted.length - 1];
-    if (latest.actualClose === null || latest.predictedClose === null) return;
+    const settled =
+      [...sorted].reverse().find((row) => row.inputMaWindow === inputMaWindow) ??
+      sorted[sorted.length - 1];
     const dateCount = new Set(sorted.map((row) => row.actualDate ?? row.targetDate)).size;
     const pct =
-      latest.closeDiff !== null && latest.actualClose
-        ? `，偏差 ${formatSignedNumber(latest.closeDiff)}（${((latest.closeDiff / latest.actualClose) * 100).toFixed(2)}%）`
+      settled.closeDiff !== null && settled.actualClose
+        ? `，偏差 ${formatSignedNumber(settled.closeDiff)}（${((settled.closeDiff / settled.actualClose) * 100).toFixed(2)}%）`
         : '';
     const extra = dateCount > 1 ? `等 ${dateCount} 期预测已出结果。` : '';
-    showToast(
-      `${latest.actualDate ?? latest.targetDate} 已收盘：真实收盘 ${formatNumber(latest.actualClose)}，你的预测 ${formatNumber(latest.predictedClose)}${pct}。${extra}表中"暂估"值已按真实价自动校正。`,
+    const hasPendingForecast = projection.rows.some(
+      (row) => row.isForecast && row.derivedClose !== null,
+    );
+    const tail = hasPendingForecast
+      ? '表中后续反推值已按真实收盘重算。'
+      : '可在"历史对比"中查看全部结果。';
+    // 弹窗可能被更高优先级的警告拦下：只有真正展示后才登记，未展示的下次数据刷新时重试
+    const shown = showToast(
+      `${settled.actualDate ?? settled.targetDate} 已收盘：真实收盘 ${formatNumber(settled.actualClose)}，你的 MA${settled.inputMaWindow} 预测 ${formatNumber(settled.predictedClose)}${pct}。${extra}${tail}`,
       'success',
     );
-  }, [completedHistoryRows, inputMaWindow]);
+    if (shown) recent.forEach((row) => seen.add(row.id));
+    persist();
+  }, [completedHistoryRows, inputMaWindow, cloudUser, period, projection.rows]);
   const latest = activeData?.points.at(-1);
   const unit = periods.find((item) => item.value === period)?.unit ?? '';
   const inputHorizonDates = useMemo(
@@ -881,21 +914,34 @@ export default function App() {
       visibleMaWindows,
     ],
   );
+  // 收盘后定格的历史预测（当前输入窗口的全部已出结果期），限制在图表可见的
+  // 最近 180 根 K 线范围内，避免把坐标轴拉到更早的日期。
+  const settledPointRows = useMemo<LineValuePoint[]>(() => {
+    if (!activeData) return [];
+    const earliestVisibleDate = activeData.points.at(-180)?.date ?? activeData.points[0]?.date ?? '';
+    return visibleHistoryRows
+      .filter((row) => (row.actualDate ?? row.targetDate) >= earliestVisibleDate)
+      .map((row) => ({
+        targetDate: row.actualDate ?? row.targetDate,
+        value: row.predictedClose,
+      }));
+  }, [activeData, visibleHistoryRows]);
   const pointSeries = useMemo<ChartPointSeries[]>(
     () => [
-      {
-        // 已走完周期上的菱形是当时预测的锁定快照，不随行情变动
-        label: '当时预测收盘',
-        color: '#ffe600',
-        borderColor: '#8c6a3d',
-        rows: chartHistoryRows.map((row) => ({
-          targetDate: row.actualDate ?? row.targetDate,
-          value: row.predictedClose,
-        })),
-        symbol: 'diamond',
-        symbolSize: 12,
-        z: 119,
-      },
+      // 有已出结果的预测才生成该系列，避免图例出现控制不了任何内容的死开关
+      ...(settledPointRows.length
+        ? [
+            {
+              label: '当时预测收盘',
+              color: '#ffe600',
+              borderColor: '#8c6a3d',
+              rows: settledPointRows,
+              symbol: 'diamond',
+              symbolSize: 12,
+              z: 119,
+            },
+          ]
+        : []),
       {
         label: '预测收盘价',
         color: '#ffe600',
@@ -909,7 +955,7 @@ export default function App() {
         z: 120,
       },
     ],
-    [chartHistoryRows, projection.rows],
+    [settledPointRows, projection.rows],
   );
 
   function capturePredictionHistory(
@@ -1420,10 +1466,11 @@ export default function App() {
     });
   }
 
-  function showToast(message: string, type: 'info' | 'success' | 'warning' = 'info') {
+  function showToast(message: string, type: 'info' | 'success' | 'warning' = 'info'): boolean {
     // 低级别提示（如自动刷新进度）不得顶掉正在显示的警告。
+    // 返回是否真正展示，供"只许展示一次"的调用方决定要不要记账。
     const current = toastRef.current;
-    if (current && TOAST_PRIORITY[current.type] > TOAST_PRIORITY[type]) return;
+    if (current && TOAST_PRIORITY[current.type] > TOAST_PRIORITY[type]) return false;
     if (toastTimerRef.current !== null) {
       window.clearTimeout(toastTimerRef.current);
     }
@@ -1435,6 +1482,7 @@ export default function App() {
       setToast(null);
       toastTimerRef.current = null;
     }, TOAST_DURATION[type]);
+    return true;
   }
 
   function closeToast() {
@@ -2609,7 +2657,7 @@ function ForecastHistoryModal({
           </button>
         </div>
         <p className="modal-hint">
-          预测提交后即锁定：下表记录的是你当时的预测与真实结果的对照，不随行情变动。
+          每期预测在该周期收盘后定格存档，此后不随行情变动；收盘前你仍可修改预测，修改会更新对应记录。
         </p>
         <div className="history-table" role="table" aria-label="历史预测与真实价格对比表">
           <div className="history-row history-head" role="row">

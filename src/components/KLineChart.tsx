@@ -76,6 +76,8 @@ export default function KLineChart({
   const xAxisRef = useRef<string[]>([]);
   const userViewportRef = useRef<ChartViewport | null>(null);
   const onViewportChangeRef = useRef(onViewportChange);
+  // setOption(notMerge) 会整体重置图例选中状态，这里手工保存并在每次 setOption 时回填
+  const legendSelectedRef = useRef<Record<string, boolean>>({});
 
   useEffect(() => {
     onViewportChangeRef.current = onViewportChange;
@@ -101,11 +103,18 @@ export default function KLineChart({
     };
     chart.on('datazoom', handleDataZoom);
 
+    const handleLegendSelectChanged = (event: unknown) => {
+      const selected = (event as { selected?: Record<string, boolean> }).selected;
+      if (selected) legendSelectedRef.current = { ...selected };
+    };
+    chart.on('legendselectchanged', handleLegendSelectChanged);
+
     const resize = () => chart.resize();
     window.addEventListener('resize', resize);
     return () => {
       window.removeEventListener('resize', resize);
       chart.off('datazoom', handleDataZoom);
+      chart.off('legendselectchanged', handleLegendSelectChanged);
       chart.dispose();
       if (chartRef.current === chart) {
         chartRef.current = null;
@@ -191,6 +200,7 @@ export default function KLineChart({
         pageIconInactiveColor: '#c8beae',
         pageTextStyle: { color: '#5f5444' },
         textStyle: { color: '#3d453f' },
+        selected: legendSelectedRef.current,
         data: [
           ...(showActualKLine ? ['真实K线'] : []),
           ...(showCloseLine ? ['真实收盘'] : []),
