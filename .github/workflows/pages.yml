@@ -2,16 +2,8 @@ name: Deploy web app
 
 on:
   push:
-    branches:
-      - main
-      - codex/freeze-issued-forecasts
+    branches: [main]
   workflow_dispatch:
-    inputs:
-      publish_freeze_forecast_preview:
-        description: Publish codex/freeze-issued-forecasts at /preview/freeze-issued-forecasts/
-        required: true
-        default: false
-        type: boolean
 
 permissions:
   contents: read
@@ -41,15 +33,6 @@ jobs:
           ref: 预览-方案回放整合版
           path: preview-site
 
-      # The production root is always built from main. A feature-branch push or
-      # an explicit dispatch publishes the candidate only below /preview/.
-      - name: Checkout frozen-forecast preview branch
-        if: ${{ github.ref == 'refs/heads/codex/freeze-issued-forecasts' || inputs.publish_freeze_forecast_preview == true }}
-        uses: actions/checkout@v4
-        with:
-          ref: codex/freeze-issued-forecasts
-          path: freeze-preview-site
-
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
@@ -78,31 +61,13 @@ jobs:
             echo "Preview branch is not available; only publishing production root."
           fi
 
-      - name: Build frozen-forecast preview
-        if: ${{ github.ref == 'refs/heads/codex/freeze-issued-forecasts' || inputs.publish_freeze_forecast_preview == true }}
-        working-directory: freeze-preview-site
-        env:
-          VITE_SUPABASE_URL: https://svupnipcyekyvdhhpbec.supabase.co
-          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
-        run: |
-          npm ci
-          npm run build
-          test -f dist/index.html
-
       - name: Compose Pages artifact
-        env:
-          PUBLISH_FREEZE_FORECAST_PREVIEW: ${{ github.ref == 'refs/heads/codex/freeze-issued-forecasts' || inputs.publish_freeze_forecast_preview == true }}
         run: |
           mkdir -p pages-site
           cp -R main-site/dist/. pages-site/
           if [ -d preview-site/dist ]; then
             mkdir -p pages-site/preview/codex-plan-replay-integrated-v1
             cp -R preview-site/dist/. pages-site/preview/codex-plan-replay-integrated-v1/
-          fi
-          if [ "${PUBLISH_FREEZE_FORECAST_PREVIEW}" = "true" ]; then
-            test -f freeze-preview-site/dist/index.html
-            mkdir -p pages-site/preview/freeze-issued-forecasts
-            cp -R freeze-preview-site/dist/. pages-site/preview/freeze-issued-forecasts/
           fi
           touch pages-site/.nojekyll
           test -f pages-site/index.html
@@ -122,9 +87,3 @@ jobs:
       - name: Deploy
         id: deployment
         uses: actions/deploy-pages@v4
-
-      - name: Show frozen-forecast preview URL
-        if: ${{ github.ref == 'refs/heads/codex/freeze-issued-forecasts' || inputs.publish_freeze_forecast_preview == true }}
-        run: |
-          echo "### Frozen-forecast preview" >> "${GITHUB_STEP_SUMMARY}"
-          echo "${{ steps.deployment.outputs.page_url }}preview/freeze-issued-forecasts/" >> "${GITHUB_STEP_SUMMARY}"
