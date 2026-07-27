@@ -18,6 +18,12 @@ export interface CloudWorkspaceRecord {
   updatedAt: string;
 }
 
+export interface ForecastScopeResetResult {
+  predictionValuesDeleted: number;
+  forecastHistoryDeleted: number;
+  issuedBatchesDeleted: number;
+}
+
 const projectUrl = import.meta.env.VITE_SUPABASE_URL ?? 'https://svupnipcyekyvdhhpbec.supabase.co';
 const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY ?? '';
 
@@ -188,6 +194,37 @@ export async function upsertMyForecastHistory(snapshots: ForecastHistorySnapshot
   if (error) throw error;
 }
 
+export async function resetMyForecastScopeV1(
+  stockCode: string,
+  period: PeriodType,
+  expectedUserId: string,
+): Promise<ForecastScopeResetResult> {
+  if (
+    !/^\d{6}$/.test(stockCode) || !['day', 'week', 'month'].includes(period) ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(expectedUserId)
+  ) {
+    throw new Error('无效的预测重置范围');
+  }
+
+  const api = requireCloudClient();
+  const { data, error } = await api.rpc('reset_my_forecast_scope_v1', {
+    p_stock_code: stockCode,
+    p_period: period,
+    p_expected_user_id: expectedUserId,
+  });
+  if (error) throw error;
+
+  if (!Array.isArray(data) || data.length !== 1 || !data[0] || typeof data[0] !== 'object') {
+    throw new Error('云端未返回完整的预测清除结果');
+  }
+  const row = data[0] as Record<string, unknown>;
+  return {
+    predictionValuesDeleted: requireDeletedCount(row, 'prediction_values_deleted'),
+    forecastHistoryDeleted: requireDeletedCount(row, 'forecast_history_deleted'),
+    issuedBatchesDeleted: requireDeletedCount(row, 'issued_batches_deleted'),
+  };
+}
+
 export async function downloadPredictionEvents(user: User) {
   const api = requireCloudClient();
   const { data, error } = await api
@@ -235,4 +272,12 @@ function requireCloudClient() {
   const api = getSupabaseClient();
   if (!api) throw new Error('云端同步尚未配置');
   return api;
+}
+
+function requireDeletedCount(value: Record<string, unknown>, key: string) {
+  const count = Number(value[key]);
+  if (!Number.isSafeInteger(count) || count < 0) {
+    throw new Error('云端返回的预测清除计数无效');
+  }
+  return count;
 }

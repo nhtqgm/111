@@ -16,6 +16,7 @@ import {
   loadMyCloudWorkspace,
   rememberMyStockCode,
   replaceMyCloudWorkspace,
+  resetMyForecastScopeV1,
   saveMyPredictionValues,
   saveMyWorkspacePreferences,
   signInToCloud,
@@ -34,11 +35,13 @@ import {
 import {
   applyForecastHistoryOutboxToWorkspace,
   assertCloudWorkspaceContainsLocalData,
+  clearWorkspaceForecastScope,
   createEmptyCloudWorkspace,
   createFullWorkspaceBackup,
   createCloudWorkspaceFromLegacyBackup,
   getWorkspaceForecastHistory,
   getWorkspacePredictions,
+  hasPredictionDraftContent,
   readFullWorkspaceImport,
   resolveActiveWorkspaceScope,
   setWorkspaceForecastHistory,
@@ -250,6 +253,7 @@ export default function App() {
   const [cloudRole, setCloudRole] = useState<'user' | 'admin' | null>(null);
   const [isCloudWorkspaceLoading, setIsCloudWorkspaceLoading] = useState(false);
   const [isIssuingForecast, setIsIssuingForecast] = useState(false);
+  const [isResettingForecastScope, setIsResettingForecastScope] = useState(false);
   const [cloudStockCodes, setCloudStockCodes] = useState<string[]>([]);
   const [cloudSyncState, setCloudSyncState] = useState<CloudSyncState>(
     isCloudSyncConfigured() ? 'signed-out' : 'unconfigured',
@@ -293,6 +297,7 @@ export default function App() {
   const cloudWorkspaceBaselineRef = useRef<CloudWorkspace | null>(null);
   const cloudPredictionSaveQueueRef = useRef<ReturnType<typeof createPredictionValueSaveQueue> | null>(null);
   const cloudHistorySaveQueueRef = useRef<ReturnType<typeof createForecastHistorySaveQueue> | null>(null);
+  const isResettingForecastScopeRef = useRef(false);
   const cloudSessionGenerationRef = useRef(0);
   const stockQueryGenerationRef = useRef(0);
   const marketDataRef = useRef(new Map<string, StockKLineResponse>());
@@ -481,7 +486,10 @@ export default function App() {
 
   useEffect(() => {
     if (!activeData || !activeScope || !baseDate || !predictions.length) return;
-
+    if (!hasPredictionDraftContent(predictions)) {
+      setHasUnsavedChanges(false);
+      return;
+    }
     setHasUnsavedChanges(true);
   }, [activeData, activeScope?.period, baseDate, predictions]);
 
@@ -724,6 +732,7 @@ export default function App() {
     force?: boolean;
     notice: 'auto' | 'manual' | 'silent';
   }) {
+    if (isResettingForecastScopeRef.current) return;
     if (!activeData || !activeScope || !baseDate || !predictions.length || !cloudWorkspace) {
       if (notice === 'manual') showToast('暂无可保存的数据', 'warning');
       return;
@@ -948,6 +957,7 @@ export default function App() {
   );
 
   function requestIssueCurrentForecast() {
+    if (isResettingForecastScopeRef.current) return;
     if (!activeData || !activeScope || !baseDate || !cloudUser) {
       showToast('行情或云端账户尚未准备好，暂时不能提交预测', 'warning');
       return;
@@ -973,7 +983,10 @@ export default function App() {
   }
 
   async function issueCurrentForecast() {
-    if (!activeData || !activeScope || !baseDate || !cloudUser || isIssuingForecast) return;
+    if (
+      !activeData || !activeScope || !baseDate || !cloudUser ||
+      isIssuingForecast || isResettingForecastScopeRef.current
+    ) return;
     const sessionGeneration = cloudSessionGenerationRef.current;
     setIsIssuingForecast(true);
     try {
@@ -1031,6 +1044,7 @@ export default function App() {
   }
 
   function persistPredictionDraft(rows: PredictionPoint[]) {
+    if (isResettingForecastScopeRef.current) return;
     if (!activeData || !activeScope || !baseDate || !rows.length) return;
     const scope = activeScope;
     const current = cloudWorkspaceRef.current;
@@ -1173,6 +1187,7 @@ export default function App() {
   }
 
   async function queryStockCode(code = stockCode) {
+    if (isResettingForecastScopeRef.current) return;
     const queryGeneration = ++stockQueryGenerationRef.current;
     const requestedStockCode = normalizeStockCode(code);
     if (requestedStockCode.length !== 6) {
@@ -1255,6 +1270,7 @@ export default function App() {
   }
 
   function selectKLinePeriod(nextPeriod: PeriodType) {
+    if (isResettingForecastScopeRef.current) return;
     if (nextPeriod === period) return;
     // 命中缓存时同步水合，避免图表先卸载再重建（339 行 effect 会幂等重放同样的数据）。
     const cached = marketDataRef.current.get(marketScopeKey(queryCode, nextPeriod));
@@ -1277,6 +1293,7 @@ export default function App() {
   }
 
   async function readCloudPredictions(user = cloudUser) {
+    if (isResettingForecastScopeRef.current) return;
     if (!user) {
       setIsCloudAccountOpen(true);
       return;
@@ -1285,6 +1302,7 @@ export default function App() {
   }
 
   async function saveCurrentWorkspaceToCloud() {
+    if (isResettingForecastScopeRef.current) return;
     if (!cloudUser || !cloudWorkspaceRef.current) {
       setIsCloudAccountOpen(true);
       showToast('请先登录云端账户，再保存预测数据', 'warning');
@@ -1363,6 +1381,7 @@ export default function App() {
   }
 
   async function signOutCloudAccount() {
+    if (isResettingForecastScopeRef.current) return;
     try {
       await signOutOfCloud();
       cloudSessionGenerationRef.current += 1;
@@ -1399,6 +1418,7 @@ export default function App() {
   }
 
   function updatePrediction(targetDate: string, value: string) {
+    if (isResettingForecastScopeRef.current) return;
     const normalizedValue = normalizeDecimalInput(value);
     const nextRows = predictions.map((row) =>
       row.targetDate === targetDate
@@ -1645,28 +1665,118 @@ export default function App() {
   }
 
   function updateNote(value: string) {
+    if (isResettingForecastScopeRef.current) return;
     const nextRows = predictions.map((row) => ({ ...row, note: value }));
     setPredictions(nextRows);
     persistPredictionDraft(nextRows);
   }
 
   function resetRows() {
-    if (!activeData || !activeScope || !baseDate) return;
+    if (!activeData || !activeScope || !baseDate || isResettingForecastScopeRef.current) return;
+    if (!cloudUser) {
+      setIsCloudAccountOpen(true);
+      showToast('请先登录云端账户，再清除预测数据', 'warning');
+      return;
+    }
+    if (isIssuingForecast) {
+      showToast('预测正在云端锁定，请完成后再重置', 'warning');
+      return;
+    }
     // Android WebView 的 window.confirm 可能恒返回 false，必须用应用内确认弹窗。
     setConfirmAction({
-      title: '重置预测表',
-      body: `确认重置 ${activeData.code} 的当前${getPeriodLabel(activeScope.period)}预测表吗？已填写的预测值将被清空。`,
-      confirmLabel: '清空重置',
-      onConfirm: doResetRows,
+      title: '全部清除当前预测',
+      body: `确认永久清除 ${activeData.code} 的当前${getPeriodLabel(activeScope.period)}全部预测数据吗？草稿、历史对比以及所有 MA 的已提交锁定版本都会从云端删除；真实行情 K 线和其他周期保留。`,
+      confirmLabel: '永久清除',
+      onConfirm: () => void doResetRows(),
     });
   }
 
-  function doResetRows() {
-    if (!activeData || !activeScope || !baseDate) return;
-    const nextRows = generatePredictionRows(activeData.points, activeScope.period, baseDate, forecastRowCount);
-    setPredictions(nextRows);
-    persistPredictionDraft(nextRows);
-    showToast('已重置当前预测表', 'success');
+  async function doResetRows() {
+    if (
+      !activeData || !activeScope || !baseDate || !cloudUser ||
+      isIssuingForecast || isResettingForecastScopeRef.current
+    ) return;
+
+    const resetUser = cloudUser;
+    const resetScope = {
+      stockCode: normalizeStockCode(activeData.code),
+      period: activeScope.period,
+    } satisfies CloudWorkspaceScope;
+    const resetBaseDate = baseDate;
+    const resetPoints = activeData.points;
+    const sessionGeneration = cloudSessionGenerationRef.current;
+    isResettingForecastScopeRef.current = true;
+    setIsResettingForecastScope(true);
+
+    try {
+      await Promise.all([
+        cloudPredictionSaveQueueRef.current?.flush(),
+        cloudHistorySaveQueueRef.current?.flush(),
+      ]);
+      const predictionSaveError = cloudPredictionSaveQueueRef.current?.getLastError();
+      const historySaveError = cloudHistorySaveQueueRef.current?.getLastError();
+      if (predictionSaveError) throw predictionSaveError;
+      if (historySaveError) throw historySaveError;
+      if (sessionGeneration !== cloudSessionGenerationRef.current) return;
+
+      const deleted = await resetMyForecastScopeV1(
+        resetScope.stockCode,
+        resetScope.period,
+        resetUser.id,
+      );
+      if (sessionGeneration !== cloudSessionGenerationRef.current) return;
+
+      cloudPredictionSaveQueueRef.current?.markAllSaved();
+      cloudHistorySaveQueueRef.current?.markAllSaved();
+      const currentWorkspace = cloudWorkspaceRef.current;
+      if (currentWorkspace) {
+        const nextWorkspace = clearWorkspaceForecastScope(currentWorkspace, resetScope);
+        cloudWorkspaceRef.current = nextWorkspace;
+        setCloudWorkspace(nextWorkspace);
+      }
+      if (cloudWorkspaceBaselineRef.current) {
+        cloudWorkspaceBaselineRef.current = clearWorkspaceForecastScope(
+          cloudWorkspaceBaselineRef.current,
+          resetScope,
+        );
+      }
+      setIssuedForecastBatches((current) =>
+        current.filter(
+          (batch) => batch.stockCode !== resetScope.stockCode || batch.period !== resetScope.period,
+        ),
+      );
+
+      const selectedScope = selectedMarketScopeRef.current;
+      if (
+        selectedScope.stockCode === resetScope.stockCode &&
+        selectedScope.period === resetScope.period
+      ) {
+        setPredictions(
+          generatePredictionRows(resetPoints, resetScope.period, resetBaseDate, forecastRowCount),
+        );
+        setPredictionScope(resetScope);
+        setForecastHistory([]);
+        setIsHistoryModalOpen(false);
+        setDetailTargetDate(null);
+        setHasUnsavedChanges(false);
+      }
+
+      showToast(
+        `已清除当前${getPeriodLabel(resetScope.period)}全部预测：` +
+          `草稿值 ${deleted.predictionValuesDeleted}、历史 ${deleted.forecastHistoryDeleted}、` +
+          `锁定版本 ${deleted.issuedBatchesDeleted}；真实行情已保留`,
+        'success',
+      );
+    } catch (err) {
+      if (sessionGeneration !== cloudSessionGenerationRef.current) return;
+      showToast(
+        err instanceof Error ? `全部清除失败：${err.message}` : '全部清除失败',
+        'warning',
+      );
+    } finally {
+      isResettingForecastScopeRef.current = false;
+      setIsResettingForecastScope(false);
+    }
   }
 
   function exportAllData() {
@@ -1929,6 +2039,7 @@ export default function App() {
                   aria-label={`${row.targetDate} 预测MA${inputMaWindow}`}
                   type="text"
                   inputMode="decimal"
+                  disabled={isResettingForecastScope}
                   value={getPredictionInputValue(row, inputMaWindow)}
                   onChange={(event) => updatePrediction(row.targetDate, event.target.value)}
                   onBlur={() => formatPredictionInput(row.targetDate)}
@@ -2029,6 +2140,7 @@ export default function App() {
           <div className="stock-search-box">
             <input
               id="stockCode"
+              disabled={isResettingForecastScope}
               value={stockCode}
               enterKeyHint="go"
               maxLength={20}
@@ -2097,7 +2209,7 @@ export default function App() {
           </div>
           <select
             aria-label="云端预测股票代码"
-            disabled={!cloudStockCodes.length}
+            disabled={!cloudStockCodes.length || isResettingForecastScope}
             value={cloudStockCodes.includes(stockCode) ? stockCode : ''}
             onChange={(event) => selectCloudStockCode(event.target.value)}
           >
@@ -2110,7 +2222,7 @@ export default function App() {
               </option>
             ))}
           </select>
-          <button type="button" onClick={() => void queryStockCode()} disabled={isLoading}>
+          <button type="button" onClick={() => void queryStockCode()} disabled={isLoading || isResettingForecastScope}>
             {isLoading ? '更新中' : '联网更新'}
           </button>
           <button
@@ -2126,6 +2238,7 @@ export default function App() {
             className="cloud-account-button"
             data-testid="cloud-account-button"
             onClick={() => setIsCloudAccountOpen(true)}
+            disabled={isResettingForecastScope}
             title={cloudUser ? `当前账户：${cloudUser.email ?? '云端账户'}。可在此退出或切换账户。` : '登录或切换云端账户'}
           >
             {cloudUser ? '云端账户' : '登录云端'}
@@ -2134,7 +2247,10 @@ export default function App() {
             type="button"
             className={`cloud-sync-button ${cloudSyncState}`}
             onClick={() => (cloudUser ? void readCloudPredictions() : setIsCloudAccountOpen(true))}
-            disabled={cloudSyncState === 'syncing' || cloudSyncState === 'unconfigured'}
+            disabled={
+              cloudSyncState === 'syncing' || cloudSyncState === 'unconfigured' ||
+              isResettingForecastScope
+            }
             title={
               cloudSyncState === 'unconfigured'
                 ? '云端同步尚未配置'
@@ -2157,6 +2273,7 @@ export default function App() {
               className={period === item.value ? 'active' : ''}
               aria-pressed={period === item.value}
               onClick={() => selectKLinePeriod(item.value)}
+              disabled={isResettingForecastScope}
             >
               {item.label}
             </button>
@@ -2258,7 +2375,7 @@ export default function App() {
                 type="button"
                 className="ghost primary-save"
                 onClick={requestIssueCurrentForecast}
-                disabled={isIssuingForecast}
+                disabled={isIssuingForecast || isResettingForecastScope}
               >
                 {isIssuingForecast ? '正在云端锁定…' : '提交并锁定'}
               </button>
@@ -2266,6 +2383,7 @@ export default function App() {
                 type="button"
                 className="ghost"
                 onClick={() => void saveCurrentWorkspaceToCloud()}
+                disabled={isResettingForecastScope}
               >
                 保存草稿
               </button>
@@ -2296,11 +2414,21 @@ export default function App() {
               <button type="button" className="ghost" onClick={exportAllData}>
                 导出
               </button>
-              <button type="button" className="ghost" onClick={() => fileInputRef.current?.click()}>
+              <button
+                type="button"
+                className="ghost"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isResettingForecastScope}
+              >
                 导入
               </button>
-              <button type="button" className="ghost danger" onClick={resetRows}>
-                重置
+              <button
+                type="button"
+                className="ghost danger"
+                onClick={resetRows}
+                disabled={isResettingForecastScope || isIssuingForecast}
+              >
+                {isResettingForecastScope ? '清除中…' : '重置'}
               </button>
               <span className="action-divider" aria-hidden="true" />
               <button
@@ -2347,6 +2475,7 @@ export default function App() {
                 className={inputMaWindow === windowSize ? 'active' : ''}
                 aria-pressed={inputMaWindow === windowSize}
                 onClick={() => setInputMaWindow(windowSize)}
+                disabled={isResettingForecastScope}
               >
                 MA{windowSize}
               </button>
@@ -2369,6 +2498,7 @@ export default function App() {
             <textarea
               value={predictions[0]?.note ?? ''}
               onChange={(event) => updateNote(event.target.value)}
+              disabled={isResettingForecastScope}
               placeholder={`例如：MA${inputMaWindow}目标、趋势判断、压力位...`}
             />
           </label>

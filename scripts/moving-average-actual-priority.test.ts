@@ -57,3 +57,22 @@ test('completed K-line remains the source of truth after an old MA prediction ex
     [completedDate, futureDate],
   );
 });
+
+test('blank predictions do not leave a one-point projected MA anchor on the chart', () => {
+  const points = Array.from({ length: 60 }, (_, index) => {
+    const date = new Date(Date.UTC(2026, 0, index + 1)).toISOString().slice(0, 10);
+    return point(date);
+  });
+  const baseDate = points.at(-1)!.date;
+  const projection = buildMa40Projection(
+    points,
+    [prediction('2026-03-02', '')],
+    baseDate,
+    40,
+  );
+
+  assert.equal(projection.rows.filter((row) => row.isForecast && row.derivedClose !== null).length, 0);
+  for (const windowSize of [5, 10, 20, 40, 60] as const) {
+    assert.deepEqual(projection.predictedLines[windowSize], [], `MA${windowSize}`);
+  }
+});

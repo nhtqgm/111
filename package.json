@@ -14,6 +14,7 @@
     "test:issued-forecast": "node --test scripts/issued-forecast-batch.test.ts",
     "test:issued-schema": "node --test scripts/issued-forecast-cloud-schema.test.ts",
     "test:issued-storage": "node --test scripts/issued-forecast-storage.test.ts",
+    "test:reset": "node --test scripts/reset-forecast-scope.test.ts scripts/moving-average-actual-priority.test.ts",
     "test:refresh": "node --test scripts/period-refresh.test.ts scripts/stock-query.test.ts scripts/stock-code-registry.test.ts scripts/stock-search.test.ts",
     "test:cloud": "node --test scripts/cloud-predictions.test.ts scripts/cloud-workspace.test.ts scripts/cloud-prediction-storage.test.ts",
     "verify:ma": "node scripts/verify-ma-periods.mjs",

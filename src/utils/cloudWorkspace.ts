@@ -148,14 +148,24 @@ export function setWorkspacePredictions(
   scope: CloudWorkspaceScope,
   rows: PredictionPoint[],
 ) {
+  const predictions = { ...workspace.predictions };
+  const scopeKey = toScopeKey(scope.stockCode, scope.period);
+  if (hasPredictionDraftContent(rows)) predictions[scopeKey] = clonePredictionRows(rows);
+  else delete predictions[scopeKey];
+
   return {
     ...workspace,
-    predictions: {
-      ...workspace.predictions,
-      [toScopeKey(scope.stockCode, scope.period)]: clonePredictionRows(rows),
-    },
+    predictions,
     updatedAt: new Date().toISOString(),
   } satisfies CloudWorkspace;
+}
+
+export function hasPredictionDraftContent(rows: PredictionPoint[]) {
+  return rows.some(
+    (row) =>
+      row.note.trim() !== '' || row.predictedMa40.trim() !== '' ||
+      Object.values(row.predictedMaValues).some((value) => value.trim() !== ''),
+  );
 }
 
 export function getWorkspaceForecastHistory(workspace: CloudWorkspace, scope: CloudWorkspaceScope) {
@@ -173,6 +183,24 @@ export function setWorkspaceForecastHistory(
       ...workspace.forecastHistory,
       [toScopeKey(scope.stockCode, scope.period)]: cloneForecastHistory(snapshots),
     },
+    updatedAt: new Date().toISOString(),
+  } satisfies CloudWorkspace;
+}
+
+export function clearWorkspaceForecastScope(
+  workspace: CloudWorkspace,
+  scope: CloudWorkspaceScope,
+) {
+  const scopeKey = toScopeKey(scope.stockCode, scope.period);
+  const predictions = { ...workspace.predictions };
+  const forecastHistory = { ...workspace.forecastHistory };
+  delete predictions[scopeKey];
+  delete forecastHistory[scopeKey];
+
+  return {
+    ...workspace,
+    predictions,
+    forecastHistory,
     updatedAt: new Date().toISOString(),
   } satisfies CloudWorkspace;
 }

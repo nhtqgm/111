@@ -181,16 +181,17 @@ export function buildMa40Projection(
       const anchor = [...actualLines[windowSize]].reverse().find(
         (row) => row.targetDate <= baseDate,
       );
+      const forecastRows = rows.filter((row) => row.isForecast).map((row) => ({
+        targetDate: row.targetDate,
+        value: row.maValues[windowSize],
+      }));
+      const hasProjectedValue = forecastRows.some((row) => row.value !== null);
 
       return [
         windowSize,
-        [
-          ...(anchor ? [anchor] : []),
-          ...rows.filter((row) => row.isForecast).map((row) => ({
-            targetDate: row.targetDate,
-            value: row.maValues[windowSize],
-          })),
-        ],
+        hasProjectedValue
+          ? [...(anchor ? [anchor] : []), ...forecastRows]
+          : [],
       ];
     }),
   ) as Record<MaWindow, LineValuePoint[]>;
