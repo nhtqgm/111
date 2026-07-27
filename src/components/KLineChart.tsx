@@ -9,6 +9,7 @@ import {
   type ChartViewport,
 } from '../utils/chartViewport';
 import { toScatterChartValue } from '../utils/chartPoints';
+import { formatAxisTooltip } from '../utils/chartTooltip';
 
 export interface ChartLineSeries {
   label: string;
@@ -28,6 +29,7 @@ export interface ChartPointSeries {
   label: string;
   color: string;
   borderColor?: string;
+  shadowColor?: string;
   rows: LineValuePoint[];
   symbol: string;
   symbolSize: number;
@@ -176,6 +178,7 @@ export default function KLineChart({
         backgroundColor: 'rgba(22, 29, 36, 0.92)',
         borderWidth: 0,
         textStyle: { color: '#f9f6ef' },
+        formatter: formatAxisTooltip,
       },
       legend: {
         type: 'scroll',
@@ -339,13 +342,13 @@ export default function KLineChart({
             borderColor: series.borderColor ?? '#20251f',
             borderWidth: 2,
             shadowBlur: 8,
-            shadowColor: 'rgba(255, 230, 0, 0.55)',
+            shadowColor: series.shadowColor ?? 'rgba(255, 230, 0, 0.55)',
           },
           emphasis: {
             scale: 1.25,
             itemStyle: {
               shadowBlur: 12,
-              shadowColor: 'rgba(255, 230, 0, 0.75)',
+              shadowColor: series.shadowColor ?? 'rgba(255, 230, 0, 0.75)',
             },
           },
         })),

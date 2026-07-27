@@ -1,4 +1,5 @@
 import type { KLinePoint, PeriodType, StockKLineResponse } from '../types';
+import { isAStockTradingDay } from './aShareTradingCalendar.ts';
 
 const MARKET_TIME_ZONE = 'Asia/Shanghai';
 const MARKET_CLOSE_HOUR = 15;
@@ -77,7 +78,7 @@ function isCompletedWeek(pointDate: DateParts, clock: MarketClock) {
   if (weekComparison < 0) return true;
   if (weekComparison > 0) return false;
 
-  return isCurrentWeekClosed(clock);
+  return isTradingPeriodCloseReached(getLastTradingDayOfWeek(currentWeekStart), clock);
 }
 
 function isCompletedMonth(pointDate: DateParts, clock: MarketClock) {
@@ -85,13 +86,17 @@ function isCompletedMonth(pointDate: DateParts, clock: MarketClock) {
   if (monthComparison < 0) return true;
   if (monthComparison > 0) return false;
 
-  const lastWeekday = getLastWeekdayOfMonth(clock.year, clock.month);
-  const lastWeekdayComparison = compareDate(clock, lastWeekday);
-  return lastWeekdayComparison > 0 || (lastWeekdayComparison === 0 && hasMarketClosed(clock));
+  return isTradingPeriodCloseReached(
+    getLastTradingDayOfMonth(clock.year, clock.month),
+    clock,
+  );
 }
 
-function isCurrentWeekClosed(clock: MarketClock) {
-  return clock.weekDay === 6 || clock.weekDay === 0 || (clock.weekDay === 5 && hasMarketClosed(clock));
+function isTradingPeriodCloseReached(lastTradingDay: DateParts | null, clock: MarketClock) {
+  if (!lastTradingDay) return false;
+
+  const dateComparison = compareDate(clock, lastTradingDay);
+  return dateComparison > 0 || (dateComparison === 0 && hasMarketClosed(clock));
 }
 
 function hasMarketClosed(clock: MarketClock) {
@@ -165,18 +170,34 @@ function getWeekStart(date: DateParts): DateParts {
   return fromDayNumber(toDayNumber(date) - mondayOffset);
 }
 
-function getLastWeekdayOfMonth(year: number, month: number): DateParts {
-  let date = {
-    year,
-    month,
-    day: daysInMonth(year, month),
-  };
-
-  while ([0, 6].includes(getWeekDay(date))) {
-    date = fromDayNumber(toDayNumber(date) - 1);
+function getLastTradingDayOfWeek(weekStart: DateParts): DateParts | null {
+  for (let offset = 4; offset >= 0; offset -= 1) {
+    const candidate = fromDayNumber(toDayNumber(weekStart) + offset);
+    if (isAStockTradingDay(formatDateParts(candidate))) return candidate;
   }
 
-  return date;
+  return null;
+}
+
+function getLastTradingDayOfMonth(year: number, month: number): DateParts | null {
+  for (let day = daysInMonth(year, month); day >= 1; day -= 1) {
+    const candidate = {
+      year,
+      month,
+      day,
+    };
+    if (isAStockTradingDay(formatDateParts(candidate))) return candidate;
+  }
+
+  return null;
+}
+
+function formatDateParts(date: DateParts) {
+  return [
+    String(date.year).padStart(4, '0'),
+    String(date.month).padStart(2, '0'),
+    String(date.day).padStart(2, '0'),
+  ].join('-');
 }
 
 function getWeekDay(date: DateParts) {

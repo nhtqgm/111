@@ -33,6 +33,13 @@ jobs:
           ref: 预览-方案回放整合版
           path: preview-site
 
+      - name: Checkout final-close preview branch
+        if: ${{ github.ref == 'refs/heads/codex/final-close-display' }}
+        uses: actions/checkout@v4
+        with:
+          ref: codex/final-close-display
+          path: final-close-preview-site
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
@@ -61,13 +68,31 @@ jobs:
             echo "Preview branch is not available; only publishing production root."
           fi
 
+      - name: Build final-close preview
+        if: ${{ github.ref == 'refs/heads/codex/final-close-display' }}
+        working-directory: final-close-preview-site
+        env:
+          VITE_SUPABASE_URL: https://svupnipcyekyvdhhpbec.supabase.co
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+        run: |
+          npm ci
+          npm run build
+          test -f dist/index.html
+
       - name: Compose Pages artifact
+        env:
+          PUBLISH_FINAL_CLOSE_PREVIEW: ${{ github.ref == 'refs/heads/codex/final-close-display' }}
         run: |
           mkdir -p pages-site
           cp -R main-site/dist/. pages-site/
           if [ -d preview-site/dist ]; then
             mkdir -p pages-site/preview/codex-plan-replay-integrated-v1
             cp -R preview-site/dist/. pages-site/preview/codex-plan-replay-integrated-v1/
+          fi
+          if [ "${PUBLISH_FINAL_CLOSE_PREVIEW}" = "true" ]; then
+            test -f final-close-preview-site/dist/index.html
+            mkdir -p pages-site/preview/final-close-display
+            cp -R final-close-preview-site/dist/. pages-site/preview/final-close-display/
           fi
           touch pages-site/.nojekyll
           test -f pages-site/index.html
@@ -87,3 +112,9 @@ jobs:
       - name: Deploy
         id: deployment
         uses: actions/deploy-pages@v4
+
+      - name: Show final-close preview URL
+        if: ${{ github.ref == 'refs/heads/codex/final-close-display' }}
+        run: |
+          echo "### Final-close preview" >> "${GITHUB_STEP_SUMMARY}"
+          echo "${{ steps.deployment.outputs.page_url }}preview/final-close-display/" >> "${GITHUB_STEP_SUMMARY}"

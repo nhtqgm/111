@@ -872,6 +872,18 @@ h2 {
   background: linear-gradient(90deg, rgba(74, 116, 88, 0.08), transparent 72%);
 }
 
+.prediction-row.row-settled {
+  background: #edf4ef;
+}
+
+.prediction-row.row-settled input.prediction-input:disabled {
+  border-color: #a7b8ac;
+  background: #e5ece7;
+  color: #46564b;
+  opacity: 1;
+  cursor: default;
+}
+
 .locked-close-cell {
   display: inline-flex;
   align-items: center;
@@ -989,15 +1001,58 @@ h2 {
   --horizon-soft: #e4f1f5;
 }
 
-.derived-close-cell {
-  min-height: 28px;
-  display: inline-grid;
+.settled-ma-value {
+  min-height: 34px;
+  display: grid;
   place-items: center;
+  padding: 0 8px;
+  border: 1px solid #a7b8ac;
+  border-left: 5px solid #3f7663;
+  border-radius: 6px;
+  background: #e5ece7;
+  color: #46564b;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.close-status-cell {
+  min-height: 32px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 7px;
   border-radius: 6px;
   border: 1px dashed #9d927f;
   background: #f6f1e8;
   color: #20251f;
+  font-variant-numeric: tabular-nums;
+}
+
+.close-status-cell small {
+  overflow: hidden;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.close-status-cell strong {
   font-weight: 900;
+}
+
+.close-status-cell.provisional {
+  border-color: #b26f25;
+  background: #fff3df;
+  color: #714316;
+}
+
+.close-status-cell.actual {
+  border-style: solid;
+  border-color: #6e9b8d;
+  background: #e1f0eb;
+  color: #155849;
 }
 
 .detail-button {

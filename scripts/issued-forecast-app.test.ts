@@ -61,11 +61,12 @@ test('draft saving and market refresh never issue or overwrite a submitted forec
 
 test('the UI distinguishes frozen, provisional, effective, and actual values', () => {
   assert.match(appSource, /已提交预测收盘（锁定）/);
-  assert.match(appSource, /实时暂估收盘（会变化）/);
+  assert.match(appSource, /实时暂估收盘（未收盘）/);
+  assert.match(appSource, /真实收盘价（已收盘）/);
   assert.match(appSource, /实时暂估MA\$\{windowSize\}/);
   assert.match(appSource, />锁定预测</);
-  assert.match(appSource, />实时暂估</);
+  assert.match(appSource, />收盘状态</);
   assert.match(appSource, />有效MA</);
-  assert.match(appSource, />真实收盘</);
+  assert.match(appSource, /getForecastCloseCell\(row, issuedRow\)/);
   assert.match(appSource, /行情刷新不会改写预测收盘/);
 });

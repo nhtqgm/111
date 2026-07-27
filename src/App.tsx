@@ -66,8 +66,14 @@ import {
   saveCloudHistoryOutbox,
   type CloudHistoryOutboxSnapshot,
 } from './utils/cloudHistoryStorage';
+import {
+  buildForecastCloseChartRows,
+  buildForecastCloseTableRows,
+  getForecastCloseCell,
+  getLatestCompletedTargetDate,
+} from './utils/forecastCloseDisplay';
 import { formatNumber, summarizeForecastHistory } from './utils/metrics';
-import { mergeLineValuePoints, mergeLineValuePointsPreservingEarlier } from './utils/linePoints';
+import { mergeLineValuePointsPreservingEarlier } from './utils/linePoints';
 import {
   buildMa40Projection,
   type LineValuePoint,
@@ -845,8 +851,33 @@ export default function App() {
       getPredictionInputValue(row, inputMaWindow).trim() !== '',
   ).length;
   const predictionTableRows = useMemo(
-    () => selectPredictionRowsForInputTable(projection.rows, inputHorizonDates),
-    [inputHorizonDates, projection.rows],
+    () => {
+      const latestCompletedTargetDate = getLatestCompletedTargetDate(
+        projection.rows,
+        activeIssuedEvaluation?.rows ?? [],
+      );
+      const selectedProjectionRows = selectPredictionRowsForInputTable(
+        projection.rows,
+        inputHorizonDates,
+        latestCompletedTargetDate
+          ? new Set([latestCompletedTargetDate])
+          : new Set<string>(),
+      );
+      return buildForecastCloseTableRows(
+        selectedProjectionRows,
+        activeIssuedEvaluation?.rows ?? [],
+        (targetDate) =>
+          activeScope
+            ? getIssuedForecastPeriodKey(activeScope.period, targetDate)
+            : targetDate,
+      );
+    },
+    [
+      activeIssuedEvaluation,
+      activeScope,
+      inputHorizonDates,
+      projection.rows,
+    ],
   );
   const updateButtonText =
     updateState.status === 'checking'
@@ -855,8 +886,8 @@ export default function App() {
         ? `下载更新 ${updateState.latestVersion}`
         : '检查更新';
   const predictionTableStyle = {
-    gridTemplateColumns: `132px 112px 104px 104px 92px 86px 62px repeat(${visibleMaWindows.length}, 72px)`,
-    minWidth: `${722 + visibleMaWindows.length * 80}px`,
+    gridTemplateColumns: `132px 112px 104px 140px 92px 62px repeat(${visibleMaWindows.length}, 72px)`,
+    minWidth: `${682 + visibleMaWindows.length * 80}px`,
   };
   const detailRow = useMemo(
     () => projection.rows.find((row) => row.targetDate === detailTargetDate) ?? null,
@@ -916,41 +947,49 @@ export default function App() {
   );
   const pointSeries = useMemo<ChartPointSeries[]>(
     () => {
-      const lockedRows = mergeLineValuePoints(
-        chartHistoryRows.map((row) => ({
-          targetDate: row.actualDate ?? row.targetDate,
-          value: row.predictedClose,
-        })),
-        (activeIssuedEvaluation?.rows ?? []).map((row) => ({
-          targetDate: row.settlement?.actualDate ?? row.targetDate,
-          value: row.predictedClose,
-        })),
-      );
-      const provisionalRows = projection.rows
-        .filter((row) => row.isForecast)
-        .map((row) => ({ targetDate: row.targetDate, value: row.derivedClose }));
+      const closeRows = buildForecastCloseChartRows({
+        historyRows: chartHistoryRows,
+        issuedRows: activeIssuedEvaluation?.rows ?? [],
+        projectionRows: projection.rows,
+      });
 
       return [
-        ...(lockedRows.length
+        ...(closeRows.locked.length
           ? [{
               label: '已提交预测收盘（锁定）',
               color: '#ffe600',
               borderColor: '#20251f',
-              rows: lockedRows,
+              shadowColor: 'rgba(255, 230, 0, 0.55)',
+              rows: closeRows.locked,
               symbol: 'diamond',
               symbolSize: 13,
               z: 120,
             } satisfies ChartPointSeries]
           : []),
-        {
-          label: '实时暂估收盘（会变化）',
-          color: '#f4a340',
-          borderColor: '#7a3f12',
-          rows: provisionalRows,
-          symbol: 'circle',
-          symbolSize: 9,
-          z: 110,
-        },
+        ...(closeRows.actual.length
+          ? [{
+              label: '真实收盘价（已收盘）',
+              color: '#14745f',
+              borderColor: '#f7f4ee',
+              shadowColor: 'rgba(20, 116, 95, 0.5)',
+              rows: closeRows.actual,
+              symbol: 'pin',
+              symbolSize: 14,
+              z: 115,
+            } satisfies ChartPointSeries]
+          : []),
+        ...(closeRows.provisional.length
+          ? [{
+              label: '实时暂估收盘（未收盘）',
+              color: '#f4a340',
+              borderColor: '#7a3f12',
+              shadowColor: 'rgba(244, 163, 64, 0.5)',
+              rows: closeRows.provisional,
+              symbol: 'circle',
+              symbolSize: 9,
+              z: 110,
+            } satisfies ChartPointSeries]
+          : []),
       ];
     },
     [activeIssuedEvaluation, chartHistoryRows, projection.rows],
@@ -2012,71 +2051,96 @@ export default function App() {
           <span role="columnheader">目标周期</span>
           <span role="columnheader">预测MA{inputMaWindow}</span>
           <span role="columnheader">锁定预测</span>
-          <span role="columnheader">实时暂估</span>
+          <span role="columnheader">收盘状态</span>
           <span role="columnheader">有效MA</span>
-          <span className="num-cell" role="columnheader">真实收盘</span>
           <span role="columnheader">明细</span>
           {visibleMaWindows.map((windowSize) => (
             <span className="num-cell" key={windowSize} role="columnheader">MA{windowSize}</span>
           ))}
         </div>
-        {predictionTableRows.map((row) => {
-          const isFilled = getPredictionInputValue(row, inputMaWindow).trim() !== '';
-          const issuedRow = activeScope
-            ? issuedRowsByPeriod.get(getIssuedForecastPeriodKey(activeScope.period, row.targetDate))
-            : undefined;
+        {predictionTableRows.map(({ targetDate, row, issuedRow }) => {
+          const inputValue = row
+            ? getPredictionInputValue(row, inputMaWindow)
+            : formatNumber(issuedRow?.inputMaValue ?? null, 4);
+          const isFilled = inputValue !== '' && inputValue !== '--';
+          const closeCell = getForecastCloseCell(row, issuedRow);
+          const isSettled = closeCell.kind === 'actual';
           return (
             <div
-              className={`prediction-row ${isFilled ? 'row-filled' : 'row-empty'} ${issuedRow ? 'row-locked' : ''}`}
-              key={row.targetDate}
+              className={`prediction-row ${isFilled ? 'row-filled' : 'row-empty'} ${issuedRow ? 'row-locked' : ''} ${isSettled ? 'row-settled' : ''}`}
+              key={targetDate}
               style={predictionTableStyle}
               role="row"
             >
-              <span className="date-cell" role="cell">{row.targetDate}</span>
+              <span className="date-cell" role="cell">{targetDate}</span>
               <div role="cell">
-                <input
-                  className="prediction-input forecast-ma40-input"
-                  aria-label={`${row.targetDate} 预测MA${inputMaWindow}`}
-                  type="text"
-                  inputMode="decimal"
-                  disabled={isResettingForecastScope}
-                  value={getPredictionInputValue(row, inputMaWindow)}
-                  onChange={(event) => updatePrediction(row.targetDate, event.target.value)}
-                  onBlur={() => formatPredictionInput(row.targetDate)}
-                  onFocus={(event) => event.currentTarget.select()}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter' || event.key === 'ArrowDown') {
-                      event.preventDefault();
-                      movePredictionFocus(event.currentTarget, 1);
-                    } else if (event.key === 'ArrowUp') {
-                      event.preventDefault();
-                      movePredictionFocus(event.currentTarget, -1);
-                    }
-                  }}
-                  placeholder="0.0000"
-                />
+                {row ? (
+                  <input
+                    className="prediction-input forecast-ma40-input"
+                    aria-label={`${targetDate} 预测MA${inputMaWindow}`}
+                    type="text"
+                    inputMode="decimal"
+                    disabled={isResettingForecastScope || isSettled}
+                    value={inputValue}
+                    onChange={(event) => updatePrediction(targetDate, event.target.value)}
+                    onBlur={() => formatPredictionInput(targetDate)}
+                    onFocus={(event) => event.currentTarget.select()}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === 'ArrowDown') {
+                        event.preventDefault();
+                        movePredictionFocus(event.currentTarget, 1);
+                      } else if (event.key === 'ArrowUp') {
+                        event.preventDefault();
+                        movePredictionFocus(event.currentTarget, -1);
+                      }
+                    }}
+                    placeholder="0.0000"
+                  />
+                ) : (
+                  <span
+                    className="settled-ma-value"
+                    role="status"
+                    aria-label={`${targetDate} 已锁定预测MA${inputMaWindow}`}
+                  >
+                    {inputValue}
+                  </span>
+                )}
               </div>
               <strong className="locked-close-cell" role="cell">
                 {formatNumber(issuedRow?.predictedClose ?? null)}
                 {issuedRow ? <small aria-label="已锁定">锁</small> : null}
               </strong>
-              <span className="derived-close-cell" role="cell">{formatNumber(row.derivedClose)}</span>
+              <span
+                className={`close-status-cell ${closeCell.kind}`}
+                role="cell"
+                aria-label={`${closeCell.label} ${formatNumber(closeCell.value)}`}
+              >
+                <small>{closeCell.label}</small>
+                <strong>{formatNumber(closeCell.value)}</strong>
+              </span>
               <span className="effective-ma-cell num-cell" role="cell">
                 {formatNumber(issuedRow?.currentImpliedMa ?? null, 4)}
               </span>
-              <span className="num-cell" role="cell">{formatNumber(row.actualClose)}</span>
               <span role="cell">
-                <button
-                  type="button"
-                  className="detail-button"
-                  tabIndex={-1}
-                  onClick={() => setDetailTargetDate(row.targetDate)}
-                >
-                  明细
-                </button>
+                {row ? (
+                  <button
+                    type="button"
+                    className="detail-button"
+                    tabIndex={-1}
+                    onClick={() => setDetailTargetDate(targetDate)}
+                  >
+                    明细
+                  </button>
+                ) : '--'}
               </span>
               {visibleMaWindows.map((windowSize) => (
-                <span className="num-cell" key={windowSize} role="cell">{formatNumber(row.maValues[windowSize])}</span>
+                <span className="num-cell" key={windowSize} role="cell">
+                  {formatNumber(
+                    row?.maValues[windowSize] ??
+                    issuedRow?.predictedMaValues[windowSize] ??
+                    null,
+                  )}
+                </span>
               ))}
             </div>
           );

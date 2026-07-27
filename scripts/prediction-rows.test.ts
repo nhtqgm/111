@@ -127,7 +127,7 @@ test('existing predictions stay bound to their dates when a new trading day is a
   );
 });
 
-test('the right input table hides historical rows while retaining them in the workspace', () => {
+test('the right input table keeps only the horizon and explicitly retained settlement rows', () => {
   const rows = [
     { targetDate: '2026-07-10', predictedMa40: '9.1500' },
     { targetDate: '2026-07-20', predictedMa40: '9.0600' },
@@ -137,9 +137,13 @@ test('the right input table hides historical rows while retaining them in the wo
   const tableRows = selectPredictionRowsForInputTable(
     rows,
     new Set(['2026-07-20', '2026-07-21']),
+    new Set(['2026-07-10']),
   );
 
-  assert.deepEqual(tableRows.map((row) => row.targetDate), ['2026-07-20', '2026-07-21']);
+  assert.deepEqual(
+    tableRows.map((row) => row.targetDate),
+    ['2026-07-10', '2026-07-20', '2026-07-21'],
+  );
   assert.equal(rows.find((row) => row.targetDate === '2026-07-10')?.predictedMa40, '9.1500');
 });
 
