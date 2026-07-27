@@ -898,12 +898,12 @@ export default function App() {
         ? `下载更新 ${updateState.latestVersion}`
         : '检查更新';
   const compactPredictionTableStyle = {
-    gridTemplateColumns: '92px 94px 72px 100px 64px 44px',
-    minWidth: '481px',
+    gridTemplateColumns: '92px 94px 72px 100px 44px',
+    minWidth: '414px',
   };
   const expandedPredictionTableStyle = {
-    gridTemplateColumns: `104px 102px 82px 116px 74px 50px repeat(${visibleMaWindows.length}, 68px)`,
-    minWidth: `${548 + visibleMaWindows.length * 72}px`,
+    gridTemplateColumns: `104px 102px 82px 116px 50px repeat(${visibleMaWindows.length}, 68px)`,
+    minWidth: `${470 + visibleMaWindows.length * 72}px`,
   };
   const detailRow = useMemo(
     () => projection.rows.find((row) => row.targetDate === detailTargetDate) ?? null,
@@ -2086,7 +2086,6 @@ export default function App() {
           <span className="input-column" role="columnheader">预测MA{inputMaWindow}</span>
           <span className="num-cell" role="columnheader">锁定预测</span>
           <span className="status-column" role="columnheader">收盘状态</span>
-          <span className="num-cell" role="columnheader">有效MA</span>
           <span className="action-column" role="columnheader">明细</span>
           {expanded
             ? visibleMaWindows.map((windowSize) => (
@@ -2186,14 +2185,6 @@ export default function App() {
               >
                 <small>{closeCell.label}</small>
                 <strong>{formatNumber(closeCell.value)}</strong>
-              </span>
-              <span className="effective-ma-cell num-cell" role="cell">
-                {formatNumber(
-                  issuedRow?.currentImpliedMa ??
-                  historyRow?.actualMaValues[inputMaWindow] ??
-                  null,
-                  4,
-                )}
               </span>
               <span className="detail-cell" role="cell">
                 {row ? (

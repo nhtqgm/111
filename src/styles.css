@@ -926,19 +926,9 @@ h2 {
   text-align: center;
 }
 
-.effective-ma-cell {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  min-width: 0;
-  height: 100%;
-  color: #6f5432;
-  font-weight: 800;
-}
-
 .ma40-table .prediction-row {
-  grid-template-columns: 92px 94px 72px 100px 64px 44px;
-  min-width: 481px;
+  grid-template-columns: 92px 94px 72px 100px 44px;
+  min-width: 414px;
 }
 
 .ma40-table.expanded-table .prediction-row {
