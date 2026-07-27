@@ -176,14 +176,18 @@ export function hydratePredictionRows(
 }
 
 /**
- * The cloud workspace keeps historical rows for chart/history views, but the
- * editable table should only show the current input horizon.
+ * The cloud workspace keeps historical rows for chart/history views. The input
+ * table normally shows the current horizon, plus explicitly retained rows such
+ * as the latest settled forecast used for an immediate actual-price comparison.
  */
 export function selectPredictionRowsForInputTable<T extends { targetDate: string }>(
   rows: T[],
   horizonDates: ReadonlySet<string>,
+  retainedDates: ReadonlySet<string> = new Set(),
 ) {
-  return rows.filter((row) => horizonDates.has(row.targetDate));
+  return rows.filter(
+    (row) => horizonDates.has(row.targetDate) || retainedDates.has(row.targetDate),
+  );
 }
 
 export function normalizePredictionPoint(value: any): PredictionPoint {
