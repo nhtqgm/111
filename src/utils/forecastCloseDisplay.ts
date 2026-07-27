@@ -36,23 +36,54 @@ export interface ForecastCloseCell {
   value: number | null;
 }
 
+export interface ActualCloseContext {
+  actualDate: string;
+  actualClose: number;
+}
+
+export function getLatestActualCloseContext(
+  points: readonly { date: string; close: number }[],
+  baseDate: string,
+): ActualCloseContext | null {
+  return points.reduce<ActualCloseContext | null>((latest, point) => {
+    if (
+      point.date > baseDate ||
+      !Number.isFinite(point.close) ||
+      (latest && point.date <= latest.actualDate)
+    ) {
+      return latest;
+    }
+    return {
+      actualDate: point.date,
+      actualClose: point.close,
+    };
+  }, null);
+}
+
 export interface ForecastCloseTableEntry<
   TProjection extends ProjectionCloseRow,
   TIssued extends IssuedCloseRow,
+  THistory extends HistoryCloseRow,
 > {
   targetDate: string;
   row: TProjection | null;
   issuedRow: TIssued | undefined;
+  historyRow: THistory | undefined;
+  actualCloseContext: ActualCloseContext | undefined;
 }
 
 export function buildForecastCloseChartRows({
   projectionRows,
   issuedRows,
   historyRows,
+  actualCloseContexts = [],
+  getPeriodKey = identityPeriodKey,
 }: {
   projectionRows: readonly ProjectionCloseRow[];
   issuedRows: readonly IssuedCloseRow[];
   historyRows: readonly HistoryCloseRow[];
+  actualCloseContexts?: readonly ActualCloseContext[];
+  getPeriodKey?: (targetDate: string) => string;
 }): ForecastCloseChartRows {
   const locked = mergeLineValuePoints(
     historyRows.map((row) => ({
@@ -70,7 +101,16 @@ export function buildForecastCloseChartRows({
       targetDate: row.targetDate,
       value: row.derivedClose,
     }));
-  const actual = mergeLineValuePoints(
+  const actual = mergeActualLineValuePointsByPeriod(
+    getPeriodKey,
+    issuedRows.flatMap((row) =>
+      row.settlement
+        ? [{
+            targetDate: row.settlement.actualDate,
+            value: row.settlement.actualClose,
+          }]
+        : [],
+    ),
     projectionRows
       .filter((row) => !row.isForecast && row.actualClose !== null)
       .map((row) => ({
@@ -83,14 +123,10 @@ export function buildForecastCloseChartRows({
         targetDate: row.actualDate ?? row.targetDate,
         value: row.actualClose,
       })),
-    issuedRows.flatMap((row) =>
-      row.settlement
-        ? [{
-            targetDate: row.settlement.actualDate,
-            value: row.settlement.actualClose,
-          }]
-        : [],
-    ),
+    actualCloseContexts.map((context) => ({
+      targetDate: context.actualDate,
+      value: context.actualClose,
+    })),
   );
 
   return { locked, provisional, actual };
@@ -99,6 +135,8 @@ export function buildForecastCloseChartRows({
 export function getForecastCloseCell(
   row: ProjectionCloseRow | null,
   issuedRow?: IssuedCloseRow,
+  historyRow?: HistoryCloseRow,
+  actualCloseContext?: ActualCloseContext,
 ): ForecastCloseCell {
   if (issuedRow?.settlement) {
     return {
@@ -112,6 +150,20 @@ export function getForecastCloseCell(
       kind: 'actual',
       label: '真实收盘价',
       value: row.actualClose,
+    };
+  }
+  if (historyRow?.actualClose !== null && historyRow?.actualClose !== undefined) {
+    return {
+      kind: 'actual',
+      label: '真实收盘价',
+      value: historyRow.actualClose,
+    };
+  }
+  if (!row && !issuedRow && !historyRow && actualCloseContext) {
+    return {
+      kind: 'actual',
+      label: '真实收盘价',
+      value: actualCloseContext.actualClose,
     };
   }
   return {
@@ -149,17 +201,28 @@ export function getLatestCompletedTargetDate(
 export function buildForecastCloseTableRows<
   TProjection extends ProjectionCloseRow,
   TIssued extends IssuedCloseRow & { periodKey: string },
+  THistory extends HistoryCloseRow,
 >(
   projectionRows: readonly TProjection[],
   issuedRows: readonly TIssued[],
+  historyRows: readonly THistory[],
   getPeriodKey: (targetDate: string) => string,
-): Array<ForecastCloseTableEntry<TProjection, TIssued>> {
+  actualCloseContext?: ActualCloseContext | null,
+): Array<ForecastCloseTableEntry<TProjection, TIssued, THistory>> {
   const issuedByPeriod = new Map(issuedRows.map((row) => [row.periodKey, row]));
-  const entries: Array<ForecastCloseTableEntry<TProjection, TIssued>> =
+  const historyByPeriod = new Map(
+    historyRows.map((row) => [
+      getPeriodKey(row.actualDate ?? row.targetDate),
+      row,
+    ]),
+  );
+  const entries: Array<ForecastCloseTableEntry<TProjection, TIssued, THistory>> =
     projectionRows.map((row) => ({
       targetDate: row.targetDate,
       row,
       issuedRow: issuedByPeriod.get(getPeriodKey(row.targetDate)),
+      historyRow: historyByPeriod.get(getPeriodKey(row.targetDate)),
+      actualCloseContext: undefined,
     }));
   const latestSettledRow = findLatestSettledRow(issuedRows);
 
@@ -173,14 +236,91 @@ export function buildForecastCloseTableRows<
       targetDate: latestSettledRow.targetDate,
       row: null,
       issuedRow: latestSettledRow,
+      historyRow: historyByPeriod.get(latestSettledRow.periodKey),
+      actualCloseContext: undefined,
     });
   }
 
+  for (const [periodKey, historyRow] of historyByPeriod) {
+    if (
+      entries.some(
+        (entry) => getPeriodKey(entry.targetDate) === periodKey,
+      )
+    ) {
+      continue;
+    }
+    entries.push({
+      targetDate: historyRow.targetDate,
+      row: null,
+      issuedRow: issuedByPeriod.get(periodKey),
+      historyRow,
+      actualCloseContext: undefined,
+    });
+  }
+
+  if (actualCloseContext) {
+    const contextPeriodKey = getPeriodKey(actualCloseContext.actualDate);
+    const hasCompletedActual = entries.some(
+      (entry) =>
+        getPeriodKey(entry.targetDate) === contextPeriodKey &&
+        hasCompletedActualClose(entry),
+    );
+
+    if (!hasCompletedActual) {
+      entries.push({
+        targetDate: actualCloseContext.actualDate,
+        row: null,
+        issuedRow: undefined,
+        historyRow: undefined,
+        actualCloseContext,
+      });
+    }
+  }
+
   return entries.sort((left, right) => {
-    const leftDate = left.issuedRow?.settlement?.actualDate ?? left.targetDate;
-    const rightDate = right.issuedRow?.settlement?.actualDate ?? right.targetDate;
+    const leftDate =
+      left.issuedRow?.settlement?.actualDate ??
+      left.historyRow?.actualDate ??
+      left.actualCloseContext?.actualDate ??
+      left.targetDate;
+    const rightDate =
+      right.issuedRow?.settlement?.actualDate ??
+      right.historyRow?.actualDate ??
+      right.actualCloseContext?.actualDate ??
+      right.targetDate;
     return leftDate.localeCompare(rightDate);
   });
+}
+
+function hasCompletedActualClose<
+  TProjection extends ProjectionCloseRow,
+  TIssued extends IssuedCloseRow,
+  THistory extends HistoryCloseRow,
+>(entry: ForecastCloseTableEntry<TProjection, TIssued, THistory>) {
+  return Boolean(
+    entry.issuedRow?.settlement ||
+    (entry.row && !entry.row.isForecast && entry.row.actualClose !== null) ||
+    (entry.historyRow && entry.historyRow.actualClose !== null),
+  );
+}
+
+function mergeActualLineValuePointsByPeriod(
+  getPeriodKey: (targetDate: string) => string,
+  ...groups: LineValuePoint[][]
+) {
+  const values = new Map<string, LineValuePoint>();
+  for (const row of groups.flat()) {
+    if (row.value === null) continue;
+    const periodKey = getPeriodKey(row.targetDate);
+    if (!values.has(periodKey)) values.set(periodKey, row);
+  }
+  return [...values.values()].sort((left, right) =>
+    left.targetDate.localeCompare(right.targetDate),
+  );
+}
+
+function identityPeriodKey(targetDate: string) {
+  return targetDate;
 }
 
 function findLatestSettledRow<TIssued extends IssuedCloseRow>(

@@ -1,7 +1,7 @@
 {
   "app": "gupiao-ma40",
-  "version": "0.2.12",
-  "url": "https://github.com/nhtqgm/111/releases/download/v0.2.12/gupiao-forecast-0.2.12-win7-x64.exe",
-  "notes": "修复日K、周K、月K图表位置记忆：首次打开以预测起点居中，用户调整后按股票和周期分别保存，刷新网页或重启EXE后继续恢复。",
-  "publishedAt": "2026-07-12"
+  "version": "0.2.14",
+  "url": "https://github.com/nhtqgm/111/releases/download/v0.2.14/gupiao-forecast-0.2.14-win7-x64.exe",
+  "notes": "收盘后显示真实收盘价并补齐最新收盘K线；压缩预测表格，修复行高拉伸和数值对齐；重置后清除预测与历史对比，仅保留真实行情。",
+  "publishedAt": "2026-07-27"
 }

@@ -70,6 +70,7 @@ import {
   buildForecastCloseChartRows,
   buildForecastCloseTableRows,
   getForecastCloseCell,
+  getLatestActualCloseContext,
   getLatestCompletedTargetDate,
 } from './utils/forecastCloseDisplay';
 import { formatNumber, summarizeForecastHistory } from './utils/metrics';
@@ -241,7 +242,7 @@ export default function App() {
   const [forecastHistory, setForecastHistory] = useState<ForecastHistorySnapshot[]>([]);
   const [issuedForecastBatches, setIssuedForecastBatches] = useState<IssuedForecastBatch[]>([]);
   const [visibleMaWindows, setVisibleMaWindows] = useState<MaWindow[]>([5, 10, 20, 40, 60]);
-  const [showActualMaLines, setShowActualMaLines] = useState(false);
+  const [showActualMaLines, setShowActualMaLines] = useState(true);
   const [inputMaWindow, setInputMaWindow] = useState<MaWindow>(MA40_WINDOW);
   const [isTableExpanded, setIsTableExpanded] = useState(false);
   const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
@@ -840,6 +841,13 @@ export default function App() {
   );
   const summary = useMemo(() => summarizeForecastHistory(visibleHistoryRows), [visibleHistoryRows]);
   const latest = activeData?.points.at(-1);
+  const latestActualCloseContext = useMemo(
+    () =>
+      activeData
+        ? getLatestActualCloseContext(activeData.points, baseDate)
+        : null,
+    [activeData, baseDate],
+  );
   const unit = periods.find((item) => item.value === period)?.unit ?? '';
   const inputHorizonDates = useMemo(
     () => new Set(activeData ? generatePredictionRows(activeData.points, period, baseDate, inputMaWindow).map((row) => row.targetDate) : []),
@@ -866,16 +874,20 @@ export default function App() {
       return buildForecastCloseTableRows(
         selectedProjectionRows,
         activeIssuedEvaluation?.rows ?? [],
+        chartHistoryRows,
         (targetDate) =>
           activeScope
             ? getIssuedForecastPeriodKey(activeScope.period, targetDate)
             : targetDate,
+        latestActualCloseContext,
       );
     },
     [
       activeIssuedEvaluation,
       activeScope,
+      chartHistoryRows,
       inputHorizonDates,
+      latestActualCloseContext,
       projection.rows,
     ],
   );
@@ -885,9 +897,13 @@ export default function App() {
       : updateState.status === 'available'
         ? `下载更新 ${updateState.latestVersion}`
         : '检查更新';
-  const predictionTableStyle = {
-    gridTemplateColumns: `132px 112px 104px 140px 92px 62px repeat(${visibleMaWindows.length}, 72px)`,
-    minWidth: `${682 + visibleMaWindows.length * 80}px`,
+  const compactPredictionTableStyle = {
+    gridTemplateColumns: '92px 94px 72px 100px 64px 44px',
+    minWidth: '481px',
+  };
+  const expandedPredictionTableStyle = {
+    gridTemplateColumns: `104px 102px 82px 116px 74px 50px repeat(${visibleMaWindows.length}, 68px)`,
+    minWidth: `${548 + visibleMaWindows.length * 72}px`,
   };
   const detailRow = useMemo(
     () => projection.rows.find((row) => row.targetDate === detailTargetDate) ?? null,
@@ -951,6 +967,13 @@ export default function App() {
         historyRows: chartHistoryRows,
         issuedRows: activeIssuedEvaluation?.rows ?? [],
         projectionRows: projection.rows,
+        actualCloseContexts: latestActualCloseContext
+          ? [latestActualCloseContext]
+          : [],
+        getPeriodKey: (targetDate) =>
+          activeScope
+            ? getIssuedForecastPeriodKey(activeScope.period, targetDate)
+            : targetDate,
       });
 
       return [
@@ -992,7 +1015,13 @@ export default function App() {
           : []),
       ];
     },
-    [activeIssuedEvaluation, chartHistoryRows, projection.rows],
+    [
+      activeIssuedEvaluation,
+      activeScope,
+      chartHistoryRows,
+      latestActualCloseContext,
+      projection.rows,
+    ],
   );
 
   function requestIssueCurrentForecast() {
@@ -1790,6 +1819,7 @@ export default function App() {
         selectedScope.stockCode === resetScope.stockCode &&
         selectedScope.period === resetScope.period
       ) {
+        setShowActualMaLines(true);
         setPredictions(
           generatePredictionRows(resetPoints, resetScope.period, resetBaseDate, forecastRowCount),
         );
@@ -2041,39 +2071,68 @@ export default function App() {
   }
 
   function renderPredictionTable(expanded = false) {
+    const predictionTableStyle = expanded
+      ? expandedPredictionTableStyle
+      : compactPredictionTableStyle;
+
     return (
       <div
-        className={`prediction-table ma40-table ${expanded ? 'expanded-table' : ''}`}
+        className={`prediction-table ma40-table ${expanded ? 'expanded-table' : 'compact-table'}`}
         role="table"
         aria-label={`预测MA${inputMaWindow}输入表`}
       >
         <div className="prediction-row table-head" style={predictionTableStyle} role="row">
-          <span role="columnheader">目标周期</span>
-          <span role="columnheader">预测MA{inputMaWindow}</span>
-          <span role="columnheader">锁定预测</span>
-          <span role="columnheader">收盘状态</span>
-          <span role="columnheader">有效MA</span>
-          <span role="columnheader">明细</span>
-          {visibleMaWindows.map((windowSize) => (
-            <span className="num-cell" key={windowSize} role="columnheader">MA{windowSize}</span>
-          ))}
+          <span className="date-column" role="columnheader">目标周期</span>
+          <span className="input-column" role="columnheader">预测MA{inputMaWindow}</span>
+          <span className="num-cell" role="columnheader">锁定预测</span>
+          <span className="status-column" role="columnheader">收盘状态</span>
+          <span className="num-cell" role="columnheader">有效MA</span>
+          <span className="action-column" role="columnheader">明细</span>
+          {expanded
+            ? visibleMaWindows.map((windowSize) => (
+                <span className="num-cell" key={windowSize} role="columnheader">MA{windowSize}</span>
+              ))
+            : null}
         </div>
-        {predictionTableRows.map(({ targetDate, row, issuedRow }) => {
-          const inputValue = row
+        {predictionTableRows.map(({
+          targetDate,
+          row,
+          issuedRow,
+          historyRow,
+          actualCloseContext,
+        }) => {
+          const rowInputValue = row
             ? getPredictionInputValue(row, inputMaWindow)
-            : formatNumber(issuedRow?.inputMaValue ?? null, 4);
+            : '';
+          const inputValue = rowInputValue.trim() !== ''
+            ? rowInputValue
+            : formatNumber(
+                issuedRow?.inputMaValue ??
+                historyRow?.inputMaValue ??
+                null,
+                4,
+              );
           const isFilled = inputValue !== '' && inputValue !== '--';
-          const closeCell = getForecastCloseCell(row, issuedRow);
+          const recordedClose =
+            issuedRow?.predictedClose ??
+            historyRow?.predictedClose ??
+            null;
+          const closeCell = getForecastCloseCell(
+            row,
+            issuedRow,
+            historyRow,
+            actualCloseContext,
+          );
           const isSettled = closeCell.kind === 'actual';
           return (
-            <div
-              className={`prediction-row ${isFilled ? 'row-filled' : 'row-empty'} ${issuedRow ? 'row-locked' : ''} ${isSettled ? 'row-settled' : ''}`}
-              key={targetDate}
-              style={predictionTableStyle}
-              role="row"
+              <div
+                className={`prediction-row ${isFilled ? 'row-filled' : 'row-empty'} ${issuedRow || historyRow ? 'row-locked' : ''} ${isSettled ? 'row-settled' : ''}`}
+                key={`${actualCloseContext ? 'actual-context' : 'forecast'}:${targetDate}`}
+                style={predictionTableStyle}
+                role="row"
             >
               <span className="date-cell" role="cell">{targetDate}</span>
-              <div role="cell">
+              <div className="prediction-input-cell" role="cell">
                 {row ? (
                   <input
                     className="prediction-input forecast-ma40-input"
@@ -2100,15 +2159,25 @@ export default function App() {
                   <span
                     className="settled-ma-value"
                     role="status"
-                    aria-label={`${targetDate} 已锁定预测MA${inputMaWindow}`}
+                    aria-label={
+                      issuedRow
+                        ? `${targetDate} 已锁定预测MA${inputMaWindow}`
+                        : historyRow
+                          ? `${targetDate} 历史预测MA${inputMaWindow}`
+                        : `${targetDate} 无预测MA${inputMaWindow}记录`
+                    }
                   >
                     {inputValue}
                   </span>
                 )}
               </div>
               <strong className="locked-close-cell" role="cell">
-                {formatNumber(issuedRow?.predictedClose ?? null)}
-                {issuedRow ? <small aria-label="已锁定">锁</small> : null}
+                {formatNumber(recordedClose)}
+                {issuedRow ? (
+                  <small aria-label="已锁定">锁</small>
+                ) : historyRow ? (
+                  <small aria-label="历史预测记录">历</small>
+                ) : null}
               </strong>
               <span
                 className={`close-status-cell ${closeCell.kind}`}
@@ -2119,9 +2188,14 @@ export default function App() {
                 <strong>{formatNumber(closeCell.value)}</strong>
               </span>
               <span className="effective-ma-cell num-cell" role="cell">
-                {formatNumber(issuedRow?.currentImpliedMa ?? null, 4)}
+                {formatNumber(
+                  issuedRow?.currentImpliedMa ??
+                  historyRow?.actualMaValues[inputMaWindow] ??
+                  null,
+                  4,
+                )}
               </span>
-              <span role="cell">
+              <span className="detail-cell" role="cell">
                 {row ? (
                   <button
                     type="button"
@@ -2133,15 +2207,18 @@ export default function App() {
                   </button>
                 ) : '--'}
               </span>
-              {visibleMaWindows.map((windowSize) => (
-                <span className="num-cell" key={windowSize} role="cell">
-                  {formatNumber(
-                    row?.maValues[windowSize] ??
-                    issuedRow?.predictedMaValues[windowSize] ??
-                    null,
-                  )}
-                </span>
-              ))}
+              {expanded
+                ? visibleMaWindows.map((windowSize) => (
+                    <span className="num-cell" key={windowSize} role="cell">
+                      {formatNumber(
+                        row?.maValues[windowSize] ??
+                        issuedRow?.predictedMaValues[windowSize] ??
+                        historyRow?.predictedMaValues[windowSize] ??
+                        null,
+                      )}
+                    </span>
+                  ))
+                : null}
             </div>
           );
         })}
@@ -2371,7 +2448,7 @@ export default function App() {
           aria-pressed={showActualMaLines}
           onClick={() => setShowActualMaLines((current) => !current)}
         >
-          {showActualMaLines ? '显示真实均线' : '只看预测线'}
+          {showActualMaLines ? '只看预测线' : '显示真实K线'}
         </button>
 
       </section>
