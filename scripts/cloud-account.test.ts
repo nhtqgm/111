@@ -22,11 +22,10 @@ test('background saving skips unchanged cloud workspaces', () => {
   const app = fs.readFileSync('src/App.tsx', 'utf8');
   const saveCurrentWorkspace = app.slice(
     app.indexOf('  function saveCurrentWorkspace({'),
-    app.indexOf('  function capturePredictionHistory('),
+    app.indexOf('  const projection = useMemo('),
   );
 
-  assert.match(
-    saveCurrentWorkspace,
-    /if \(!force && !hasUnsavedChanges\) return;\s*\n\s*capturePredictionHistory\(predictions, activeData, activeScope\.period, baseDate\);/,
-  );
+  assert.match(saveCurrentWorkspace, /if \(!force && !hasUnsavedChanges\) return;/);
+  assert.match(saveCurrentWorkspace, /persistPredictionDraft\(predictions\);/);
+  assert.doesNotMatch(saveCurrentWorkspace, /capturePredictionHistory|issueCurrentForecast/);
 });

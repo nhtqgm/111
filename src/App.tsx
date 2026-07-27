@@ -25,12 +25,9 @@ import {
 import type { User } from '@supabase/supabase-js';
 import {
   buildForecastHistoryRows,
-  createForecastHistorySnapshotsForAllInputs,
   filterForecastHistorySnapshots,
-  getHistoryCaptureRows,
   mergeForecastHistory,
   selectLatestChartForecastHistoryRows,
-  shouldRepairFrozenForecastSnapshot,
   type ForecastHistorySnapshot,
   type ForecastHistoryRow,
 } from './utils/forecastHistory';
@@ -76,6 +73,21 @@ import {
   MA_WINDOWS,
   type MaWindow,
 } from './utils/movingAverage';
+import {
+  createIssuedForecastBatch,
+  evaluateIssuedForecastBatch,
+  getIssuedForecastPeriodKey,
+  selectActiveIssuedForecastBatch,
+  sortIssuedForecastBatches,
+  type EvaluatedIssuedForecastRow,
+  type IssuedForecastBatch,
+} from './utils/issuedForecastBatch';
+import {
+  isIssuedForecastSnapshot,
+  issuedForecastBatchToHistorySnapshots,
+  loadMyIssuedForecastBatchesV2,
+  saveMyIssuedForecastBatchV2,
+} from './utils/issuedForecastStorage';
 import { loadChartViewport, saveChartViewport, type ChartViewport } from './utils/chartViewport';
 import {
   generatePredictionRows,
@@ -218,6 +230,7 @@ export default function App() {
   const [predictions, setPredictions] = useState<PredictionPoint[]>([]);
   const [predictionScope, setPredictionScope] = useState<CloudWorkspaceScope | null>(null);
   const [forecastHistory, setForecastHistory] = useState<ForecastHistorySnapshot[]>([]);
+  const [issuedForecastBatches, setIssuedForecastBatches] = useState<IssuedForecastBatch[]>([]);
   const [visibleMaWindows, setVisibleMaWindows] = useState<MaWindow[]>([5, 10, 20, 40, 60]);
   const [showActualMaLines, setShowActualMaLines] = useState(false);
   const [inputMaWindow, setInputMaWindow] = useState<MaWindow>(MA40_WINDOW);
@@ -236,6 +249,7 @@ export default function App() {
   const [cloudWorkspaceRevision, setCloudWorkspaceRevision] = useState(0);
   const [cloudRole, setCloudRole] = useState<'user' | 'admin' | null>(null);
   const [isCloudWorkspaceLoading, setIsCloudWorkspaceLoading] = useState(false);
+  const [isIssuingForecast, setIsIssuingForecast] = useState(false);
   const [cloudStockCodes, setCloudStockCodes] = useState<string[]>([]);
   const [cloudSyncState, setCloudSyncState] = useState<CloudSyncState>(
     isCloudSyncConfigured() ? 'signed-out' : 'unconfigured',
@@ -466,11 +480,6 @@ export default function App() {
   }, [cloudWorkspace, data, dataPeriod, period]);
 
   useEffect(() => {
-    if (!activeData || !activeScope || !cloudWorkspace || !baseDate) return;
-    capturePredictionHistory(predictions, activeData, activeScope.period, baseDate);
-  }, [activeData, activeScope?.period, baseDate, cloudWorkspace, predictions]);
-
-  useEffect(() => {
     if (!activeData || !activeScope || !baseDate || !predictions.length) return;
 
     setHasUnsavedChanges(true);
@@ -654,14 +663,16 @@ export default function App() {
     setPredictions([]);
     setPredictionScope(null);
     setForecastHistory([]);
+    setIssuedForecastBatches([]);
     setIsCloudWorkspaceLoading(true);
     setCloudSyncState('syncing');
 
     try {
-      const [profile, record, remoteStockCodes] = await Promise.all([
+      const [profile, record, remoteStockCodes, remoteIssuedBatches] = await Promise.all([
         getCloudProfile(),
         loadMyCloudWorkspace(),
         loadMyStockCodes(),
+        loadMyIssuedForecastBatchesV2(),
       ]);
       if (generation !== cloudSessionGenerationRef.current) return;
       if (!profile || profile.userId !== user.id) throw new Error('云端账户信息读取失败，请退出后重新登录');
@@ -685,6 +696,7 @@ export default function App() {
       setPeriod(workspace.workspace.period);
       setBaseDate(workspace.workspace.baseDate || todayDate);
       setCloudStockCodes(remoteStockCodes);
+      setIssuedForecastBatches(remoteIssuedBatches);
       cloudPredictionSaveQueueRef.current = createPredictionSaveQueueForUser(user, outbox);
       cloudHistorySaveQueueRef.current = createHistorySaveQueueForUser(user, historyOutbox);
       setCloudSyncState('ready');
@@ -718,7 +730,6 @@ export default function App() {
     }
     if (!force && !hasUnsavedChanges) return;
 
-    capturePredictionHistory(predictions, activeData, activeScope.period, baseDate);
     persistPredictionDraft(predictions);
     setHasUnsavedChanges(false);
     if (notice === 'manual') showToast('已保存到云端', 'success');
@@ -736,26 +747,76 @@ export default function App() {
           },
     [activeData, activeScope?.period, baseDate, inputMaWindow, predictions],
   );
-  const forecastDates = useMemo(
-    () => projection.rows.filter((row) => row.isForecast).map((row) => row.targetDate),
-    [projection.rows],
-  );
-  const historyRows = useMemo(
+  const activeIssuedBatch = useMemo(
     () =>
       activeData && activeScope
-        ? buildForecastHistoryRows(
-            filterForecastHistorySnapshots(forecastHistory, activeData.code, activeScope.period),
-            activeData.points,
-          )
-        : [],
-    [activeData, activeScope?.period, forecastHistory],
+        ? selectActiveIssuedForecastBatch(issuedForecastBatches, {
+            stockCode: activeData.code,
+            period: activeScope.period,
+            inputMaWindow,
+          })
+        : null,
+    [activeData, activeScope?.period, inputMaWindow, issuedForecastBatches],
+  );
+  const activeIssuedEvaluation = useMemo(() => {
+    if (!activeData || !activeIssuedBatch || !baseDate || baseDate < activeIssuedBatch.asOfDate) return null;
+    return evaluateIssuedForecastBatch(activeIssuedBatch, {
+      points: activeData.points,
+      evaluationAsOfDate: baseDate,
+    });
+  }, [activeData, activeIssuedBatch, baseDate]);
+  const issuedRowsByPeriod = useMemo(
+    () =>
+      new Map(
+        (activeIssuedEvaluation?.rows ?? []).map((row) => [row.periodKey, row]),
+      ),
+    [activeIssuedEvaluation],
+  );
+  const forecastDates = useMemo(
+    () =>
+      Array.from(
+        new Set([
+          ...projection.rows.filter((row) => row.isForecast).map((row) => row.targetDate),
+          ...(activeIssuedEvaluation?.rows ?? [])
+            .filter((row) => row.settlement === null)
+            .map((row) => row.targetDate),
+        ]),
+      ).sort(),
+    [activeIssuedEvaluation, projection.rows],
+  );
+  const historyRows = useMemo(
+    () => {
+      if (!activeData || !activeScope) return [];
+      // Compatibility bridge rows carry a client timestamp. Exclude every
+      // bridge revision from the legacy stream, then add only the canonical
+      // batch selected by the authoritative server sequence.
+      const legacySnapshots = filterForecastHistorySnapshots(
+        forecastHistory,
+        activeData.code,
+        activeScope.period,
+      ).filter((snapshot) => !isIssuedForecastSnapshot(snapshot));
+      const canonicalIssuedSnapshots = activeIssuedBatch
+        ? issuedForecastBatchToHistorySnapshots(activeIssuedBatch).map((snapshot) => ({
+            ...snapshot,
+            savedAt: activeIssuedBatch.serverPersistedAt ?? snapshot.savedAt,
+          }))
+        : [];
+      return buildForecastHistoryRows(
+        [...legacySnapshots, ...canonicalIssuedSnapshots],
+        activeData.points,
+      );
+    },
+    [activeData, activeIssuedBatch, activeScope?.period, forecastHistory],
   );
   const completedHistoryRows = useMemo(
     () => historyRows.filter((row) => row.actualClose !== null),
     [historyRows],
   );
   const visibleHistoryRows = useMemo(
-    () => completedHistoryRows.filter((row) => row.inputMaWindow === inputMaWindow),
+    () =>
+      selectLatestHistoryRevisionRows(
+        completedHistoryRows.filter((row) => row.inputMaWindow === inputMaWindow),
+      ),
     [completedHistoryRows, inputMaWindow],
   );
   const chartHistoryRows = useMemo(
@@ -785,12 +846,19 @@ export default function App() {
         ? `下载更新 ${updateState.latestVersion}`
         : '检查更新';
   const predictionTableStyle = {
-    gridTemplateColumns: `132px 112px 104px 86px 62px repeat(${visibleMaWindows.length}, 72px)`,
-    minWidth: `${526 + visibleMaWindows.length * 80}px`,
+    gridTemplateColumns: `132px 112px 104px 104px 92px 86px 62px repeat(${visibleMaWindows.length}, 72px)`,
+    minWidth: `${722 + visibleMaWindows.length * 80}px`,
   };
   const detailRow = useMemo(
     () => projection.rows.find((row) => row.targetDate === detailTargetDate) ?? null,
     [detailTargetDate, projection.rows],
+  );
+  const detailIssuedRow = useMemo(
+    () =>
+      detailRow && activeScope
+        ? issuedRowsByPeriod.get(getIssuedForecastPeriodKey(activeScope.period, detailRow.targetDate)) ?? null
+        : null,
+    [activeScope?.period, detailRow, issuedRowsByPeriod],
   );
   const lineSeries = useMemo<ChartLineSeries[]>(
     () => [
@@ -810,7 +878,7 @@ export default function App() {
           }))
         : []),
       ...visibleMaWindows.map((windowSize) => ({
-          label: `预测MA${windowSize}`,
+          label: `实时暂估MA${windowSize}`,
           color: lineColors[windowSize],
           rows: mergeLineValuePointsPreservingEarlier(
             chartHistoryRows.map((row) => ({
@@ -838,133 +906,128 @@ export default function App() {
     ],
   );
   const pointSeries = useMemo<ChartPointSeries[]>(
-    () => [
-      {
-        label: '预测收盘价',
-        color: '#ffe600',
-        borderColor: '#20251f',
-        rows: mergeLineValuePoints(
-          chartHistoryRows.map((row) => ({
-            targetDate: row.actualDate ?? row.targetDate,
-            value: row.predictedClose,
-          })),
-          projection.rows.filter((row) => row.isForecast).map((row) => ({
-            targetDate: row.targetDate,
-            value: row.derivedClose,
-          })),
-        ),
-        symbol: 'diamond',
-        symbolSize: 13,
-        z: 120,
-      },
-    ],
-    [chartHistoryRows, projection.rows],
+    () => {
+      const lockedRows = mergeLineValuePoints(
+        chartHistoryRows.map((row) => ({
+          targetDate: row.actualDate ?? row.targetDate,
+          value: row.predictedClose,
+        })),
+        (activeIssuedEvaluation?.rows ?? []).map((row) => ({
+          targetDate: row.settlement?.actualDate ?? row.targetDate,
+          value: row.predictedClose,
+        })),
+      );
+      const provisionalRows = projection.rows
+        .filter((row) => row.isForecast)
+        .map((row) => ({ targetDate: row.targetDate, value: row.derivedClose }));
+
+      return [
+        ...(lockedRows.length
+          ? [{
+              label: '已提交预测收盘（锁定）',
+              color: '#ffe600',
+              borderColor: '#20251f',
+              rows: lockedRows,
+              symbol: 'diamond',
+              symbolSize: 13,
+              z: 120,
+            } satisfies ChartPointSeries]
+          : []),
+        {
+          label: '实时暂估收盘（会变化）',
+          color: '#f4a340',
+          borderColor: '#7a3f12',
+          rows: provisionalRows,
+          symbol: 'circle',
+          symbolSize: 9,
+          z: 110,
+        },
+      ];
+    },
+    [activeIssuedEvaluation, chartHistoryRows, projection.rows],
   );
 
-  function capturePredictionHistory(
-    rows: PredictionPoint[],
-    sourceData: StockKLineResponse | null,
-    workspacePeriod: PeriodType,
-    workspaceBaseDate: string,
-  ) {
-    if (!sourceData || !rows.length || !workspaceBaseDate) {
+  function requestIssueCurrentForecast() {
+    if (!activeData || !activeScope || !baseDate || !cloudUser) {
+      showToast('行情或云端账户尚未准备好，暂时不能提交预测', 'warning');
+      return;
+    }
+    const issuableCount = projection.rows.filter(
+      (row) =>
+        row.isForecast &&
+        row.derivedClose !== null &&
+        row.calculation.reverse.predictedMa !== null &&
+        row.calculation.reverse.previousSum !== null,
+    ).length;
+    if (!issuableCount) {
+      showToast(`请先填写至少一条可计算的预测MA${inputMaWindow}`, 'warning');
       return;
     }
 
-    const currentWorkspace = cloudWorkspaceRef.current;
-    const existing = currentWorkspace
-      ? getWorkspaceForecastHistory(currentWorkspace, { stockCode: sourceData.code, period: workspacePeriod })
-      : [];
-    const existingById = new Map(existing.map((snapshot) => [snapshot.id, snapshot]));
-    const frozenIds = new Set(
-      buildForecastHistoryRows(existing, sourceData.points)
-        .filter((row) => row.actualClose !== null)
-        .map((row) => row.id),
-    );
-    const captureRows = getHistoryCaptureRows(rows);
-    if (!captureRows.length) {
-      if (workspacePeriod === period && normalizeStockCode(sourceData.code) === normalizeStockCode(queryCode)) {
-        setForecastHistory(existing);
-      }
-      return;
-    }
-    const incoming = createForecastHistorySnapshotsForAllInputs(
-      sourceData.code,
-      workspacePeriod,
-      sourceData.points,
-      rows,
-      workspaceBaseDate,
-    ).filter((snapshot) => {
-      const existingSnapshot = existingById.get(snapshot.id);
-      return !sameForecastSnapshot(existingSnapshot, snapshot) && (
-        !frozenIds.has(snapshot.id) || shouldRepairFrozenForecastSnapshot(existingSnapshot, snapshot)
+    setConfirmAction({
+      title: `提交并锁定 MA${inputMaWindow} 预测`,
+      body: `将按 ${baseDate} 收盘后的信息一次锁定 ${issuableCount} 条未来预测。以后行情刷新只更新真实值和有效MA，不会修改这些预测收盘价；再次提交会创建新版本。`,
+      confirmLabel: `锁定 ${issuableCount} 条预测`,
+      onConfirm: issueCurrentForecast,
+    });
+  }
+
+  async function issueCurrentForecast() {
+    if (!activeData || !activeScope || !baseDate || !cloudUser || isIssuingForecast) return;
+    const sessionGeneration = cloudSessionGenerationRef.current;
+    setIsIssuingForecast(true);
+    try {
+      const issuedAt = new Date().toISOString();
+      const revision = globalThis.crypto?.randomUUID?.() ??
+        `revision-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const batch = createIssuedForecastBatch({
+        stockCode: activeData.code,
+        period: activeScope.period,
+        inputMaWindow,
+        revision,
+        asOfDate: baseDate,
+        issuedAt,
+        points: activeData.points,
+        predictions,
+      });
+      // The RPC writes the immutable batch and all v1 history bridge rows in a
+      // single database transaction. Do not expose the lock in memory until
+      // the server returns its authoritative ordering sequence.
+      const savedBatch = await saveMyIssuedForecastBatchV2(batch);
+      // The RPC is bound to the authenticated user that started it. If that
+      // account signed out (or another account signed in) while it was in
+      // flight, the cloud commit remains valid for the original account but
+      // its response must never leak into the replacement UI session.
+      if (sessionGeneration !== cloudSessionGenerationRef.current) return;
+      const snapshots = issuedForecastBatchToHistorySnapshots(savedBatch);
+      const currentWorkspace = cloudWorkspaceRef.current;
+      if (!currentWorkspace) throw new Error('云端工作区尚未加载完成');
+      const existing = getWorkspaceForecastHistory(currentWorkspace, activeScope);
+      const merged = mergeForecastHistory(existing, snapshots);
+
+      // Success updates only the in-memory projection of data already committed
+      // by the RPC. Issued batches never enter localStorage/Electron or the
+      // generic history outbox.
+      updateCloudWorkspace((workspace) =>
+        setWorkspaceForecastHistory(workspace, activeScope, merged),
       );
-    });
-
-    if (!incoming.length) {
-      if (workspacePeriod === period && normalizeStockCode(sourceData.code) === normalizeStockCode(queryCode)) {
-        setForecastHistory(existing);
-      }
-      return;
-    }
-
-    const merged = mergeForecastHistory(existing, incoming);
-    updateCloudWorkspace((workspace) =>
-      setWorkspaceForecastHistory(
-        workspace,
-        { stockCode: sourceData.code, period: workspacePeriod },
-        merged,
-      ),
-    );
-    scheduleCloudHistorySave(incoming);
-    if (workspacePeriod === period && normalizeStockCode(sourceData.code) === normalizeStockCode(queryCode)) {
       setForecastHistory(merged);
+      setIssuedForecastBatches((current) =>
+        sortIssuedForecastBatches([
+          ...current.filter((item) => item.id !== savedBatch.id),
+          savedBatch,
+        ]),
+      );
+      showToast(
+        `已提交并锁定 MA${inputMaWindow}，云端序号 #${savedBatch.serverSequence}，共 ${savedBatch.rows.length} 条预测`,
+        'success',
+      );
+    } catch (err) {
+      if (sessionGeneration !== cloudSessionGenerationRef.current) return;
+      showToast(err instanceof Error ? `提交预测失败：${err.message}` : '提交预测失败', 'warning');
+    } finally {
+      if (sessionGeneration === cloudSessionGenerationRef.current) setIsIssuingForecast(false);
     }
-  }
-
-  function scheduleCloudHistorySave(snapshots: ForecastHistorySnapshot[]) {
-    if (!snapshots.length) return;
-    const queue = cloudHistorySaveQueueRef.current;
-    if (queue) {
-      queue.schedule(snapshots);
-      return;
-    }
-
-    if (!cloudUser) return;
-    const pending = loadCloudHistoryOutbox(cloudUser.id);
-    saveCloudHistoryOutbox(cloudUser.id, {
-      snapshots: mergeForecastHistory(pending.snapshots, snapshots),
-      lastSavedAt: pending.lastSavedAt,
-    });
-  }
-
-  function captureCachedPredictionHistory(workspacePeriod: PeriodType, targetStockCode: string) {
-    const cached = marketDataRef.current.get(marketScopeKey(targetStockCode, workspacePeriod));
-    if (!cached) return;
-    const completed = filterCompletedKLineData(cached, workspacePeriod);
-    const workspaceBaseDate = completed.lastCompletedDate;
-    const workspace = cloudWorkspaceRef.current;
-    if (!workspaceBaseDate || !workspace) return;
-    const storedRows = getWorkspacePredictions(workspace, {
-      stockCode: completed.data.code,
-      period: workspacePeriod,
-    });
-    if (storedRows.length) capturePredictionHistory(storedRows, completed.data, workspacePeriod, workspaceBaseDate);
-    /*
-    const cached = loadKLineCache(stockCode, workspacePeriod);
-    if (!cached) return;
-
-    const completed = filterCompletedKLineData(markAsLocalCache(cached.data), workspacePeriod);
-    const workspaceBaseDate = completed.lastCompletedDate;
-    if (!workspaceBaseDate) return;
-
-    const storedRows = loadPredictions(
-      predictionPlanKey(completed.data.code, workspacePeriod, workspaceBaseDate),
-    );
-    if (storedRows?.length) {
-      capturePredictionHistory(storedRows, completed.data, workspacePeriod, workspaceBaseDate);
-    }
-    */
   }
 
   function persistPredictionDraft(rows: PredictionPoint[]) {
@@ -1092,9 +1155,6 @@ export default function App() {
     setStockCode(normalizedCode);
     if (normalizedCode === currentCode) return false;
 
-    if (activeData && activeScope) {
-      capturePredictionHistory(predictions, activeData, activeScope.period, baseDate);
-    }
     setData(null);
     setDataPeriod(null);
     setPredictions([]);
@@ -1196,9 +1256,6 @@ export default function App() {
 
   function selectKLinePeriod(nextPeriod: PeriodType) {
     if (nextPeriod === period) return;
-    if (activeData && activeScope) {
-      capturePredictionHistory(predictions, activeData, activeScope.period, baseDate);
-    }
     // 命中缓存时同步水合，避免图表先卸载再重建（339 行 effect 会幂等重放同样的数据）。
     const cached = marketDataRef.current.get(marketScopeKey(queryCode, nextPeriod));
     if (cached) {
@@ -1321,6 +1378,8 @@ export default function App() {
       setPredictions([]);
       setPredictionScope(null);
       setForecastHistory([]);
+      setIssuedForecastBatches([]);
+      setIsIssuingForecast(false);
       setData(null);
       setDataPeriod(null);
       setBaseDate(todayDate);
@@ -1333,7 +1392,7 @@ export default function App() {
       setCloudHistorySaveState({ status: 'idle', pendingCount: 0, lastSavedAt: null, error: null });
       setCloudSyncState('signed-out');
       setIsCloudAccountOpen(false);
-      showToast('已退出云端账户。本地预测仍保留在本机。', 'info');
+      showToast('已退出云端账户；已提交并锁定的预测未保存在本机。', 'info');
     } catch (err) {
       showToast(err instanceof Error ? `退出云端账户失败：${err.message}` : '退出云端账户失败', 'warning');
     }
@@ -1505,12 +1564,9 @@ export default function App() {
     trigger?: 'manual' | 'startup' | AStockRefreshPhase;
   } = {}): Promise<MarketRefreshResult> {
     const requestedStockCode = normalizeStockCode(targetStockCode);
-    if (!skipCurrentCapture && activeData && activeScope) {
-      capturePredictionHistory(predictions, activeData, activeScope.period, baseDate);
-    }
-    ALL_KLINE_PERIODS.forEach((workspacePeriod) =>
-      captureCachedPredictionHistory(workspacePeriod, requestedStockCode),
-    );
+    // Issued forecasts are immutable and already persisted at submission time.
+    // A market refresh must never rebuild or overwrite them.
+    void skipCurrentCapture;
     setIsLoading(true);
     setError('');
     const refreshMessage =
@@ -1535,18 +1591,6 @@ export default function App() {
       });
       const active = successful.find((result) => result.period === targetPeriod);
       const failed = results.filter((result) => result.status === 'failed');
-
-      // A forecast may belong to week/month while the user is currently
-      // viewing dayK. Capture all three independent periods after refresh.
-      successful.forEach(({ period: workspacePeriod, completed }) => {
-        const storedRows = getWorkspacePredictions(
-          cloudWorkspaceRef.current ?? createEmptyCloudWorkspace(),
-          { stockCode: completed.data.code, period: workspacePeriod },
-        );
-        if (storedRows.length) {
-          capturePredictionHistory(storedRows, completed.data, workspacePeriod, completed.lastCompletedDate ?? '');
-        }
-      });
 
       const selectedScope = selectedMarketScopeRef.current;
       if (
@@ -1857,7 +1901,9 @@ export default function App() {
         <div className="prediction-row table-head" style={predictionTableStyle} role="row">
           <span role="columnheader">目标周期</span>
           <span role="columnheader">预测MA{inputMaWindow}</span>
-          <span role="columnheader">反推收盘</span>
+          <span role="columnheader">锁定预测</span>
+          <span role="columnheader">实时暂估</span>
+          <span role="columnheader">有效MA</span>
           <span className="num-cell" role="columnheader">真实收盘</span>
           <span role="columnheader">明细</span>
           {visibleMaWindows.map((windowSize) => (
@@ -1866,9 +1912,12 @@ export default function App() {
         </div>
         {predictionTableRows.map((row) => {
           const isFilled = getPredictionInputValue(row, inputMaWindow).trim() !== '';
+          const issuedRow = activeScope
+            ? issuedRowsByPeriod.get(getIssuedForecastPeriodKey(activeScope.period, row.targetDate))
+            : undefined;
           return (
             <div
-              className={`prediction-row ${isFilled ? 'row-filled' : 'row-empty'}`}
+              className={`prediction-row ${isFilled ? 'row-filled' : 'row-empty'} ${issuedRow ? 'row-locked' : ''}`}
               key={row.targetDate}
               style={predictionTableStyle}
               role="row"
@@ -1896,7 +1945,14 @@ export default function App() {
                   placeholder="0.0000"
                 />
               </div>
+              <strong className="locked-close-cell" role="cell">
+                {formatNumber(issuedRow?.predictedClose ?? null)}
+                {issuedRow ? <small aria-label="已锁定">锁</small> : null}
+              </strong>
               <span className="derived-close-cell" role="cell">{formatNumber(row.derivedClose)}</span>
+              <span className="effective-ma-cell num-cell" role="cell">
+                {formatNumber(issuedRow?.currentImpliedMa ?? null, 4)}
+              </span>
               <span className="num-cell" role="cell">{formatNumber(row.actualClose)}</span>
               <span role="cell">
                 <button
@@ -2201,9 +2257,17 @@ export default function App() {
               <button
                 type="button"
                 className="ghost primary-save"
+                onClick={requestIssueCurrentForecast}
+                disabled={isIssuingForecast}
+              >
+                {isIssuingForecast ? '正在云端锁定…' : '提交并锁定'}
+              </button>
+              <button
+                type="button"
+                className="ghost"
                 onClick={() => void saveCurrentWorkspaceToCloud()}
               >
-                向云端保存
+                保存草稿
               </button>
               {cloudUser ? (
                 <div
@@ -2289,6 +2353,15 @@ export default function App() {
             ))}
           </div>
 
+          <div className={`forecast-lock-strip ${activeIssuedBatch ? 'locked' : 'draft'}`} role="status">
+            <strong>{activeIssuedBatch ? `MA${inputMaWindow} 已提交锁定` : `MA${inputMaWindow} 尚未提交`}</strong>
+            <span>
+              {activeIssuedBatch
+                ? `基准 ${activeIssuedBatch.asOfDate} · ${activeIssuedBatch.rows.length} 条 · 行情刷新不会改写预测收盘`
+                : '当前显示的是实时暂估，收盘或历史数据变化后会重新计算'}
+            </span>
+          </div>
+
           {renderPredictionTable()}
 
           <label className="note-field">
@@ -2343,6 +2416,7 @@ export default function App() {
       {detailRow ? (
         <CalculationDetailModal
           row={detailRow}
+          issuedRow={detailIssuedRow}
           inputMaWindow={inputMaWindow}
           onClose={() => setDetailTargetDate(null)}
         />
@@ -2571,10 +2645,12 @@ function ForecastHistoryModal({
 
 function CalculationDetailModal({
   row,
+  issuedRow,
   inputMaWindow,
   onClose,
 }: {
   row: Ma40ProjectionRow;
+  issuedRow: EvaluatedIssuedForecastRow | null;
   inputMaWindow: MaWindow;
   onClose: () => void;
 }) {
@@ -2627,6 +2703,27 @@ function CalculationDetailModal({
               <span>反推收盘：{formatNumber(reverse.derivedClose)}</span>
             </div>
           </section>
+
+          {issuedRow ? (
+            <section className="formula-card issued-formula">
+              <div className="formula-card-head">
+                <span>已提交预测收盘</span>
+                <strong>永久锁定</strong>
+              </div>
+              <div className="formula-line">{formatNumber(issuedRow.predictedClose)}</div>
+              <div className="formula-meta">
+                <span>提交时目标MA：{formatNumber(issuedRow.inputMaValue, 4)}</span>
+                <span>最新有效MA：{formatNumber(issuedRow.currentImpliedMa, 4)}</span>
+                <span>条件反推价：{formatNumber(issuedRow.conditionalClose)}</span>
+                {issuedRow.settlement ? (
+                  <span>真实收盘：{formatNumber(issuedRow.settlement.actualClose)}</span>
+                ) : null}
+              </div>
+              <p className="formula-explanation">
+                行情更新只改变最新有效MA、条件反推价和真实结算；已提交预测收盘不会被重算覆盖。
+              </p>
+            </section>
+          ) : null}
 
           <section className="detail-section">
             <div className="detail-section-head">
@@ -2881,15 +2978,21 @@ function getPredictionInputValue(row: PredictionPoint, windowSize: MaWindow) {
   return row.predictedMaValues[String(windowSize)] ?? (windowSize === 40 ? row.predictedMa40 : '');
 }
 
-function sameForecastSnapshot(
-  existing: ForecastHistorySnapshot | undefined,
-  incoming: ForecastHistorySnapshot,
-) {
-  return !!existing &&
-    existing.inputMaValue === incoming.inputMaValue &&
-    existing.predictedClose === incoming.predictedClose &&
-    existing.note === incoming.note &&
-    MA_WINDOWS.every((windowSize) => existing.predictedMaValues[windowSize] === incoming.predictedMaValues[windowSize]);
+function selectLatestHistoryRevisionRows(rows: ForecastHistoryRow[]) {
+  const latestByTarget = new Map<string, ForecastHistoryRow>();
+  for (const row of rows) {
+    const existing = latestByTarget.get(row.targetDate);
+    if (
+      !existing ||
+      row.savedAt > existing.savedAt ||
+      (row.savedAt === existing.savedAt && row.id > existing.id)
+    ) {
+      latestByTarget.set(row.targetDate, row);
+    }
+  }
+  return [...latestByTarget.values()].sort((left, right) =>
+    (left.actualDate ?? left.targetDate).localeCompare(right.actualDate ?? right.targetDate),
+  );
 }
 
 function setPredictionInputValue(

@@ -5,10 +5,12 @@ import test from 'node:test';
 const appSource = fs.readFileSync('src/App.tsx', 'utf8');
 const supabaseSource = fs.readFileSync('src/utils/supabase.ts', 'utf8');
 
-test('prediction controls use cloud read and cloud save instead of the local cache action', () => {
+test('prediction controls separate immutable submission from cloud draft saving', () => {
   assert.doesNotMatch(appSource, />读取缓存</);
   assert.match(appSource, /cloudUser \? '从云端读取' : '登录云端'/);
-  assert.match(appSource, />\s*向云端保存\s*</);
+  assert.match(appSource, /isIssuingForecast \? '正在云端锁定…' : '提交并锁定'/);
+  assert.match(appSource, />\s*保存草稿\s*</);
+  assert.match(appSource, /onClick=\{requestIssueCurrentForecast\}/);
   assert.match(appSource, /onClick=\{\(\) => \(cloudUser \? void readCloudPredictions\(\)/);
   assert.match(appSource, /onClick=\{\(\) => void saveCurrentWorkspaceToCloud\(\)\}/);
 });

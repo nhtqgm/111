@@ -76,7 +76,7 @@ test('frontend reads and remembers stock codes only through canonical database R
 });
 
 test('database is the canonical source for the selector after account reload', () => {
-  assert.match(appSource, /const \[profile, record, remoteStockCodes\] = await Promise\.all/);
+  assert.match(appSource, /const \[profile, record, remoteStockCodes, remoteIssuedBatches\] = await Promise\.all/);
   assert.match(appSource, /setCloudStockCodes\(remoteStockCodes\)/);
   assert.doesNotMatch(appSource, /collectCloudStockCodes/);
 });

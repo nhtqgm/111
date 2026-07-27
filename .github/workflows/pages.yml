@@ -2,7 +2,9 @@ name: Deploy web app
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+      - codex/freeze-issued-forecasts
   workflow_dispatch:
     inputs:
       publish_freeze_forecast_preview:
@@ -39,12 +41,10 @@ jobs:
           ref: 预览-方案回放整合版
           path: preview-site
 
-      # This workflow must be dispatched from main. The production root is still
-      # built from main, while the feature branch is published only below /preview/.
-      # Keeping the deployment ref on main also satisfies the github-pages
-      # environment policy without granting deployment access to feature branches.
+      # The production root is always built from main. A feature-branch push or
+      # an explicit dispatch publishes the candidate only below /preview/.
       - name: Checkout frozen-forecast preview branch
-        if: ${{ inputs.publish_freeze_forecast_preview == true }}
+        if: ${{ github.ref == 'refs/heads/codex/freeze-issued-forecasts' || inputs.publish_freeze_forecast_preview == true }}
         uses: actions/checkout@v4
         with:
           ref: codex/freeze-issued-forecasts
@@ -79,7 +79,7 @@ jobs:
           fi
 
       - name: Build frozen-forecast preview
-        if: ${{ inputs.publish_freeze_forecast_preview == true }}
+        if: ${{ github.ref == 'refs/heads/codex/freeze-issued-forecasts' || inputs.publish_freeze_forecast_preview == true }}
         working-directory: freeze-preview-site
         env:
           VITE_SUPABASE_URL: https://svupnipcyekyvdhhpbec.supabase.co
@@ -91,7 +91,7 @@ jobs:
 
       - name: Compose Pages artifact
         env:
-          PUBLISH_FREEZE_FORECAST_PREVIEW: ${{ inputs.publish_freeze_forecast_preview }}
+          PUBLISH_FREEZE_FORECAST_PREVIEW: ${{ github.ref == 'refs/heads/codex/freeze-issued-forecasts' || inputs.publish_freeze_forecast_preview == true }}
         run: |
           mkdir -p pages-site
           cp -R main-site/dist/. pages-site/
@@ -124,7 +124,7 @@ jobs:
         uses: actions/deploy-pages@v4
 
       - name: Show frozen-forecast preview URL
-        if: ${{ inputs.publish_freeze_forecast_preview == true }}
+        if: ${{ github.ref == 'refs/heads/codex/freeze-issued-forecasts' || inputs.publish_freeze_forecast_preview == true }}
         run: |
           echo "### Frozen-forecast preview" >> "${GITHUB_STEP_SUMMARY}"
           echo "${{ steps.deployment.outputs.page_url }}preview/freeze-issued-forecasts/" >> "${GITHUB_STEP_SUMMARY}"

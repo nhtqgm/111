@@ -809,6 +809,34 @@ h2 {
   color: #f7f4ee;
 }
 
+.forecast-lock-strip {
+  display: grid;
+  gap: 2px;
+  margin-top: 7px;
+  padding: 7px 9px;
+  border: 1px solid #b8aa94;
+  border-left-width: 5px;
+  border-radius: 6px;
+  background: #f6efe3;
+  color: #5f574b;
+  font-size: 11px;
+}
+
+.forecast-lock-strip strong {
+  color: #343a34;
+  font-size: 12px;
+}
+
+.forecast-lock-strip.locked {
+  border-color: #47705a;
+  background: #e7f0e8;
+  color: #365342;
+}
+
+.forecast-lock-strip.locked strong {
+  color: #244331;
+}
+
 .prediction-table {
   display: grid;
   gap: 5px;
@@ -838,6 +866,35 @@ h2 {
   font-size: 12px;
   line-height: 1.25;
   font-variant-numeric: tabular-nums;
+}
+
+.prediction-row.row-locked {
+  background: linear-gradient(90deg, rgba(74, 116, 88, 0.08), transparent 72%);
+}
+
+.locked-close-cell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  color: #244b32;
+  font-variant-numeric: tabular-nums;
+}
+
+.locked-close-cell small {
+  min-width: 18px;
+  padding: 1px 3px;
+  border-radius: 3px;
+  background: #3d664c;
+  color: #fffdf8;
+  font-size: 9px;
+  line-height: 1.4;
+  text-align: center;
+}
+
+.effective-ma-cell {
+  color: #6f5432;
+  font-weight: 800;
 }
 
 .ma40-table .prediction-row {
@@ -1110,6 +1167,19 @@ h2 {
 .main-formula {
   border-color: #26302a;
   box-shadow: inset 5px 0 0 #d8a21d;
+}
+
+.issued-formula {
+  margin-top: 12px;
+  border-color: #3d664c;
+  box-shadow: inset 5px 0 0 #3d664c;
+}
+
+.formula-explanation {
+  margin: 9px 0 0;
+  color: #526357;
+  font-size: 12px;
+  line-height: 1.55;
 }
 
 .formula-card-head,
